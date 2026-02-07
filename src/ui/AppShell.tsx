@@ -1,4 +1,4 @@
-import * as React from "react";
+import { useEffect, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { useNavigate } from "react-router-dom";
@@ -18,18 +18,18 @@ const navItems = [
 export default function AppShell() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
-  const [collapsed, setCollapsed] = React.useState(false);
-  const [theme, setTheme] = React.useState(() => {
+  const [collapsed, setCollapsed] = useState(false);
+  const [theme, setTheme] = useState(() => {
     return localStorage.getItem("rcms-theme") ?? "light";
   });
-  const [sessionLabel, setSessionLabel] = React.useState("Checking session...");
+  const [sessionLabel, setSessionLabel] = useState("Checking session...");
 
-  React.useEffect(() => {
+  useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
     localStorage.setItem("rcms-theme", theme);
   }, [theme]);
 
-  React.useEffect(() => {
+  useEffect(() => {
     let active = true;
     account
       .get()
