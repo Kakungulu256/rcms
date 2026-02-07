@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ID, Query } from "appwrite";
+import { Query } from "appwrite";
 import { format, parseISO } from "date-fns";
 import { account, databases, functions, rcmsDatabaseId } from "../../lib/appwrite";
 import { COLLECTIONS } from "../../lib/schema";
@@ -65,9 +65,9 @@ export default function PaymentsPage() {
           Query.orderDesc("paymentDate"),
         ]),
       ]);
-      setTenants(tenantResult.documents as Tenant[]);
-      setHouses(houseResult.documents as House[]);
-      setPayments(paymentResult.documents as Payment[]);
+      setTenants(tenantResult.documents as unknown as Tenant[]);
+      setHouses(houseResult.documents as unknown as House[]);
+      setPayments(paymentResult.documents as unknown as Payment[]);
     } catch (err) {
       setError("Failed to load payments.");
     } finally {
@@ -86,10 +86,6 @@ export default function PaymentsPage() {
   const houseLookup = useMemo(
     () => new Map(houses.map((house) => [house.$id, house])),
     [houses]
-  );
-  const paymentsById = useMemo(
-    () => new Map(payments.map((payment) => [payment.$id, payment])),
-    [payments]
   );
 
   const handlePreview = (values: PaymentFormValues) => {
@@ -163,7 +159,7 @@ export default function PaymentsPage() {
           notes: previewState.form.notes,
         })
       );
-      const result = parseExecution(execution.response);
+      const result = parseExecution((execution as any).response);
       if (!result || !result.ok || !result.payment) {
         console.error("Allocate function returned error:", result);
         throw new Error("Allocation failed.");
@@ -211,7 +207,7 @@ export default function PaymentsPage() {
           notes: `Reversal of ${reverseTarget.$id}`,
         })
       );
-      const result = parseExecution(execution.response);
+      const result = parseExecution((execution as any).response);
       if (!result || !result.ok || !result.reversal) {
         console.error("Reversal function returned error:", result);
         throw new Error("Reversal failed.");

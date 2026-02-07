@@ -8,7 +8,7 @@ import {
   buildPaidByMonth,
   previewAllocation,
 } from "../payments/allocation";
-import type { Expense, House, Payment, Tenant } from "../../lib/schema";
+import type { House, Payment, Tenant } from "../../lib/schema";
 import { useToast } from "../ToastContext";
 import { buildRentByMonth } from "../../lib/rentHistory";
 
@@ -135,7 +135,7 @@ export default function MigrationPage() {
         COLLECTIONS.houses,
         [Query.orderAsc("code")]
       );
-      const existingHouses = houseResult.documents as House[];
+      const existingHouses = houseResult.documents as unknown as House[];
       const houseByCode = new Map(existingHouses.map((house) => [house.code, house]));
       const houseById = new Map(existingHouses.map((house) => [house.$id, house]));
 
@@ -159,8 +159,8 @@ export default function MigrationPage() {
             isMigrated: true,
           }
         );
-        houseByCode.set(code, created as House);
-        houseById.set(created.$id, created as House);
+        houseByCode.set(code, created as unknown as House);
+        houseById.set((created as unknown as House).$id, created as unknown as House);
       }
 
       const tenantResult = await databases.listDocuments(
@@ -168,7 +168,7 @@ export default function MigrationPage() {
         COLLECTIONS.tenants,
         [Query.orderAsc("fullName")]
       );
-      const existingTenants = tenantResult.documents as Tenant[];
+      const existingTenants = tenantResult.documents as unknown as Tenant[];
       const tenantKey = (tenant: Tenant) => {
         const houseId =
           typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
@@ -206,7 +206,7 @@ export default function MigrationPage() {
             isMigrated: parseBooleanDefaultTrue(row.IsMigrated),
           }
         );
-        tenantByKey.set(key, created as Tenant);
+        tenantByKey.set(key, created as unknown as Tenant);
       }
 
       const tenantById = new Map<string, Tenant>();
@@ -223,7 +223,7 @@ export default function MigrationPage() {
           COLLECTIONS.payments,
           [Query.equal("tenant", tenant.$id)]
         );
-        paymentsByTenant.set(tenant.$id, existing.documents as Payment[]);
+        paymentsByTenant.set(tenant.$id, existing.documents as unknown as Payment[]);
       }
 
       const sortedPayments = [...parsed.payments].sort((a, b) =>
@@ -289,7 +289,10 @@ export default function MigrationPage() {
             isMigrated: parseBooleanDefaultTrue(row.IsMigrated),
           }
         );
-        paymentsByTenant.set(tenant.$id, [created as Payment, ...existingPayments]);
+        paymentsByTenant.set(
+          tenant.$id,
+          [created as unknown as Payment, ...existingPayments]
+        );
       }
 
       for (const row of parsed.expenses) {

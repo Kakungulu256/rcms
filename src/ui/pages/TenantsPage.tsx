@@ -108,9 +108,9 @@ export default function TenantsPage() {
           Query.orderDesc("paymentDate"),
         ]),
       ]);
-      setTenants(tenantResult.documents as Tenant[]);
-      setHouses(houseResult.documents as House[]);
-      setPayments(paymentResult.documents as Payment[]);
+      setTenants(tenantResult.documents as unknown as Tenant[]);
+      setHouses(houseResult.documents as unknown as House[]);
+      setPayments(paymentResult.documents as unknown as Payment[]);
     } catch (err) {
       setError("Failed to load tenants.");
     } finally {
@@ -156,15 +156,15 @@ export default function TenantsPage() {
         ID.unique(),
         payload
       );
-      setTenants((prev) => [...prev, created as Tenant]);
-      setSelected(created as Tenant);
+      setTenants((prev) => [...prev, created as unknown as Tenant]);
+      setSelected(created as unknown as Tenant);
       setMode("list");
       setModalOpen(false);
       toast.push("success", "Tenant created.");
       if (user) {
         void logAudit({
           entityType: "tenant",
-          entityId: (created as Tenant).$id,
+          entityId: (created as unknown as Tenant).$id,
           action: "create",
           actorId: user.id,
           details: payload,
@@ -215,17 +215,17 @@ export default function TenantsPage() {
       );
       setTenants((prev) =>
         prev.map((tenant) =>
-          tenant.$id === selected.$id ? (updated as Tenant) : tenant
+          tenant.$id === selected.$id ? (updated as unknown as Tenant) : tenant
         )
       );
-      setSelected(updated as Tenant);
+      setSelected(updated as unknown as Tenant);
       setMode("list");
       setModalOpen(false);
       toast.push("success", "Tenant updated.");
       if (user) {
         void logAudit({
           entityType: "tenant",
-          entityId: (updated as Tenant).$id,
+          entityId: (updated as unknown as Tenant).$id,
           action: "update",
           actorId: user.id,
           details: payload,

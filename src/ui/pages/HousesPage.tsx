@@ -42,7 +42,7 @@ export default function HousesPage() {
         COLLECTIONS.houses,
         [Query.orderAsc("code")]
       );
-      setHouses(result.documents as House[]);
+      setHouses(result.documents as unknown as House[]);
     } catch (err) {
       setError("Failed to load houses.");
     } finally {
@@ -79,15 +79,15 @@ export default function HousesPage() {
           }),
         }
       );
-      setHouses((prev) => [...prev, created as House]);
-      setSelected(created as House);
+      setHouses((prev) => [...prev, created as unknown as House]);
+      setSelected(created as unknown as House);
       setMode("list");
       setModalOpen(false);
       toast.push("success", "House created.");
       if (user) {
         void logAudit({
           entityType: "house",
-          entityId: (created as House).$id,
+          entityId: (created as unknown as House).$id,
           action: "create",
           actorId: user.id,
           details: values,
@@ -132,16 +132,18 @@ export default function HousesPage() {
         updatedPayload
       );
       setHouses((prev) =>
-        prev.map((house) => (house.$id === selected.$id ? (updated as House) : house))
+        prev.map((house) =>
+          house.$id === selected.$id ? (updated as unknown as House) : house
+        )
       );
-      setSelected(updated as House);
+      setSelected(updated as unknown as House);
       if (rentChanged) {
         const tenantResult = await databases.listDocuments(
           rcmsDatabaseId,
           COLLECTIONS.tenants,
           [Query.equal("house", [selected.$id])]
         );
-        const tenantsForHouse = tenantResult.documents as Tenant[];
+        const tenantsForHouse = tenantResult.documents as unknown as Tenant[];
         const activeTenants = tenantsForHouse.filter(
           (tenant) => tenant.status === "active" && !tenant.moveOutDate
         );
@@ -165,7 +167,7 @@ export default function HousesPage() {
       if (user) {
         void logAudit({
           entityType: "house",
-          entityId: (updated as House).$id,
+          entityId: (updated as unknown as House).$id,
           action: "update",
           actorId: user.id,
           details: updatedPayload,
@@ -190,16 +192,16 @@ export default function HousesPage() {
         { status: "inactive" }
       );
       setHouses((prev) =>
-        prev.map((item) => (item.$id === house.$id ? (updated as House) : item))
+        prev.map((item) => (item.$id === house.$id ? (updated as unknown as House) : item))
       );
       if (selected?.$id === house.$id) {
-        setSelected(updated as House);
+        setSelected(updated as unknown as House);
       }
       toast.push("success", "House deactivated.");
       if (user) {
         void logAudit({
           entityType: "house",
-          entityId: (updated as House).$id,
+          entityId: (updated as unknown as House).$id,
           action: "update",
           actorId: user.id,
           details: { status: "inactive" },

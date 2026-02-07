@@ -4,13 +4,7 @@ import { endOfMonth, format, startOfMonth } from "date-fns";
 import { databases, rcmsDatabaseId } from "../../lib/appwrite";
 import { COLLECTIONS } from "../../lib/schema";
 import { buildPaidByMonth } from "../payments/allocation";
-import type {
-  Expense,
-  House,
-  Payment,
-  PaymentAllocation,
-  Tenant,
-} from "../../lib/schema";
+import type { Expense, House, Payment, Tenant } from "../../lib/schema";
 
 type SummaryCard = {
   label: string;
@@ -49,10 +43,10 @@ export default function DashboardPage() {
             Query.orderDesc("expenseDate"),
           ]),
         ]);
-      setHouses(houseResult.documents as House[]);
-      setTenants(tenantResult.documents as Tenant[]);
-      setPayments(paymentResult.documents as Payment[]);
-      setExpenses(expenseResult.documents as Expense[]);
+      setHouses(houseResult.documents as unknown as House[]);
+      setTenants(tenantResult.documents as unknown as Tenant[]);
+      setPayments(paymentResult.documents as unknown as Payment[]);
+      setExpenses(expenseResult.documents as unknown as Expense[]);
     } catch (err) {
       setError("Failed to load dashboard data.");
     } finally {

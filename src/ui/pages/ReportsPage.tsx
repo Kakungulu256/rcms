@@ -89,10 +89,10 @@ export default function ReportsPage() {
           Query.orderAsc("code"),
         ]),
       ]);
-      setPayments(paymentResult.documents as Payment[]);
-      setExpenses(expenseResult.documents as Expense[]);
-      setTenants(tenantResult.documents as Tenant[]);
-      setHouses(houseResult.documents as House[]);
+      setPayments(paymentResult.documents as unknown as Payment[]);
+      setExpenses(expenseResult.documents as unknown as Expense[]);
+      setTenants(tenantResult.documents as unknown as Tenant[]);
+      setHouses(houseResult.documents as unknown as House[]);
     } catch (err) {
       setError("Failed to load report data.");
     } finally {
@@ -120,7 +120,6 @@ export default function ReportsPage() {
       return { start: parseISO(rangeStart), end: parseISO(rangeEnd) };
     })();
 
-    const monthKey = format(range.start ?? now, "yyyy-MM");
     const paidInRange = payments.reduce((total, payment) => {
       if (payment.isReversal) return total;
       const allocation = decodeJson<PaymentAllocation>(payment.allocationJson);

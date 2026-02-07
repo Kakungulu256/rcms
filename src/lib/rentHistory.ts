@@ -5,10 +5,6 @@ export type RentHistoryEntry = {
   note?: string;
 };
 
-function monthKey(dateValue: string) {
-  return dateValue.slice(0, 7);
-}
-
 export function parseRentHistory(value?: string | null): RentHistoryEntry[] {
   if (!value) return [];
   try {

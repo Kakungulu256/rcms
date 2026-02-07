@@ -37,8 +37,8 @@ export default function ExpensesPage() {
           Query.orderAsc("code"),
         ]),
       ]);
-      setExpenses(expenseResult.documents as Expense[]);
-      setHouses(houseResult.documents as House[]);
+      setExpenses(expenseResult.documents as unknown as Expense[]);
+      setHouses(houseResult.documents as unknown as House[]);
     } catch (err) {
       setError("Failed to load expenses.");
     } finally {
@@ -66,13 +66,13 @@ export default function ExpensesPage() {
         ID.unique(),
         payload
       );
-      setExpenses((prev) => [created as Expense, ...prev]);
+      setExpenses((prev) => [created as unknown as Expense, ...prev]);
       toast.push("success", "Expense recorded.");
       setModalOpen(false);
       if (user) {
         void logAudit({
           entityType: "expense",
-          entityId: (created as Expense).$id,
+          entityId: (created as unknown as Expense).$id,
           action: "create",
           actorId: user.id,
           details: payload,
