@@ -105,7 +105,6 @@ export default function ReportsPage() {
   }, []);
 
   const summary = useMemo(() => {
-    const now = new Date();
     const range = (() => {
       if (rangeMode === "month") {
         const start = startOfMonth(parseISO(`${month}-01`));
