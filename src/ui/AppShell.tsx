@@ -1,4 +1,4 @@
-import React from "react";
+import * as React from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { useNavigate } from "react-router-dom";
