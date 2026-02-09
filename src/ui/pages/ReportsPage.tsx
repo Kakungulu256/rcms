@@ -61,6 +61,8 @@ export default function ReportsPage() {
     "summary" | "byHouse" | "byTenant" | "tenantDetail"
   >("summary");
   const [selectedTenantId, setSelectedTenantId] = useState<string>("");
+  const [exportingPdf, setExportingPdf] = useState(false);
+  const [exportingXlsx, setExportingXlsx] = useState(false);
 
   const tenantLookup = useMemo(
     () => new Map(tenants.map((tenant) => [tenant.$id, tenant])),
@@ -1059,5 +1061,3 @@ export default function ReportsPage() {
     </section>
   );
 }
-  const [exportingPdf, setExportingPdf] = useState(false);
-  const [exportingXlsx, setExportingXlsx] = useState(false);
