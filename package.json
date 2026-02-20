@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",
+    "@fontsource/manrope": "^5.2.8",
     "@fontsource/roboto-mono": "^5.2.8",
     "appwrite": "^22.0.0",
     "date-fns": "^4.1.0",

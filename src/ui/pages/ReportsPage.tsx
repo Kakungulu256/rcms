@@ -10,7 +10,7 @@ import {
 } from "date-fns";
 import { jsPDF } from "jspdf";
 import * as XLSX from "xlsx";
-import { databases, rcmsDatabaseId } from "../../lib/appwrite";
+import { listAllDocuments, rcmsDatabaseId } from "../../lib/appwrite";
 import { COLLECTIONS, decodeJson } from "../../lib/schema";
 import type { Expense, House, Payment, PaymentAllocation, Tenant } from "../../lib/schema";
 import { useToast } from "../ToastContext";
@@ -44,6 +44,13 @@ function currency(value: number) {
   return value.toLocaleString(undefined, { minimumFractionDigits: 2 });
 }
 
+function dateKey(value: string | Date) {
+  if (typeof value === "string") {
+    return value.slice(0, 10);
+  }
+  return format(value, "yyyy-MM-dd");
+}
+
 export default function ReportsPage() {
   const toast = useToast();
   const [payments, setPayments] = useState<Payment[]>([]);
@@ -57,9 +64,9 @@ export default function ReportsPage() {
   const [year, setYear] = useState(() => format(new Date(), "yyyy"));
   const [rangeStart, setRangeStart] = useState(() => format(new Date(), "yyyy-MM-dd"));
   const [rangeEnd, setRangeEnd] = useState(() => format(new Date(), "yyyy-MM-dd"));
-  const [reportType, setReportType] = useState<
-    "summary" | "byHouse" | "byTenant" | "tenantDetail"
-  >("summary");
+  const [reportType, setReportType] = useState<"summary" | "byHouse" | "tenantDetail">(
+    "summary"
+  );
   const [selectedTenantId, setSelectedTenantId] = useState<string>("");
   const [exportingPdf, setExportingPdf] = useState(false);
   const [exportingXlsx, setExportingXlsx] = useState(false);
@@ -78,23 +85,39 @@ export default function ReportsPage() {
     setError(null);
     try {
       const [paymentResult, expenseResult, tenantResult, houseResult] = await Promise.all([
-        databases.listDocuments(rcmsDatabaseId, COLLECTIONS.payments, [
+        listAllDocuments<Payment>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.payments,
+          queries: [
           Query.orderDesc("paymentDate"),
-        ]),
-        databases.listDocuments(rcmsDatabaseId, COLLECTIONS.expenses, [
+          ],
+        }),
+        listAllDocuments<Expense>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.expenses,
+          queries: [
           Query.orderDesc("expenseDate"),
-        ]),
-        databases.listDocuments(rcmsDatabaseId, COLLECTIONS.tenants, [
+          ],
+        }),
+        listAllDocuments<Tenant>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.tenants,
+          queries: [
           Query.orderAsc("fullName"),
-        ]),
-        databases.listDocuments(rcmsDatabaseId, COLLECTIONS.houses, [
+          ],
+        }),
+        listAllDocuments<House>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.houses,
+          queries: [
           Query.orderAsc("code"),
-        ]),
+          ],
+        }),
       ]);
-      setPayments(paymentResult.documents as unknown as Payment[]);
-      setExpenses(expenseResult.documents as unknown as Expense[]);
-      setTenants(tenantResult.documents as unknown as Tenant[]);
-      setHouses(houseResult.documents as unknown as House[]);
+      setPayments(paymentResult);
+      setExpenses(expenseResult);
+      setTenants(tenantResult);
+      setHouses(houseResult);
     } catch (err) {
       setError("Failed to load report data.");
     } finally {
@@ -107,7 +130,7 @@ export default function ReportsPage() {
   }, []);
 
   const summary = useMemo(() => {
-    const range = (() => {
+    const rawRange = (() => {
       if (rangeMode === "month") {
         const start = startOfMonth(parseISO(`${month}-01`));
         const end = endOfMonth(start);
@@ -121,32 +144,38 @@ export default function ReportsPage() {
       return { start: parseISO(rangeStart), end: parseISO(rangeEnd) };
     })();
 
+    const range =
+      rawRange.start <= rawRange.end
+        ? rawRange
+        : { start: rawRange.end, end: rawRange.start };
+    const rangeStartKey = dateKey(range.start);
+    const rangeEndKey = dateKey(range.end);
+    const rangeStartMonth = format(range.start, "yyyy-MM");
+    const rangeEndMonth = format(range.end, "yyyy-MM");
+
     const paidInRange = payments.reduce((total, payment) => {
-      if (payment.isReversal) return total;
+      const sign = payment.isReversal ? -1 : 1;
       const allocation = decodeJson<PaymentAllocation>(payment.allocationJson);
       if (!allocation) {
-        const paymentDate = parseISO(payment.paymentDate);
-        if (paymentDate >= range.start && paymentDate <= range.end) {
-          return total + Math.max(payment.amount, 0);
+        const paymentDateKey = dateKey(payment.paymentDate);
+        if (paymentDateKey >= rangeStartKey && paymentDateKey <= rangeEndKey) {
+          return total + Number(payment.amount);
         }
         return total;
       }
-      const allocationTotal = Object.entries(allocation).reduce(
-        (sum, [month, value]) => {
-          const monthDate = parseISO(`${month}-01`);
-          if (monthDate >= range.start && monthDate <= range.end) {
-            return sum + Math.max(Number(value), 0);
-          }
+
+      const allocationTotal = Object.entries(allocation).reduce((sum, [month, value]) => {
+        if (month < rangeStartMonth || month > rangeEndMonth) {
           return sum;
-        },
-        0
-      );
+        }
+        return sum + Number(value) * sign;
+      }, 0);
       return total + allocationTotal;
     }, 0);
 
     const expensesInRange = expenses.filter((expense) => {
-      const date = parseISO(expense.expenseDate);
-      return date >= range.start && date <= range.end;
+      const key = dateKey(expense.expenseDate);
+      return key >= rangeStartKey && key <= rangeEndKey;
     });
     const generalExpenses = expensesInRange
       .filter((expense) => expense.category === "general")
@@ -154,15 +183,19 @@ export default function ReportsPage() {
     const maintenanceExpenses = expensesInRange
       .filter((expense) => expense.category === "maintenance")
       .reduce((sum, expense) => sum + expense.amount, 0);
+    const totalExpenses = generalExpenses + maintenanceExpenses;
+    const netCollection = paidInRange - totalExpenses;
 
     const rows: SummaryRow[] = [
       {
         metric: "Range",
-        value: `${format(range.start, "yyyy-MM-dd")} to ${format(range.end, "yyyy-MM-dd")}`,
+        value: `${rangeStartKey} to ${rangeEndKey}`,
       },
       { metric: "Rent Collected", value: currency(paidInRange) },
       { metric: "General Expenses", value: currency(generalExpenses) },
       { metric: "Maintenance Expenses", value: currency(maintenanceExpenses) },
+      { metric: "Total Expenses", value: currency(totalExpenses) },
+      { metric: "Net Collection", value: currency(netCollection) },
       { metric: "Active Tenants", value: String(tenants.filter((t) => t.status === "active").length) },
     ];
 
@@ -180,33 +213,34 @@ export default function ReportsPage() {
     const byTenant = new Map<string, number>();
     const byHouse = new Map<string, number>();
     payments.forEach((payment) => {
-      if (payment.isReversal) return;
+      const sign = payment.isReversal ? -1 : 1;
+      const tenantId =
+        typeof payment.tenant === "string" ? payment.tenant : payment.tenant?.$id ?? "";
+      const tenant = tenantLookup.get(tenantId);
+      const houseId =
+        typeof tenant?.house === "string" ? tenant.house : tenant?.house?.$id ?? "";
       const allocation = decodeJson<PaymentAllocation>(payment.allocationJson);
+
       if (!allocation) {
-        const paymentDate = parseISO(payment.paymentDate);
-        if (paymentDate < range.start || paymentDate > range.end) return;
-        const tenantId =
-          typeof payment.tenant === "string" ? payment.tenant : payment.tenant?.$id ?? "";
-        const tenant = tenantLookup.get(tenantId);
-        const houseId =
-          typeof tenant?.house === "string" ? tenant.house : tenant?.house?.$id ?? "";
+        const paymentDateKey = dateKey(payment.paymentDate);
+        if (paymentDateKey < rangeStartKey || paymentDateKey > rangeEndKey) {
+          return;
+        }
         byTenant.set(tenantId, (byTenant.get(tenantId) ?? 0) + Number(payment.amount));
         if (houseId) {
           byHouse.set(houseId, (byHouse.get(houseId) ?? 0) + Number(payment.amount));
         }
         return;
       }
+
       Object.entries(allocation).forEach(([monthKey, value]) => {
-        const monthDate = parseISO(`${monthKey}-01`);
-        if (monthDate < range.start || monthDate > range.end) return;
-        const tenantId =
-          typeof payment.tenant === "string" ? payment.tenant : payment.tenant?.$id ?? "";
-        const tenant = tenantLookup.get(tenantId);
-        const houseId =
-          typeof tenant?.house === "string" ? tenant.house : tenant?.house?.$id ?? "";
-        byTenant.set(tenantId, (byTenant.get(tenantId) ?? 0) + Number(value));
+        if (monthKey < rangeStartMonth || monthKey > rangeEndMonth) {
+          return;
+        }
+        const amount = Number(value) * sign;
+        byTenant.set(tenantId, (byTenant.get(tenantId) ?? 0) + amount);
         if (houseId) {
-          byHouse.set(houseId, (byHouse.get(houseId) ?? 0) + Number(value));
+          byHouse.set(houseId, (byHouse.get(houseId) ?? 0) + amount);
         }
       });
     });
@@ -243,8 +277,9 @@ export default function ReportsPage() {
         const moveOut = tenant.moveOutDate ? parseISO(tenant.moveOutDate) : null;
         const effectiveEnd = moveOut && moveOut < range.end ? moveOut : range.end;
         const months = buildMonthSeries(tenant.moveInDate, effectiveEnd);
-        const rangeStartMonth = format(range.start, "yyyy-MM");
-        const monthsInRange = months.filter((month) => month >= rangeStartMonth);
+        const monthsInRange = months.filter(
+          (month) => month >= rangeStartMonth && month <= rangeEndMonth
+        );
         const rentByMonth = buildRentByMonth({
           months: monthsInRange,
           tenantHistoryJson: tenant.rentHistoryJson ?? null,
@@ -280,11 +315,6 @@ export default function ReportsPage() {
       .filter((row) => row.balance > 0)
       .sort((a, b) => b.balance - a.balance);
 
-    const tenantDetail =
-      selectedTenantId && byTenant.has(selectedTenantId)
-        ? tenantRows.find((row) => row.tenantId === selectedTenantId) ?? null
-        : null;
-
     const selectedTenant = selectedTenantId
       ? tenantLookup.get(selectedTenantId) ?? null
       : null;
@@ -306,11 +336,18 @@ export default function ReportsPage() {
       : [];
     const paidByMonth = buildPaidByMonth(tenantPayments);
     const paymentSummaryByMonth = buildPaymentSummaryByMonth(tenantPayments);
+    const today = new Date();
+    const selectedTenantMoveOut = selectedTenant?.moveOutDate
+      ? parseISO(selectedTenant.moveOutDate)
+      : null;
+    const selectedTenantEnd =
+      selectedTenantMoveOut && selectedTenantMoveOut < today
+        ? selectedTenantMoveOut
+        : today;
     const allMonths = selectedTenant
-      ? buildMonthSeries(selectedTenant.moveInDate, range.end)
+      ? buildMonthSeries(selectedTenant.moveInDate, selectedTenantEnd)
       : [];
-    const rangeStartMonth = format(range.start, "yyyy-MM");
-    const monthsInRange = allMonths.filter((month) => month >= rangeStartMonth);
+    const monthsInRange = allMonths;
     const rentByMonth = selectedTenant
       ? buildRentByMonth({
           months: monthsInRange,
@@ -341,17 +378,26 @@ export default function ReportsPage() {
       },
       { expected: 0, paid: 0, balance: 0 }
     );
+    const tenantDetailRangeStartKey = selectedTenant
+      ? selectedTenant.moveInDate?.slice(0, 10) ?? ""
+      : "";
+    const tenantDetailRangeEndKey = selectedTenant ? dateKey(selectedTenantEnd) : "";
 
     return {
       rows,
       paidInRange,
       expensesInRange,
       range,
+      rangeStartKey,
+      rangeEndKey,
+      rangeStartMonth,
+      rangeEndMonth,
       tenantRows,
       houseRows,
-      tenantDetail,
       tenantDetailRows,
       tenantDetailTotals,
+      tenantDetailRangeStartKey,
+      tenantDetailRangeEndKey,
       selectedTenant,
       selectedHouse,
       arrearsRows,
@@ -373,218 +419,324 @@ export default function ReportsPage() {
 
   const exportXlsx = () => {
     setExportingXlsx(true);
-    const workbook = XLSX.utils.book_new();
-    const summarySheet = XLSX.utils.json_to_sheet(summary.rows);
-    XLSX.utils.book_append_sheet(workbook, summarySheet, "Summary");
+    try {
+      if (reportType === "tenantDetail" && !summary.selectedTenant) {
+        toast.push("warning", "Select a tenant first.");
+        return;
+      }
 
-    const paymentRows = payments
-      .filter((payment) => {
-        const date = parseISO(payment.paymentDate);
-        return date >= summary.range.start && date <= summary.range.end;
-      })
-      .map((payment) => ({
-        TenantId:
-          typeof payment.tenant === "string"
-            ? payment.tenant
-            : payment.tenant?.$id ?? "",
-        Amount: payment.amount,
-        Method: payment.method,
-        PaymentDate: payment.paymentDate,
-        Reference: payment.reference ?? "",
-      }));
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(paymentRows), "Payments");
+      const workbook = XLSX.utils.book_new();
 
-    const expenseRows = summary.expensesInRange.map((expense) => ({
-      Category: expense.category,
-      Description: expense.description,
-      Amount: expense.amount,
-      Source: expense.source,
-      ExpenseDate: expense.expenseDate,
-      House: expense.house ?? "",
-    }));
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(expenseRows), "Expenses");
+      if (reportType === "tenantDetail" && summary.selectedTenant) {
+        const tenantHeaderRows = [
+          {
+            Tenant: summary.selectedTenant.fullName,
+            House: summary.selectedHouse?.code ?? "--",
+            MoveInDate: summary.selectedTenant.moveInDate?.slice(0, 10) ?? "",
+            Period: `${summary.tenantDetailRangeStartKey} to ${summary.tenantDetailRangeEndKey}`,
+          },
+        ];
+        XLSX.utils.book_append_sheet(
+          workbook,
+          XLSX.utils.json_to_sheet(tenantHeaderRows),
+          "Tenant"
+        );
 
-    const tenantRows = summary.tenantRows.map((row) => ({
-      Tenant: row.tenantName,
-      House: row.houseLabel,
-      Total: row.total,
-    }));
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(tenantRows), "ByTenant");
+        XLSX.utils.book_append_sheet(
+          workbook,
+          XLSX.utils.json_to_sheet(
+            summary.tenantDetailRows.map((row) => ({
+              Month: row.month,
+              PaidForMonth: row.paid,
+              ArrearsForMonth: row.balance,
+              PaymentDates: row.payments
+                .map((payment) => `${payment.paymentDate} (${currency(payment.amount)})`)
+                .join("; "),
+            }))
+          ),
+          "TenantDetail"
+        );
 
-    const houseRows = summary.houseRows.map((row) => ({
-      House: row.houseCode,
-      Name: row.houseName,
-      Total: row.total,
-    }));
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(houseRows), "ByHouse");
+        const tenantPaymentRows = payments
+          .filter((payment) => {
+            const tenantId =
+              typeof payment.tenant === "string"
+                ? payment.tenant
+                : payment.tenant?.$id ?? "";
+            if (tenantId !== summary.selectedTenant?.$id) {
+              return false;
+            }
+            const key = dateKey(payment.paymentDate);
+            return (
+              key >= summary.tenantDetailRangeStartKey &&
+              key <= summary.tenantDetailRangeEndKey
+            );
+          })
+          .map((payment) => ({
+            PaymentDate: payment.paymentDate?.slice(0, 10) ?? "",
+            Amount: payment.amount,
+            Method: payment.method,
+            Reference: payment.reference ?? "",
+            IsReversal: payment.isReversal ? "yes" : "no",
+          }));
+        XLSX.utils.book_append_sheet(
+          workbook,
+          XLSX.utils.json_to_sheet(tenantPaymentRows),
+          "Payments"
+        );
+      } else if (reportType === "byHouse") {
+        XLSX.utils.book_append_sheet(
+          workbook,
+          XLSX.utils.json_to_sheet(summary.rows),
+          "Summary"
+        );
+        XLSX.utils.book_append_sheet(
+          workbook,
+          XLSX.utils.json_to_sheet(
+            summary.houseRows.map((row) => ({
+              House: row.houseCode,
+              Name: row.houseName,
+              Total: row.total,
+            }))
+          ),
+          "ByHouse"
+        );
+      } else {
+        XLSX.utils.book_append_sheet(
+          workbook,
+          XLSX.utils.json_to_sheet(summary.rows),
+          "Summary"
+        );
 
-    const arrearsRows = summary.arrearsRows.map((row) => ({
-      Tenant: row.tenantName,
-      House: row.houseLabel,
-      Expected: row.expected,
-      Paid: row.paid,
-      Balance: row.balance,
-    }));
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(arrearsRows), "Arrears");
+        const paymentRows = payments
+          .filter((payment) => {
+            const key = dateKey(payment.paymentDate);
+            return key >= summary.rangeStartKey && key <= summary.rangeEndKey;
+          })
+          .map((payment) => ({
+            TenantId:
+              typeof payment.tenant === "string"
+                ? payment.tenant
+                : payment.tenant?.$id ?? "",
+            Amount: payment.amount,
+            Method: payment.method,
+            PaymentDate: payment.paymentDate,
+            Reference: payment.reference ?? "",
+            IsReversal: payment.isReversal ? "yes" : "no",
+          }));
+        XLSX.utils.book_append_sheet(
+          workbook,
+          XLSX.utils.json_to_sheet(paymentRows),
+          "Payments"
+        );
 
-    const expenseCategoryRows = summary.expenseCategoryRows.map((row) => ({
-      Category: row.category,
-      Total: row.total,
-    }));
-    XLSX.utils.book_append_sheet(
-      workbook,
-      XLSX.utils.json_to_sheet(expenseCategoryRows),
-      "ExpensesByCategory"
-    );
+        const expenseRows = summary.expensesInRange.map((expense) => ({
+          Category: expense.category,
+          Description: expense.description,
+          Amount: expense.amount,
+          Source: expense.source,
+          ExpenseDate: expense.expenseDate,
+          House: expense.house ?? "",
+        }));
+        XLSX.utils.book_append_sheet(
+          workbook,
+          XLSX.utils.json_to_sheet(expenseRows),
+          "Expenses"
+        );
 
-    if (reportType === "tenantDetail" && summary.selectedTenant) {
-      const tenantDetailSheet = XLSX.utils.json_to_sheet(
-        summary.tenantDetailRows.map((row) => ({
-          Month: row.month,
-          MoveInDate: summary.selectedTenant?.moveInDate?.slice(0, 10) ?? "",
-          ExpectedRent: row.expected,
-          Paid: row.paid,
-          Balance: row.balance,
-          PaymentDates: row.payments
-            .map((payment) => `${payment.paymentDate} (${currency(payment.amount)})`)
-            .join("; "),
-        }))
+        XLSX.utils.book_append_sheet(
+          workbook,
+          XLSX.utils.json_to_sheet(
+            summary.arrearsRows.map((row) => ({
+              Tenant: row.tenantName,
+              House: row.houseLabel,
+              Expected: row.expected,
+              Paid: row.paid,
+              Balance: row.balance,
+            }))
+          ),
+          "Arrears"
+        );
+
+        XLSX.utils.book_append_sheet(
+          workbook,
+          XLSX.utils.json_to_sheet(
+            summary.expenseCategoryRows.map((row) => ({
+              Category: row.category,
+              Total: row.total,
+            }))
+          ),
+          "ExpensesByCategory"
+        );
+      }
+
+      const fileSuffix =
+        reportType === "tenantDetail" && summary.selectedTenant
+          ? `_${summary.selectedTenant.fullName.replace(/\s+/g, "_")}`
+          : "";
+      const startFileKey =
+        reportType === "tenantDetail"
+          ? summary.tenantDetailRangeStartKey
+          : format(summary.range.start, "yyyyMMdd");
+      const endFileKey =
+        reportType === "tenantDetail"
+          ? summary.tenantDetailRangeEndKey
+          : format(summary.range.end, "yyyyMMdd");
+      XLSX.writeFile(
+        workbook,
+        `RCMS_Report${fileSuffix}_${startFileKey.replace(/-/g, "")}_${endFileKey.replace(
+          /-/g,
+          ""
+        )}.xlsx`
       );
-      XLSX.utils.book_append_sheet(workbook, tenantDetailSheet, "TenantDetail");
+      toast.push("success", "Report exported as XLSX.");
+    } catch (err) {
+      toast.push("error", "Failed to export XLSX report.");
+    } finally {
+      setExportingXlsx(false);
     }
-
-    const fileSuffix =
-      reportType === "tenantDetail" && summary.selectedTenant
-        ? `_${summary.selectedTenant.fullName.replace(/\s+/g, "_")}`
-        : "";
-    XLSX.writeFile(
-      workbook,
-      `RCMS_Report${fileSuffix}_${format(summary.range.start, "yyyyMMdd")}_${format(
-        summary.range.end,
-        "yyyyMMdd"
-      )}.xlsx`
-    );
-    toast.push("success", "Report exported as XLSX.");
-    setExportingXlsx(false);
   };
 
   const exportPdf = () => {
     setExportingPdf(true);
-    const doc = new jsPDF();
-    doc.setFontSize(16);
-    const title =
-      reportType === "summary"
-        ? "RCMS Summary"
-        : reportType === "byHouse"
-        ? "RCMS Collections by House"
-        : reportType === "tenantDetail"
-        ? "RCMS Tenant Collection"
-        : "RCMS Collections by Tenant";
-    doc.text(title, 14, 18);
-    doc.setFontSize(11);
-    let y = 28;
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const pageHeight = doc.internal.pageSize.getHeight();
-    const left = 14;
-    const right = pageWidth - 14;
-    const bottom = pageHeight - 20;
-
-    const ensureSpace = (height: number) => {
-      if (y + height > bottom) {
-        doc.addPage();
-        y = 20;
+    try {
+      if (reportType === "tenantDetail" && !summary.selectedTenant) {
+        toast.push("warning", "Select a tenant first.");
+        return;
       }
-    };
 
-    const drawTable = (headers: string[], rows: string[][]) => {
-      const tableWidth = right - left;
-      const colWidth = tableWidth / headers.length;
-      const rowHeight = 7;
-      ensureSpace(rowHeight * (rows.length + 2));
+      const doc = new jsPDF();
+      doc.setFontSize(16);
+      const title =
+        reportType === "summary"
+          ? "RCMS Summary"
+          : reportType === "byHouse"
+          ? "RCMS Collections by House"
+          : "RCMS Tenant Collection";
+      doc.text(title, 14, 18);
+      doc.setFontSize(11);
+      let y = 28;
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+      const left = 14;
+      const right = pageWidth - 14;
+      const bottom = pageHeight - 20;
 
-      doc.setDrawColor(229, 231, 235);
-      doc.setFillColor(249, 250, 251);
-      doc.rect(left, y, tableWidth, rowHeight, "F");
-      headers.forEach((header, index) => {
-        doc.text(header, left + colWidth * index + 2, y + 5);
-      });
-      y += rowHeight;
+      const ensureSpace = (height: number) => {
+        if (y + height > bottom) {
+          doc.addPage();
+          y = 20;
+        }
+      };
 
-      rows.forEach((row) => {
-        doc.rect(left, y, tableWidth, rowHeight);
-        row.forEach((cell, index) => {
-          doc.text(cell, left + colWidth * index + 2, y + 5);
+      const drawTable = (headers: string[], rows: string[][]) => {
+        const tableWidth = right - left;
+        const colWidth = tableWidth / headers.length;
+        const rowHeight = 7;
+        ensureSpace(rowHeight * (rows.length + 2));
+
+        doc.setDrawColor(229, 231, 235);
+        doc.setFillColor(249, 250, 251);
+        doc.rect(left, y, tableWidth, rowHeight, "F");
+        headers.forEach((header, index) => {
+          doc.text(header, left + colWidth * index + 2, y + 5);
         });
         y += rowHeight;
-      });
 
-      y += 6;
-    };
+        rows.forEach((row) => {
+          doc.rect(left, y, tableWidth, rowHeight);
+          row.forEach((cell, index) => {
+            doc.text(cell, left + colWidth * index + 2, y + 5);
+          });
+          y += rowHeight;
+        });
 
-    drawTable(
-      ["Metric", "Value"],
-      summary.rows.map((row) => [row.metric, row.value])
-    );
-    if (reportType === "byHouse") {
-      drawTable(
-        ["House", "Name", "Total"],
-        summary.houseRows.map((row) => [
-          row.houseCode,
-          row.houseName || "--",
-          currency(row.total),
-        ])
+        y += 6;
+      };
+
+      if (reportType !== "tenantDetail") {
+        drawTable(
+          ["Metric", "Value"],
+          summary.rows.map((row) => [row.metric, row.value])
+        );
+      }
+      if (reportType === "byHouse") {
+        drawTable(
+          ["House", "Name", "Total"],
+          summary.houseRows.map((row) => [
+            row.houseCode,
+            row.houseName || "--",
+            currency(row.total),
+          ])
+        );
+      }
+      if (reportType === "summary") {
+        drawTable(
+          ["Category", "Total"],
+          summary.expenseCategoryRows.map((row) => [
+            row.category,
+            currency(row.total),
+          ])
+        );
+        drawTable(
+          ["Tenant", "House", "Balance"],
+          summary.arrearsRows.map((row) => [
+            row.tenantName,
+            row.houseLabel,
+            currency(row.balance),
+          ])
+        );
+      }
+      if (reportType === "tenantDetail" && summary.selectedTenant) {
+        drawTable(
+          ["Tenant", "Move-in", "Period End"],
+          [[
+            summary.selectedTenant.fullName,
+            summary.selectedTenant.moveInDate?.slice(0, 10) ?? "--",
+            summary.tenantDetailRangeEndKey || "--",
+          ]]
+        );
+        drawTable(
+          ["Month", "Paid", "Arrears"],
+          summary.tenantDetailRows.map((row) => [
+            row.month,
+            currency(row.paid),
+            currency(row.balance),
+          ])
+        );
+        drawTable(
+          ["Totals", "Paid", "Arrears"],
+          [[
+            "Totals",
+            currency(summary.tenantDetailTotals.paid),
+            currency(summary.tenantDetailTotals.balance),
+          ]]
+        );
+      }
+      const fileSuffix =
+        reportType === "tenantDetail" && summary.selectedTenant
+          ? `_${summary.selectedTenant.fullName.replace(/\s+/g, "_")}`
+          : "";
+      const startFileKey =
+        reportType === "tenantDetail"
+          ? summary.tenantDetailRangeStartKey
+          : format(summary.range.start, "yyyyMMdd");
+      const endFileKey =
+        reportType === "tenantDetail"
+          ? summary.tenantDetailRangeEndKey
+          : format(summary.range.end, "yyyyMMdd");
+      doc.save(
+        `RCMS_Report${fileSuffix}_${startFileKey.replace(/-/g, "")}_${endFileKey.replace(
+          /-/g,
+          ""
+        )}.pdf`
       );
+      toast.push("success", "Report exported as PDF.");
+    } catch (err) {
+      toast.push("error", "Failed to export PDF report.");
+    } finally {
+      setExportingPdf(false);
     }
-    if (reportType === "byTenant") {
-      drawTable(
-        ["Tenant", "House", "Total"],
-        summary.tenantRows.map((row) => [
-          row.tenantName,
-          row.houseLabel,
-          currency(row.total),
-        ])
-      );
-    }
-    if (reportType === "tenantDetail" && summary.selectedTenant) {
-      drawTable(
-        ["Tenant", "House", "Move-in"],
-        [[
-          summary.selectedTenant.fullName,
-          summary.selectedHouse?.code ?? "--",
-          summary.selectedTenant.moveInDate?.slice(0, 10) ?? "--",
-        ]]
-      );
-      drawTable(
-        ["Month", "Expected", "Paid", "Balance"],
-        summary.tenantDetailRows.map((row) => [
-          row.month,
-          currency(row.expected),
-          currency(row.paid),
-          currency(row.balance),
-        ])
-      );
-      drawTable(
-        ["Totals", "Expected", "Paid", "Balance"],
-        [[
-          "Totals",
-          currency(summary.tenantDetailTotals.expected),
-          currency(summary.tenantDetailTotals.paid),
-          currency(summary.tenantDetailTotals.balance),
-        ]]
-      );
-    }
-    const fileSuffix =
-      reportType === "tenantDetail" && summary.selectedTenant
-        ? `_${summary.selectedTenant.fullName.replace(/\s+/g, "_")}`
-        : "";
-    doc.save(
-      `RCMS_Report${fileSuffix}_${format(summary.range.start, "yyyyMMdd")}_${format(
-        summary.range.end,
-        "yyyyMMdd"
-      )}.pdf`
-    );
-    toast.push("success", "Report exported as PDF.");
-    setExportingPdf(false);
   };
 
   return (
@@ -618,8 +770,7 @@ export default function ReportsPage() {
           >
             <option value="summary">Summary</option>
             <option value="byHouse">By House</option>
-            <option value="byTenant">By Tenant</option>
-            <option value="tenantDetail">Individual Tenant</option>
+            <option value="tenantDetail">By Tenant</option>
           </select>
         </label>
         {reportType === "tenantDetail" && (
@@ -641,65 +792,69 @@ export default function ReportsPage() {
             </select>
           </label>
         )}
-        <label className="text-sm text-slate-300">
-          Range Type
-          <select
-            className="input-base ml-3 rounded-md px-3 py-2 text-sm"
-            value={rangeMode}
-            onChange={(event) => setRangeMode(event.target.value as typeof rangeMode)}
-          >
-            <option value="month">Month</option>
-            <option value="year">Year</option>
-            <option value="custom">Custom</option>
-          </select>
-        </label>
-
-        {rangeMode === "month" && (
-          <label className="text-sm text-slate-300">
-            Month
-            <input
-              type="month"
-              className="input-base ml-3 rounded-md px-3 py-2 text-sm"
-              value={month}
-              onChange={(event) => setMonth(event.target.value)}
-            />
-          </label>
-        )}
-
-        {rangeMode === "year" && (
-          <label className="text-sm text-slate-300">
-            Year
-            <input
-              type="number"
-              min="2000"
-              max="2100"
-              className="input-base ml-3 w-28 rounded-md px-3 py-2 text-sm"
-              value={year}
-              onChange={(event) => setYear(event.target.value)}
-            />
-          </label>
-        )}
-
-        {rangeMode === "custom" && (
+        {reportType !== "tenantDetail" && (
           <>
             <label className="text-sm text-slate-300">
-              From
-              <input
-                type="date"
+              Range Type
+              <select
                 className="input-base ml-3 rounded-md px-3 py-2 text-sm"
-                value={rangeStart}
-                onChange={(event) => setRangeStart(event.target.value)}
-              />
+                value={rangeMode}
+                onChange={(event) => setRangeMode(event.target.value as typeof rangeMode)}
+              >
+                <option value="month">Month</option>
+                <option value="year">Year</option>
+                <option value="custom">Custom</option>
+              </select>
             </label>
-            <label className="text-sm text-slate-300">
-              To
-              <input
-                type="date"
-                className="input-base ml-3 rounded-md px-3 py-2 text-sm"
-                value={rangeEnd}
-                onChange={(event) => setRangeEnd(event.target.value)}
-              />
-            </label>
+
+            {rangeMode === "month" && (
+              <label className="text-sm text-slate-300">
+                Month
+                <input
+                  type="month"
+                  className="input-base ml-3 rounded-md px-3 py-2 text-sm"
+                  value={month}
+                  onChange={(event) => setMonth(event.target.value)}
+                />
+              </label>
+            )}
+
+            {rangeMode === "year" && (
+              <label className="text-sm text-slate-300">
+                Year
+                <input
+                  type="number"
+                  min="2000"
+                  max="2100"
+                  className="input-base ml-3 w-28 rounded-md px-3 py-2 text-sm"
+                  value={year}
+                  onChange={(event) => setYear(event.target.value)}
+                />
+              </label>
+            )}
+
+            {rangeMode === "custom" && (
+              <>
+                <label className="text-sm text-slate-300">
+                  From
+                  <input
+                    type="date"
+                    className="input-base ml-3 rounded-md px-3 py-2 text-sm"
+                    value={rangeStart}
+                    onChange={(event) => setRangeStart(event.target.value)}
+                  />
+                </label>
+                <label className="text-sm text-slate-300">
+                  To
+                  <input
+                    type="date"
+                    className="input-base ml-3 rounded-md px-3 py-2 text-sm"
+                    value={rangeEnd}
+                    onChange={(event) => setRangeEnd(event.target.value)}
+                  />
+                </label>
+              </>
+            )}
           </>
         )}
         <button
@@ -724,22 +879,24 @@ export default function ReportsPage() {
         </button>
       </div>
 
-      <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
-        {summary.rows.map((row) => (
-          <div
-            key={row.metric}
-            className="rounded-2xl border p-6"
-            style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
-          >
-            <div className="text-sm text-slate-500">
-              {row.metric}
+      {reportType !== "tenantDetail" && (
+        <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
+          {summary.rows.map((row) => (
+            <div
+              key={row.metric}
+              className="rounded-2xl border p-6"
+              style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
+            >
+              <div className="text-sm text-slate-500">
+                {row.metric}
+              </div>
+              <div className="amount mt-3 text-2xl font-semibold text-slate-100">
+                {loading ? "Loading..." : row.value}
+              </div>
             </div>
-            <div className="amount mt-3 text-2xl font-semibold text-slate-100">
-              {loading ? "Loading..." : row.value}
-            </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
 
       {reportType === "summary" && (
         <div className="grid gap-6 xl:grid-cols-[1.6fr_1fr]">
@@ -878,49 +1035,6 @@ export default function ReportsPage() {
         </div>
       )}
 
-      {reportType === "byTenant" && (
-        <div
-          className="rounded-2xl border p-6"
-          style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
-        >
-          <div className="text-sm font-semibold text-slate-100">Collections by Tenant</div>
-          <div className="mt-4 overflow-hidden rounded-2xl border border-slate-800">
-            <table className="w-full text-left text-sm text-slate-300">
-              <thead
-                className="text-xs text-slate-500"
-                style={{ backgroundColor: "var(--surface-strong)" }}
-              >
-                <tr>
-                  <th className="px-4 py-3">Tenant</th>
-                  <th className="px-4 py-3">House</th>
-                  <th className="px-4 py-3">Total Collected</th>
-                </tr>
-              </thead>
-              <tbody>
-                {summary.tenantRows.map((row) => (
-                  <tr
-                    key={row.tenantId}
-                    className="border-t"
-                    style={{ borderColor: "var(--border)" }}
-                  >
-                    <td className="px-4 py-3 text-slate-100">{row.tenantName}</td>
-                    <td className="px-4 py-3 text-slate-400">{row.houseLabel}</td>
-                    <td className="amount px-4 py-3">{currency(row.total)}</td>
-                  </tr>
-                ))}
-                {summary.tenantRows.length === 0 && (
-                  <tr>
-                    <td className="px-4 py-4 text-slate-500" colSpan={3}>
-                      No tenant collections in range.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
       {reportType === "tenantDetail" && (
         <div
           className="rounded-2xl border p-6"
@@ -960,7 +1074,11 @@ export default function ReportsPage() {
                     Paid {currency(summary.tenantDetailTotals.paid)}
                   </div>
                   <div className="mt-1 text-xs text-slate-500">
-                    Expected {currency(summary.tenantDetailTotals.expected)} · Balance{" "}
+                    Period {summary.tenantDetailRangeStartKey} to{" "}
+                    {summary.tenantDetailRangeEndKey}
+                  </div>
+                  <div className="mt-1 text-xs text-slate-500">
+                    Arrears{" "}
                     {currency(summary.tenantDetailTotals.balance)}
                   </div>
                 </div>
@@ -974,23 +1092,15 @@ export default function ReportsPage() {
                   >
                     <tr>
                       <th className="px-4 py-3">Month</th>
-                      <th className="px-4 py-3">Move-in Date</th>
-                      <th className="px-4 py-3">Expected Rent</th>
                       <th className="px-4 py-3">Paid</th>
-                      <th className="px-4 py-3">Balance</th>
-                      <th className="px-4 py-3">Payment Dates</th>
+                      <th className="px-4 py-3">Arrears</th>
+                      <th className="px-4 py-3">How Paid</th>
                     </tr>
                   </thead>
                   <tbody>
                     {summary.tenantDetailRows.map((row) => (
                       <tr key={row.month} className="border-t" style={{ borderColor: "var(--border)" }}>
                         <td className="px-4 py-3 text-slate-100">{row.month}</td>
-                        <td className="px-4 py-3 text-slate-400">
-                          {summary.selectedTenant?.moveInDate?.slice(0, 10) ?? "--"}
-                        </td>
-                        <td className="amount px-4 py-3">
-                          {currency(row.expected)}
-                        </td>
                         <td className="amount px-4 py-3">
                           {currency(row.paid)}
                         </td>
@@ -1012,6 +1122,13 @@ export default function ReportsPage() {
                         </td>
                       </tr>
                     ))}
+                    {summary.tenantDetailRows.length === 0 && (
+                      <tr>
+                        <td className="px-4 py-4 text-slate-500" colSpan={4}>
+                          No months available for this tenant yet.
+                        </td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -1020,44 +1137,46 @@ export default function ReportsPage() {
         </div>
       )}
 
-      <div
-        className="rounded-2xl border p-6"
-        style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
-      >
-        <div className="text-sm font-semibold text-slate-100">Recent Payments</div>
-        <div className="mt-4 space-y-3 text-sm text-slate-300">
-          {payments
-            .filter((payment) => {
-              const date = parseISO(payment.paymentDate);
-              return date >= summary.range.start && date <= summary.range.end;
-            })
-            .slice(0, 6)
-            .map((payment) => {
-              const tenantLabel =
-                typeof payment.tenant === "string"
-                  ? tenantLookup.get(payment.tenant)?.fullName ?? payment.tenant
-                  : payment.tenant?.fullName ?? "Tenant";
-              return (
-                <div
-                  key={payment.$id}
-                  className="rounded-xl border px-4 py-3"
-                  style={{ backgroundColor: "var(--surface-strong)", borderColor: "var(--border)" }}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="font-semibold">{tenantLabel}</span>
-                    <span className="amount">{currency(payment.amount)}</span>
+      {reportType !== "tenantDetail" && (
+        <div
+          className="rounded-2xl border p-6"
+          style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
+        >
+          <div className="text-sm font-semibold text-slate-100">Recent Payments</div>
+          <div className="mt-4 space-y-3 text-sm text-slate-300">
+            {payments
+              .filter((payment) => {
+                const key = dateKey(payment.paymentDate);
+                return key >= summary.rangeStartKey && key <= summary.rangeEndKey;
+              })
+              .slice(0, 6)
+              .map((payment) => {
+                const tenantLabel =
+                  typeof payment.tenant === "string"
+                    ? tenantLookup.get(payment.tenant)?.fullName ?? payment.tenant
+                    : payment.tenant?.fullName ?? "Tenant";
+                return (
+                  <div
+                    key={payment.$id}
+                    className="rounded-xl border px-4 py-3"
+                    style={{ backgroundColor: "var(--surface-strong)", borderColor: "var(--border)" }}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold">{tenantLabel}</span>
+                      <span className="amount">{currency(payment.amount)}</span>
+                    </div>
+                    <div className="mt-1 text-xs text-slate-500">
+                      {format(parseISO(payment.paymentDate), "yyyy-MM-dd")} - {payment.method}
+                    </div>
                   </div>
-                  <div className="mt-1 text-xs text-slate-500">
-                    {format(parseISO(payment.paymentDate), "yyyy-MM-dd")} - {payment.method}
-                  </div>
-                </div>
-              );
-            })}
-          {payments.length === 0 && (
-            <div className="text-sm text-slate-500">No payments recorded.</div>
-          )}
+                );
+              })}
+            {payments.length === 0 && (
+              <div className="text-sm text-slate-500">No payments recorded.</div>
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </section>
   );
 }

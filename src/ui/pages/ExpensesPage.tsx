@@ -3,7 +3,7 @@ import { ID, Query } from "appwrite";
 import ExpenseForm from "../expenses/ExpenseForm";
 import ExpenseList from "../expenses/ExpenseList";
 import Modal from "../Modal";
-import { databases, rcmsDatabaseId } from "../../lib/appwrite";
+import { databases, listAllDocuments, rcmsDatabaseId } from "../../lib/appwrite";
 import { COLLECTIONS } from "../../lib/schema";
 import type { Expense, ExpenseForm as ExpenseFormValues, House } from "../../lib/schema";
 import { logAudit } from "../../lib/audit";
@@ -11,13 +11,15 @@ import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../ToastContext";
 
 export default function ExpensesPage() {
-  const { user } = useAuth();
+  const { user, permissions } = useAuth();
+  const canRecordExpenses = permissions.canRecordExpenses;
   const toast = useToast();
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [houses, setHouses] = useState<House[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
 
   const sortedExpenses = useMemo(
     () =>
@@ -30,15 +32,19 @@ export default function ExpensesPage() {
     setError(null);
     try {
       const [expenseResult, houseResult] = await Promise.all([
-        databases.listDocuments(rcmsDatabaseId, COLLECTIONS.expenses, [
-          Query.orderDesc("expenseDate"),
-        ]),
-        databases.listDocuments(rcmsDatabaseId, COLLECTIONS.houses, [
-          Query.orderAsc("code"),
-        ]),
+        listAllDocuments<Expense>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.expenses,
+          queries: [Query.orderDesc("expenseDate")],
+        }),
+        listAllDocuments<House>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.houses,
+          queries: [Query.orderAsc("code")],
+        }),
       ]);
-      setExpenses(expenseResult.documents as unknown as Expense[]);
-      setHouses(houseResult.documents as unknown as House[]);
+      setExpenses(expenseResult);
+      setHouses(houseResult);
     } catch (err) {
       setError("Failed to load expenses.");
     } finally {
@@ -50,40 +56,90 @@ export default function ExpensesPage() {
     loadData();
   }, []);
 
-  const handleCreate = async (values: ExpenseFormValues) => {
+  const normalizePayload = (values: ExpenseFormValues) => ({
+    ...values,
+    house: values.category === "maintenance" ? values.house || null : null,
+    maintenanceType:
+      values.category === "maintenance" ? values.maintenanceType || null : null,
+    notes: values.notes?.trim() ? values.notes.trim() : null,
+  });
+
+  const handleSave = async (values: ExpenseFormValues) => {
+    if (!canRecordExpenses) {
+      toast.push("warning", "You do not have permission to record expenses.");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
-      const payload = {
-        ...values,
-        house: values.category === "maintenance" ? values.house : null,
-        maintenanceType:
-          values.category === "maintenance" ? values.maintenanceType : null,
-      };
-      const created = await databases.createDocument(
-        rcmsDatabaseId,
-        COLLECTIONS.expenses,
-        ID.unique(),
-        payload
-      );
-      setExpenses((prev) => [created as unknown as Expense, ...prev]);
-      toast.push("success", "Expense recorded.");
-      setModalOpen(false);
-      if (user) {
-        void logAudit({
-          entityType: "expense",
-          entityId: (created as unknown as Expense).$id,
-          action: "create",
-          actorId: user.id,
-          details: payload,
-        });
+      const payload = normalizePayload(values);
+      if (editingExpense) {
+        const updated = await databases.updateDocument(
+          rcmsDatabaseId,
+          COLLECTIONS.expenses,
+          editingExpense.$id,
+          payload
+        );
+        setExpenses((prev) =>
+          prev.map((expense) =>
+            expense.$id === editingExpense.$id ? (updated as unknown as Expense) : expense
+          )
+        );
+        toast.push("success", "Expense updated.");
+        if (user) {
+          void logAudit({
+            entityType: "expense",
+            entityId: editingExpense.$id,
+            action: "update",
+            actorId: user.id,
+            details: payload,
+          });
+        }
+      } else {
+        const created = await databases.createDocument(
+          rcmsDatabaseId,
+          COLLECTIONS.expenses,
+          ID.unique(),
+          payload
+        );
+        setExpenses((prev) => [created as unknown as Expense, ...prev]);
+        toast.push("success", "Expense recorded.");
+        if (user) {
+          void logAudit({
+            entityType: "expense",
+            entityId: (created as unknown as Expense).$id,
+            action: "create",
+            actorId: user.id,
+            details: payload,
+          });
+        }
       }
+      setModalOpen(false);
+      setEditingExpense(null);
+      await loadData();
     } catch (err) {
-      setError("Failed to record expense.");
-      toast.push("error", "Failed to record expense.");
+      const message = editingExpense
+        ? "Failed to update expense."
+        : "Failed to record expense.";
+      setError(message);
+      toast.push("error", message);
     } finally {
       setLoading(false);
     }
+  };
+
+  const openCreateModal = () => {
+    setEditingExpense(null);
+    setModalOpen(true);
+  };
+
+  const openEditModal = (expense: Expense) => {
+    if (!canRecordExpenses) {
+      toast.push("warning", "You do not have permission to edit expenses.");
+      return;
+    }
+    setEditingExpense(expense);
+    setModalOpen(true);
   };
 
   return (
@@ -98,12 +154,14 @@ export default function ExpensesPage() {
           Log general and maintenance expenses.
         </p>
         </div>
-        <button
-          onClick={() => setModalOpen(true)}
-          className="btn-primary text-sm"
-        >
-          Record Expense
-        </button>
+        {canRecordExpenses && (
+          <button
+            onClick={openCreateModal}
+            className="btn-primary text-sm"
+          >
+            Record Expense
+          </button>
+        )}
       </header>
 
       {error && (
@@ -131,17 +189,49 @@ export default function ExpensesPage() {
             </button>
           </div>
 
-          <ExpenseList expenses={sortedExpenses} houses={houses} />
+          <ExpenseList
+            expenses={sortedExpenses}
+            houses={houses}
+            canEdit={canRecordExpenses}
+            onEdit={openEditModal}
+          />
         </div>
       </div>
 
       <Modal
-        open={modalOpen}
-        title="Record Expense"
-        description="Choose general or maintenance category."
-        onClose={() => setModalOpen(false)}
+        open={canRecordExpenses && modalOpen}
+        title={editingExpense ? "Edit Expense" : "Record Expense"}
+        description={
+          editingExpense
+            ? "Update this expense entry."
+            : "Choose general or maintenance category."
+        }
+        onClose={() => {
+          setModalOpen(false);
+          setEditingExpense(null);
+        }}
       >
-        <ExpenseForm houses={houses} onSubmit={handleCreate} disabled={loading} loading={loading} />
+        <ExpenseForm
+          houses={houses}
+          onSubmit={handleSave}
+          disabled={loading}
+          loading={loading}
+          initialValues={
+            editingExpense
+              ? {
+                  category: editingExpense.category,
+                  description: editingExpense.description,
+                  amount: editingExpense.amount,
+                  source: editingExpense.source,
+                  expenseDate: editingExpense.expenseDate?.slice(0, 10),
+                  house: editingExpense.house ?? "",
+                  maintenanceType: editingExpense.maintenanceType ?? "",
+                  notes: editingExpense.notes ?? "",
+                }
+              : null
+          }
+          submitLabel={editingExpense ? "Save Changes" : "Record Expense"}
+        />
       </Modal>
     </section>
   );

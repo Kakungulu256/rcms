@@ -5,8 +5,9 @@ type Props = {
   houses: House[];
   selectedId?: string | null;
   onSelect: (tenant: Tenant) => void;
-  onEdit: (tenant: Tenant) => void;
+  onEdit?: (tenant: Tenant) => void;
   onView: (tenant: Tenant) => void;
+  canManage: boolean;
 };
 
 function resolveHouseLabel(tenant: Tenant, houses: House[]) {
@@ -24,6 +25,7 @@ export default function TenantList({
   onSelect,
   onEdit,
   onView,
+  canManage,
 }: Props) {
   return (
     <div
@@ -77,12 +79,14 @@ export default function TenantList({
                     >
                       Payment Status
                     </button>
-                    <button
-                      onClick={() => onEdit(tenant)}
-                      className="btn-secondary text-xs"
-                    >
-                      Edit
-                    </button>
+                    {canManage && onEdit && (
+                      <button
+                        onClick={() => onEdit(tenant)}
+                        className="btn-secondary text-xs"
+                      >
+                        Edit
+                      </button>
+                    )}
                   </div>
                 </td>
               </tr>

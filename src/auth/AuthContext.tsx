@@ -1,14 +1,19 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { account } from "../lib/appwrite";
+import { account, teams } from "../lib/appwrite";
+import { getRolePermissions, resolveRoleFromTeams, type AppRole, type RolePermissions } from "./rbac";
 
 type AuthUser = {
   id: string;
   name?: string;
   email?: string;
+  role: AppRole;
+  teamIds: string[];
 };
 
 type AuthState = {
   user: AuthUser | null;
+  role: AppRole | null;
+  permissions: RolePermissions;
   loading: boolean;
   error: string | null;
   signIn: (email: string, password: string) => Promise<boolean>;
@@ -17,11 +22,17 @@ type AuthState = {
 
 const AuthContext = createContext<AuthState | null>(null);
 
-function mapUser(user: { $id: string; name?: string; email?: string }): AuthUser {
+function mapUser(
+  user: { $id: string; name?: string; email?: string },
+  role: AppRole,
+  teamIds: string[]
+): AuthUser {
   return {
     id: user.$id,
     name: user.name,
     email: user.email,
+    role,
+    teamIds,
   };
 }
 
@@ -34,7 +45,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setLoading(true);
     try {
       const result = await account.get();
-      setUser(mapUser(result));
+      let role: AppRole = "viewer";
+      let teamIds: string[] = [];
+      try {
+        const teamResult = await teams.list();
+        const teamList = teamResult.teams ?? [];
+        teamIds = teamList.map((team) => team.$id);
+        role = resolveRoleFromTeams(teamList);
+      } catch {
+        role = "viewer";
+      }
+      setUser(mapUser(result, role, teamIds));
       setError(null);
     } catch (err) {
       setUser(null);
@@ -73,15 +94,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const role = user?.role ?? null;
+  const permissions = getRolePermissions(role);
+
   const value = useMemo(
     () => ({
       user,
+      role,
+      permissions,
       loading,
       error,
       signIn,
       signOut,
     }),
-    [user, loading, error, signIn, signOut]
+    [user, role, permissions, loading, error, signIn, signOut]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

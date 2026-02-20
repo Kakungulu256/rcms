@@ -27,13 +27,18 @@ function monthKey(date: Date) {
 
 export function buildPaidByMonth(payments: Payment[]): Record<string, number> {
   const totals: Record<string, number> = {};
+  const seenReversalTargets = new Set<string>();
   payments.forEach((payment) => {
-    if (payment.isReversal) return;
+    if (payment.isReversal && payment.reversedPaymentId) {
+      if (seenReversalTargets.has(payment.reversedPaymentId)) return;
+      seenReversalTargets.add(payment.reversedPaymentId);
+    }
     const allocation = decodeJson<PaymentAllocation>(payment.allocationJson);
     if (!allocation) return;
+    const multiplier = payment.isReversal ? -1 : 1;
     Object.entries(allocation).forEach(([month, amount]) => {
-      const value = Number(amount);
-      if (value <= 0) return;
+      const value = Number(amount) * multiplier;
+      if (!Number.isFinite(value) || value === 0) return;
       totals[month] = (totals[month] ?? 0) + value;
     });
   });
@@ -44,17 +49,24 @@ export function buildPaymentSummaryByMonth(
   payments: Payment[]
 ): Record<string, MonthPaymentSummary[]> {
   const summary: Record<string, MonthPaymentSummary[]> = {};
+  const seenReversalTargets = new Set<string>();
   payments.forEach((payment) => {
-    if (payment.isReversal) return;
+    if (payment.isReversal && payment.reversedPaymentId) {
+      if (seenReversalTargets.has(payment.reversedPaymentId)) return;
+      seenReversalTargets.add(payment.reversedPaymentId);
+    }
     const allocation = decodeJson<PaymentAllocation>(payment.allocationJson);
     if (!allocation) return;
     const paymentDate = payment.paymentDate?.slice(0, 10) ?? "";
+    const multiplier = payment.isReversal ? -1 : 1;
     Object.entries(allocation).forEach(([month, amount]) => {
+      const value = Number(amount) * multiplier;
+      if (!Number.isFinite(value) || value === 0) return;
       if (!summary[month]) summary[month] = [];
       summary[month].push({
         month,
         paymentDate,
-        amount: Number(amount),
+        amount: value,
       });
     });
   });

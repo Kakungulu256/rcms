@@ -10,6 +10,7 @@ import ReportsPage from "./ui/pages/ReportsPage";
 import SettingsPage from "./ui/pages/SettingsPage";
 import TenantsPage from "./ui/pages/TenantsPage";
 import RequireAuth from "./auth/RequireAuth";
+import RequireRole from "./auth/RequireRole";
 
 export const router = createBrowserRouter([
   { path: "/login", element: <LoginPage /> },
@@ -26,9 +27,23 @@ export const router = createBrowserRouter([
       { path: "tenants", element: <TenantsPage /> },
       { path: "payments", element: <PaymentsPage /> },
       { path: "expenses", element: <ExpensesPage /> },
-      { path: "migration", element: <MigrationPage /> },
+      {
+        path: "migration",
+        element: (
+          <RequireRole allow={["admin", "clerk"]}>
+            <MigrationPage />
+          </RequireRole>
+        ),
+      },
       { path: "reports", element: <ReportsPage /> },
-      { path: "settings", element: <SettingsPage /> },
+      {
+        path: "settings",
+        element: (
+          <RequireRole allow={["admin"]}>
+            <SettingsPage />
+          </RequireRole>
+        ),
+      },
       { path: "*", element: <Navigate to="/" replace /> },
     ],
   },

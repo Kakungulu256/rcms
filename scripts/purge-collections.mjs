@@ -1,5 +1,9 @@
-import "dotenv/config";
+import path from "node:path";
+import dotenv from "dotenv";
 import { Client, Databases, Query } from "node-appwrite";
+
+dotenv.config();
+dotenv.config({ path: path.resolve(process.cwd(), "..", ".env") });
 
 const required = [
   "APPWRITE_ENDPOINT",
@@ -22,11 +26,12 @@ const client = new Client()
 const databases = new Databases(client);
 const databaseId = process.env.APPWRITE_DATABASE_ID;
 
+// Purge children first to satisfy Restrict relationship constraints.
 const defaultCollections = [
-  "houses",
-  "tenants",
   "payments",
   "expenses",
+  "tenants",
+  "houses",
   "audit_logs",
 ];
 
@@ -38,23 +43,18 @@ const dryRun = String(process.env.RCMS_PURGE_DRY_RUN || "").toLowerCase() === "t
 
 async function deleteAllDocuments(collectionId) {
   let totalDeleted = 0;
-  let cursor = null;
 
   while (true) {
-    const queries = [Query.limit(100)];
-    if (cursor) {
-      queries.push(Query.cursorAfter(cursor));
+    const list = await databases.listDocuments(databaseId, collectionId, [Query.limit(100)]);
+    if (list.documents.length === 0) break;
+    if (dryRun) {
+      totalDeleted += list.total;
+      break;
     }
 
-    const list = await databases.listDocuments(databaseId, collectionId, queries);
-    if (list.documents.length === 0) break;
-
     for (const doc of list.documents) {
-      if (!dryRun) {
-        await databases.deleteDocument(databaseId, collectionId, doc.$id);
-      }
+      await databases.deleteDocument(databaseId, collectionId, doc.$id);
       totalDeleted += 1;
-      cursor = doc.$id;
     }
   }
 

@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Query } from "appwrite";
-import { endOfMonth, format, startOfMonth } from "date-fns";
-import { databases, rcmsDatabaseId } from "../../lib/appwrite";
-import { COLLECTIONS } from "../../lib/schema";
-import { buildPaidByMonth } from "../payments/allocation";
-import type { Expense, House, Payment, Tenant } from "../../lib/schema";
+import { format } from "date-fns";
+import { listAllDocuments, rcmsDatabaseId } from "../../lib/appwrite";
+import { COLLECTIONS, decodeJson } from "../../lib/schema";
+import { buildMonthSeries, buildPaidByMonth } from "../payments/allocation";
+import { buildRentByMonth } from "../../lib/rentHistory";
+import type { Expense, House, Payment, PaymentAllocation, Tenant } from "../../lib/schema";
 
 type SummaryCard = {
   label: string;
@@ -30,23 +31,31 @@ export default function DashboardPage() {
     try {
       const [houseResult, tenantResult, paymentResult, expenseResult] =
         await Promise.all([
-          databases.listDocuments(rcmsDatabaseId, COLLECTIONS.houses, [
-            Query.orderAsc("code"),
-          ]),
-          databases.listDocuments(rcmsDatabaseId, COLLECTIONS.tenants, [
-            Query.orderAsc("fullName"),
-          ]),
-          databases.listDocuments(rcmsDatabaseId, COLLECTIONS.payments, [
-            Query.orderDesc("paymentDate"),
-          ]),
-          databases.listDocuments(rcmsDatabaseId, COLLECTIONS.expenses, [
-            Query.orderDesc("expenseDate"),
-          ]),
+          listAllDocuments<House>({
+            databaseId: rcmsDatabaseId,
+            collectionId: COLLECTIONS.houses,
+            queries: [Query.orderAsc("code")],
+          }),
+          listAllDocuments<Tenant>({
+            databaseId: rcmsDatabaseId,
+            collectionId: COLLECTIONS.tenants,
+            queries: [Query.orderAsc("fullName")],
+          }),
+          listAllDocuments<Payment>({
+            databaseId: rcmsDatabaseId,
+            collectionId: COLLECTIONS.payments,
+            queries: [Query.orderDesc("paymentDate")],
+          }),
+          listAllDocuments<Expense>({
+            databaseId: rcmsDatabaseId,
+            collectionId: COLLECTIONS.expenses,
+            queries: [Query.orderDesc("expenseDate")],
+          }),
         ]);
-      setHouses(houseResult.documents as unknown as House[]);
-      setTenants(tenantResult.documents as unknown as Tenant[]);
-      setPayments(paymentResult.documents as unknown as Payment[]);
-      setExpenses(expenseResult.documents as unknown as Expense[]);
+      setHouses(houseResult);
+      setTenants(tenantResult);
+      setPayments(paymentResult);
+      setExpenses(expenseResult);
     } catch (err) {
       setError("Failed to load dashboard data.");
     } finally {
@@ -61,66 +70,95 @@ export default function DashboardPage() {
   const summary = useMemo(() => {
     const today = new Date();
     const monthKey = format(today, "yyyy-MM");
+    const normalizedPayments = (() => {
+      const seenReversalTargets = new Set<string>();
+      return payments.filter((payment) => {
+        if (!payment.isReversal || !payment.reversedPaymentId) return true;
+        if (seenReversalTargets.has(payment.reversedPaymentId)) return false;
+        seenReversalTargets.add(payment.reversedPaymentId);
+        return true;
+      });
+    })();
     const houseLookup = new Map(houses.map((house) => [house.$id, house]));
+    const activeCurrentTenants = tenants.filter(
+      (tenant) => tenant.status === "active" && !tenant.moveOutDate
+    );
+    const occupiedHouseIds = new Set(
+      activeCurrentTenants
+        .map((tenant) =>
+          typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? ""
+        )
+        .filter(Boolean)
+    );
+    const inactiveHouses = houses.filter((house) => house.status === "inactive").length;
+    const occupied = houses.filter((house) => occupiedHouseIds.has(house.$id)).length;
+    const vacant = houses.filter(
+      (house) => house.status !== "inactive" && !occupiedHouseIds.has(house.$id)
+    ).length;
 
-    const occupied = houses.filter((house) => house.status === "occupied").length;
-    const vacant = houses.filter((house) => house.status === "vacant").length;
-
-    const expectedRent = tenants.reduce((total, tenant) => {
-      if (tenant.status !== "active") return total;
+    const expectedRent = activeCurrentTenants.reduce((total, tenant) => {
       const houseId =
         typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
       const rent = tenant.rentOverride ?? houseLookup.get(houseId)?.monthlyRent ?? 0;
       return total + rent;
     }, 0);
 
-    const paidByMonth = buildPaidByMonth(payments);
-    const paidThisMonth = paidByMonth[monthKey] ?? 0;
-    const paidToDate = Object.values(paidByMonth).reduce((sum, value) => sum + value, 0);
-
-    const monthsSinceMoveIn = tenants.map((tenant) => {
-      const moveIn = new Date(tenant.moveInDate);
-      const endDate = tenant.moveOutDate ? new Date(tenant.moveOutDate) : today;
-      const start = startOfMonth(moveIn);
-      const end = startOfMonth(endDate);
-      const months =
-        (end.getFullYear() - start.getFullYear()) * 12 +
-        (end.getMonth() - start.getMonth()) +
-        1;
-      return { tenant, months: Math.max(months, 0) };
-    });
-
-    const expectedToDate = monthsSinceMoveIn.reduce((total, item) => {
-      if (item.tenant.status !== "active") return total;
-      const houseId =
-        typeof item.tenant.house === "string"
-          ? item.tenant.house
-          : item.tenant.house?.$id ?? "";
-      const rent =
-        item.tenant.rentOverride ?? houseLookup.get(houseId)?.monthlyRent ?? 0;
-      return total + rent * item.months;
+    const paidThisMonth = normalizedPayments.reduce((sum, payment) => {
+      const allocation = decodeJson<PaymentAllocation>(payment.allocationJson);
+      const sign = payment.isReversal ? -1 : 1;
+      if (!allocation) {
+        return payment.paymentDate?.slice(0, 7) === monthKey
+          ? sum + Number(payment.amount)
+          : sum;
+      }
+      return sum + (Number(allocation[monthKey] ?? 0) * sign);
     }, 0);
 
-    const arrears = Math.max(expectedToDate - paidToDate, 0);
+    const arrears = activeCurrentTenants.reduce((sum, tenant) => {
+      const houseId =
+        typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
+      const house = houseLookup.get(houseId);
+      const tenantPayments = payments.filter((payment) => {
+        const tenantId =
+          typeof payment.tenant === "string" ? payment.tenant : payment.tenant?.$id ?? "";
+        return tenantId === tenant.$id;
+      });
+      const months = buildMonthSeries(tenant.moveInDate, today);
+      const paidByMonth = buildPaidByMonth(tenantPayments);
+      const rentByMonth = buildRentByMonth({
+        months,
+        tenantHistoryJson: tenant.rentHistoryJson ?? null,
+        houseHistoryJson: house?.rentHistoryJson ?? null,
+        fallbackRent: tenant.rentOverride ?? house?.monthlyRent ?? 0,
+      });
+      const expected = months.reduce((acc, month) => acc + (rentByMonth[month] ?? 0), 0);
+      const paid = months.reduce((acc, month) => acc + (paidByMonth[month] ?? 0), 0);
+      return sum + Math.max(expected - paid, 0);
+    }, 0);
 
-    const monthStart = startOfMonth(today);
-    const monthEnd = endOfMonth(today);
-    const expensesThisMonth = expenses.filter((expense) => {
-      const date = new Date(expense.expenseDate);
-      return date >= monthStart && date <= monthEnd;
-    });
+    const expensesThisMonth = expenses.filter(
+      (expense) => expense.expenseDate?.slice(0, 7) === monthKey
+    );
     const generalExpenses = expensesThisMonth
       .filter((expense) => expense.category === "general")
       .reduce((sum, expense) => sum + expense.amount, 0);
     const maintenanceExpenses = expensesThisMonth
       .filter((expense) => expense.category === "maintenance")
       .reduce((sum, expense) => sum + expense.amount, 0);
+    const monthExpenseCount = expensesThisMonth.length;
+    const monthPaymentCount = normalizedPayments.filter((payment) => {
+      const allocation = decodeJson<PaymentAllocation>(payment.allocationJson);
+      if (allocation) {
+        return Number(allocation[monthKey] ?? 0) !== 0;
+      }
+      return payment.paymentDate?.slice(0, 7) === monthKey;
+    }).length;
 
     const cards: SummaryCard[] = [
       {
         label: "Occupancy",
         value: `${occupied} occupied / ${vacant} vacant`,
-        helper: `${houses.length} total houses`,
+        helper: `${houses.length} total houses (${inactiveHouses} inactive)`,
       },
       {
         label: "Rent Expected",
@@ -130,7 +168,7 @@ export default function DashboardPage() {
       {
         label: "Rent Collected",
         value: currency(paidThisMonth),
-        helper: `Collected for ${monthKey}`,
+        helper: `Collected for ${monthKey} (${monthPaymentCount} payment records)`,
       },
       {
         label: "Outstanding Arrears",
@@ -140,7 +178,7 @@ export default function DashboardPage() {
       {
         label: "General Expenses",
         value: currency(generalExpenses),
-        helper: `This month (${monthKey})`,
+        helper: `This month (${monthKey}) - ${monthExpenseCount} expense records`,
       },
       {
         label: "Maintenance Expenses",

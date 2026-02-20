@@ -3,6 +3,8 @@ import type { Expense, House } from "../../lib/schema";
 type Props = {
   expenses: Expense[];
   houses: House[];
+  canEdit?: boolean;
+  onEdit?: (expense: Expense) => void;
 };
 
 function resolveHouseLabel(expense: Expense, houses: House[]) {
@@ -11,7 +13,9 @@ function resolveHouseLabel(expense: Expense, houses: House[]) {
   return match ? match.code : "--";
 }
 
-export default function ExpenseList({ expenses, houses }: Props) {
+export default function ExpenseList({ expenses, houses, canEdit, onEdit }: Props) {
+  const columnCount = canEdit ? 6 : 5;
+
   return (
     <div
       className="overflow-hidden rounded-2xl border"
@@ -25,6 +29,7 @@ export default function ExpenseList({ expenses, houses }: Props) {
             <th className="px-5 py-4">House</th>
             <th className="px-5 py-4">Amount</th>
             <th className="px-5 py-4">Date</th>
+            {canEdit && <th className="px-5 py-4 text-right">Actions</th>}
           </tr>
         </thead>
         <tbody>
@@ -50,11 +55,22 @@ export default function ExpenseList({ expenses, houses }: Props) {
               <td className="px-5 py-4 text-slate-400">
                 {expense.expenseDate?.slice(0, 10)}
               </td>
+              {canEdit && (
+                <td className="px-5 py-4 text-right">
+                  <button
+                    type="button"
+                    onClick={() => onEdit?.(expense)}
+                    className="btn-secondary text-xs"
+                  >
+                    Edit
+                  </button>
+                </td>
+              )}
             </tr>
           ))}
           {expenses.length === 0 && (
             <tr>
-              <td className="px-5 py-6 text-slate-500" colSpan={5}>
+              <td className="px-5 py-6 text-slate-500" colSpan={columnCount}>
                 No expenses recorded yet.
               </td>
             </tr>

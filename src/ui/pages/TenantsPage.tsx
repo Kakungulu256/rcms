@@ -4,7 +4,7 @@ import TenantDetail from "../tenants/TenantDetail";
 import TenantForm from "../tenants/TenantForm";
 import TenantList from "../tenants/TenantList";
 import Modal from "../Modal";
-import { databases, rcmsDatabaseId } from "../../lib/appwrite";
+import { databases, listAllDocuments, rcmsDatabaseId } from "../../lib/appwrite";
 import { COLLECTIONS } from "../../lib/schema";
 import type {
   House,
@@ -12,11 +12,11 @@ import type {
   Tenant,
   TenantForm as TenantFormValues,
 } from "../../lib/schema";
-import { buildPaidByMonth } from "../payments/allocation";
+import { buildMonthSeries, buildPaidByMonth } from "../payments/allocation";
 import { logAudit } from "../../lib/audit";
 import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../ToastContext";
-import { appendRentHistory } from "../../lib/rentHistory";
+import { appendRentHistory, buildRentByMonth } from "../../lib/rentHistory";
 
 type PanelMode = "list" | "create" | "edit";
 
@@ -25,7 +25,8 @@ type TenantFormWithEffectiveDate = TenantFormValues & {
 };
 
 export default function TenantsPage() {
-  const { user } = useAuth();
+  const { user, permissions } = useAuth();
+  const canManageTenants = permissions.canManageTenants;
   const toast = useToast();
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [houses, setHouses] = useState<House[]>([]);
@@ -41,25 +42,8 @@ export default function TenantsPage() {
   const [moveOutFilter, setMoveOutFilter] = useState<"all" | "moved" | "current">("all");
 
   const sortedTenants = useMemo(() => {
-    const paidByTenant = new Map<string, number>();
-    const rentByTenant = new Map<string, number>();
     const houseLookup = new Map(houses.map((house) => [house.$id, house]));
-
-    tenants.forEach((tenant) => {
-      const houseId =
-        typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
-      const rent = tenant.rentOverride ?? houseLookup.get(houseId)?.monthlyRent ?? 0;
-      rentByTenant.set(tenant.$id, rent);
-
-      const tenantPayments = payments.filter((payment) => {
-        const paymentTenantId =
-          typeof payment.tenant === "string" ? payment.tenant : payment.tenant?.$id;
-        return paymentTenantId === tenant.$id;
-      });
-      const paidByMonth = buildPaidByMonth(tenantPayments);
-      const paid = Object.values(paidByMonth).reduce((sum, value) => sum + value, 0);
-      paidByTenant.set(tenant.$id, paid);
-    });
+    const today = new Date();
 
     return [...tenants]
       .filter((tenant) => {
@@ -70,21 +54,28 @@ export default function TenantsPage() {
           if (tenant.status !== "active" || tenant.moveOutDate) {
             return false;
           }
-          const rent = rentByTenant.get(tenant.$id) ?? 0;
-          const paid = paidByTenant.get(tenant.$id) ?? 0;
-          const moveIn = tenant.moveInDate ? new Date(tenant.moveInDate) : null;
-          const endDate = new Date();
-          const months =
-            moveIn
-              ? Math.max(
-                  1,
-                  (endDate.getFullYear() - moveIn.getFullYear()) * 12 +
-                    (endDate.getMonth() - moveIn.getMonth()) +
-                    1
-                )
-              : 0;
-          const expected = rent * months;
-          const hasArrears = paid < expected;
+          const houseId =
+            typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
+          const house = houseLookup.get(houseId);
+          const tenantPayments = payments.filter((payment) => {
+            const paymentTenantId =
+              typeof payment.tenant === "string" ? payment.tenant : payment.tenant?.$id;
+            return paymentTenantId === tenant.$id;
+          });
+          const months = buildMonthSeries(tenant.moveInDate, today);
+          const paidByMonth = buildPaidByMonth(tenantPayments);
+          const rentByMonth = buildRentByMonth({
+            months,
+            tenantHistoryJson: tenant.rentHistoryJson ?? null,
+            houseHistoryJson: house?.rentHistoryJson ?? null,
+            fallbackRent: tenant.rentOverride ?? house?.monthlyRent ?? 0,
+          });
+          const expected = months.reduce(
+            (sum, month) => sum + (rentByMonth[month] ?? 0),
+            0
+          );
+          const paid = months.reduce((sum, month) => sum + (paidByMonth[month] ?? 0), 0);
+          const hasArrears = paid + 0.01 < expected;
           if (arrearsFilter === "with" && !hasArrears) return false;
           if (arrearsFilter === "without" && hasArrears) return false;
         }
@@ -98,25 +89,48 @@ export default function TenantsPage() {
     setError(null);
     try {
       const [tenantResult, houseResult, paymentResult] = await Promise.all([
-        databases.listDocuments(rcmsDatabaseId, COLLECTIONS.tenants, [
-          Query.orderAsc("fullName"),
-        ]),
-        databases.listDocuments(rcmsDatabaseId, COLLECTIONS.houses, [
-          Query.orderAsc("code"),
-        ]),
-        databases.listDocuments(rcmsDatabaseId, COLLECTIONS.payments, [
-          Query.orderDesc("paymentDate"),
-        ]),
+        listAllDocuments<Tenant>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.tenants,
+          queries: [
+            Query.orderAsc("fullName"),
+          ],
+        }),
+        listAllDocuments<House>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.houses,
+          queries: [
+            Query.orderAsc("code"),
+          ],
+        }),
+        listAllDocuments<Payment>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.payments,
+          queries: [
+            Query.orderDesc("paymentDate"),
+          ],
+        }),
       ]);
-      setTenants(tenantResult.documents as unknown as Tenant[]);
-      setHouses(houseResult.documents as unknown as House[]);
-      setPayments(paymentResult.documents as unknown as Payment[]);
+      setTenants(tenantResult);
+      setHouses(houseResult);
+      setPayments(paymentResult);
     } catch (err) {
       setError("Failed to load tenants.");
     } finally {
       setLoading(false);
     }
   };
+
+  const normalizeTenantPayload = (values: TenantFormValues) => ({
+    ...values,
+    phone: values.phone?.trim() ? values.phone.trim() : null,
+    moveOutDate: values.moveOutDate?.trim() ? values.moveOutDate : null,
+    rentOverride:
+      typeof values.rentOverride === "number" && Number.isFinite(values.rentOverride)
+        ? values.rentOverride
+        : null,
+    notes: values.notes?.trim() ? values.notes.trim() : null,
+  });
 
   useEffect(() => {
     loadData();
@@ -134,20 +148,25 @@ export default function TenantsPage() {
   };
 
   const handleCreate = async (values: TenantFormWithEffectiveDate) => {
+    if (!canManageTenants) {
+      toast.push("warning", "You do not have permission to create tenants.");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
       const { rentEffectiveDate, ...rest } = values;
-      const houseId = rest.house;
+      const normalized = normalizeTenantPayload(rest);
+      const houseId = normalized.house;
       const house = houses.find((item) => item.$id === houseId);
-      const rent = rest.rentOverride ?? house?.monthlyRent ?? 0;
-      const effectiveDate = rentEffectiveDate ?? rest.moveInDate;
+      const rent = normalized.rentOverride ?? house?.monthlyRent ?? 0;
+      const effectiveDate = rentEffectiveDate?.trim() || normalized.moveInDate;
       const payload = {
-        ...rest,
+        ...normalized,
         rentHistoryJson: appendRentHistory(null, {
           effectiveDate,
           amount: rent,
-          source: rest.rentOverride != null ? "override" : "house",
+          source: normalized.rentOverride != null ? "override" : "house",
         }),
       };
       const created = await databases.createDocument(
@@ -180,30 +199,39 @@ export default function TenantsPage() {
 
   const handleUpdate = async (values: TenantFormWithEffectiveDate) => {
     if (!selected) return;
+    if (!canManageTenants) {
+      toast.push("warning", "You do not have permission to edit tenants.");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
       const { rentEffectiveDate, ...rest } = values;
-      const houseId = rest.house;
+      const normalized = normalizeTenantPayload(rest);
+      const houseId = normalized.house;
       const house = houses.find((item) => item.$id === houseId);
-      const newRent = rest.rentOverride ?? house?.monthlyRent ?? 0;
+      const selectedHouseId =
+        typeof selected.house === "string" ? selected.house : selected.house?.$id ?? "";
+      const previousHouse = houses.find((item) => item.$id === selectedHouseId);
+      const newRent = normalized.rentOverride ?? house?.monthlyRent ?? 0;
       const previousRent =
-        selected.rentOverride ?? house?.monthlyRent ?? 0;
+        selected.rentOverride ?? previousHouse?.monthlyRent ?? 0;
       const rentChanged = newRent !== previousRent;
+      const hasRentEffectiveDate = Boolean(rentEffectiveDate?.trim());
       const effectiveDate =
-        rentEffectiveDate ?? new Date().toISOString().slice(0, 10);
-      if (rentChanged && !rentEffectiveDate) {
+        rentEffectiveDate?.trim() || new Date().toISOString().slice(0, 10);
+      if (rentChanged && !hasRentEffectiveDate) {
         setError("Provide a rent effective date for the new rate.");
         setLoading(false);
         return;
       }
       const payload = {
-        ...rest,
+        ...normalized,
         rentHistoryJson: rentChanged
           ? appendRentHistory(selected.rentHistoryJson ?? null, {
               effectiveDate,
               amount: newRent,
-              source: rest.rentOverride != null ? "override" : "house",
+              source: normalized.rentOverride != null ? "override" : "house",
             })
           : selected.rentHistoryJson ?? null,
       };
@@ -261,15 +289,17 @@ export default function TenantsPage() {
               </div>
             </div>
             <div className="flex gap-2">
-              <button
-                onClick={() => {
-                  setMode("create");
-                  setModalOpen(true);
-                }}
-                className="btn-primary text-sm"
-              >
-                Add Tenant
-              </button>
+              {canManageTenants && (
+                <button
+                  onClick={() => {
+                    setMode("create");
+                    setModalOpen(true);
+                  }}
+                  className="btn-primary text-sm"
+                >
+                  Add Tenant
+                </button>
+              )}
               <button
                 onClick={loadData}
                 className="btn-secondary text-sm"
@@ -338,12 +368,17 @@ export default function TenantsPage() {
             houses={houses}
             selectedId={selected?.$id}
             onSelect={handleSelect}
-            onEdit={(tenant) => {
-              setSelected(tenant);
-              setMode("edit");
-              setModalOpen(true);
-            }}
+            onEdit={
+              canManageTenants
+                ? (tenant) => {
+                    setSelected(tenant);
+                    setMode("edit");
+                    setModalOpen(true);
+                  }
+                : undefined
+            }
             onView={handleView}
+            canManage={canManageTenants}
           />
         </div>
 
@@ -362,7 +397,7 @@ export default function TenantsPage() {
       </div>
 
       <Modal
-        open={modalOpen}
+        open={canManageTenants && modalOpen}
         title={mode === "edit" ? "Edit Tenant" : "New Tenant"}
         description={
           mode === "edit"

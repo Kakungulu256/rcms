@@ -8,6 +8,7 @@ function getEnv(name, fallback) {
 
 function parseJson(body) {
   if (!body) return null;
+  if (typeof body === "object") return body;
   try {
     return JSON.parse(body);
   } catch {
@@ -46,18 +47,51 @@ function buildMonthSeries(moveInDate, paymentDate, extraMonths = 0) {
 
 function buildPaidByMonth(payments) {
   const totals = {};
+  const seenReversalTargets = new Set();
   payments.forEach((payment) => {
+    if (payment.isReversal && payment.reversedPaymentId) {
+      if (seenReversalTargets.has(payment.reversedPaymentId)) return;
+      seenReversalTargets.add(payment.reversedPaymentId);
+    }
     if (!payment.allocationJson) return;
     try {
       const allocation = JSON.parse(payment.allocationJson);
+      const multiplier = payment.isReversal ? -1 : 1;
       Object.entries(allocation).forEach(([month, amount]) => {
-        totals[month] = (totals[month] ?? 0) + Number(amount);
+        const value = Number(amount) * multiplier;
+        if (!Number.isFinite(value) || value === 0) return;
+        totals[month] = (totals[month] ?? 0) + value;
       });
     } catch {
       // ignore malformed allocations
     }
   });
   return totals;
+}
+
+function roundMoney(value) {
+  return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+}
+
+function allocateReversal({ amount, paidByMonth }) {
+  let remaining = roundMoney(Math.max(Number(amount) || 0, 0));
+  const allocation = {};
+  const months = Object.entries(paidByMonth)
+    .filter(([, paid]) => Number(paid) > 0)
+    .map(([month]) => month)
+    .sort((a, b) => b.localeCompare(a));
+
+  months.forEach((month) => {
+    if (remaining <= 0) return;
+    const paid = roundMoney(Math.max(Number(paidByMonth[month] ?? 0), 0));
+    if (paid <= 0) return;
+    const applied = roundMoney(Math.min(paid, remaining));
+    if (applied <= 0) return;
+    allocation[month] = applied;
+    remaining = roundMoney(remaining - applied);
+  });
+
+  return { allocation, remaining };
 }
 
 function parseHistory(value) {
@@ -102,6 +136,29 @@ function allocatePayment({ amount, months, paidByMonth, rentByMonth }) {
   return { allocation, remaining };
 }
 
+async function listAllTenantPayments(databases, databaseId, tenantId) {
+  const documents = [];
+  let cursor = null;
+  const pageSize = 100;
+
+  while (true) {
+    const queries = [
+      Query.equal("tenant", [tenantId]),
+      Query.orderAsc("paymentDate"),
+      Query.limit(pageSize),
+    ];
+    if (cursor) {
+      queries.push(Query.cursorAfter(cursor));
+    }
+    const page = await databases.listDocuments(databaseId, "payments", queries);
+    documents.push(...page.documents);
+    if (page.documents.length < pageSize) break;
+    cursor = page.documents[page.documents.length - 1].$id;
+  }
+
+  return documents;
+}
+
 export default async (context) => {
   const { req, res, log, error: logError } = context;
   const body = parseJson(req.body);
@@ -142,22 +199,8 @@ export default async (context) => {
   log?.(`Project: ${projectId}`);
   log?.(`Database: ${databaseId}`);
 
-  const client = new Client().setEndpoint(endpoint).setProject(projectId);
-  if (apiKey) {
-    client.setKey(apiKey);
-    log?.("Using function API key credentials.");
-  } else {
-    return res.json(
-      {
-        ok: false,
-        error: "Missing credentials. Provide RCMS_APPWRITE_API_KEY.",
-      },
-      500
-    );
-  }
-  const databases = new Databases(client);
-
   const {
+    jwt,
     tenantId,
     amount,
     method,
@@ -167,26 +210,91 @@ export default async (context) => {
     reversePaymentId,
   } = body;
 
+  const client = new Client().setEndpoint(endpoint).setProject(projectId);
+  if (jwt) {
+    client.setJWT(jwt);
+    log?.("Using caller JWT credentials.");
+  } else if (apiKey) {
+    client.setKey(apiKey);
+    log?.("Using function API key credentials.");
+  } else {
+    return res.json(
+      {
+        ok: false,
+        error: "Missing credentials. Provide JWT or RCMS_APPWRITE_API_KEY.",
+      },
+      500
+    );
+  }
+  const databases = new Databases(client);
+
   if (reversePaymentId) {
     try {
       log?.(`Reversing payment ${reversePaymentId}`);
       log?.("Fetching original payment...");
       const original = await databases.getDocument(databaseId, "payments", reversePaymentId);
+      if (original.isReversal) {
+        return res.json({ ok: false, error: "Reversal entries cannot be reversed." }, 400);
+      }
+      const existingReversals = await databases.listDocuments(databaseId, "payments", [
+        Query.equal("reversedPaymentId", [original.$id]),
+        Query.limit(1),
+      ]);
+      if (existingReversals.total > 0) {
+        return res.json(
+          { ok: false, error: "This payment has already been reversed." },
+          409
+        );
+      }
+      const originalTenantId =
+        typeof original.tenant === "string" ? original.tenant : original.tenant?.$id;
+      if (!originalTenantId) {
+        return res.json({ ok: false, error: "Original payment has no tenant." }, 400);
+      }
+      const tenantPayments = await listAllTenantPayments(
+        databases,
+        databaseId,
+        originalTenantId
+      );
+      const paidByMonth = buildPaidByMonth(tenantPayments);
+      const reversalAmount = Math.abs(Number(original.amount) || 0);
+      const { allocation, remaining } = allocateReversal({
+        amount: reversalAmount,
+        paidByMonth,
+      });
+      const appliedTotal = roundMoney(
+        Object.values(allocation).reduce((sum, value) => sum + Number(value || 0), 0)
+      );
+      if (appliedTotal <= 0) {
+        return res.json(
+          { ok: false, error: "No paid month balance is available to reverse." },
+          400
+        );
+      }
+      if (remaining > 0) {
+        log?.(
+          `Reversal allocation exhausted paid balances before full amount. remaining=${remaining}`
+        );
+      }
+      const recordedBy = req.headers["x-appwrite-user-id"] ?? null;
       log?.("Creating reversal document...");
       const reversal = await databases.createDocument(databaseId, "payments", ID.unique(), {
-        tenant: original.tenant,
-        amount: -Math.abs(original.amount),
+        tenant: originalTenantId,
+        amount: -appliedTotal,
         method: original.method,
         paymentDate: paymentDate ?? original.paymentDate,
         reference,
         notes: notes ?? "Reversal",
         isReversal: true,
         reversedPaymentId: original.$id,
-        allocationJson: original.allocationJson ?? null,
+        allocationJson: JSON.stringify(allocation),
+        recordedBy,
       });
       log?.("Reversal created.");
       return res.json({ ok: true, reversal });
     } catch (error) {
+      const reason =
+        error?.response?.message ?? error?.message ?? "Failed to reverse payment.";
       logError?.(`Failed to reverse payment: ${error?.message ?? "Unknown error"}`);
       if (error?.response) {
         logError?.(`Response: ${JSON.stringify(error.response)}`);
@@ -194,7 +302,7 @@ export default async (context) => {
       if (error?.code) {
         logError?.(`Code: ${error.code}`);
       }
-      return res.json({ ok: false, error: "Failed to reverse payment." }, 500);
+      return res.json({ ok: false, error: reason }, error?.code ?? 500);
     }
   }
 
@@ -214,11 +322,8 @@ export default async (context) => {
       : null;
     const rent = tenant.rentOverride ?? house?.monthlyRent ?? 0;
 
-    const paymentList = await databases.listDocuments(databaseId, "payments", [
-      Query.equal("tenant", [tenantId]),
-      Query.orderAsc("paymentDate"),
-    ]);
-    const paidByMonth = buildPaidByMonth(paymentList.documents);
+    const paymentList = await listAllTenantPayments(databases, databaseId, tenantId);
+    const paidByMonth = buildPaidByMonth(paymentList);
 
     const months = buildMonthSeries(tenant.moveInDate, paymentDate, 24);
     const rentByMonth = buildRentByMonth(
@@ -260,7 +365,9 @@ export default async (context) => {
       remaining,
     });
   } catch (error) {
+    const reason =
+      error?.response?.message ?? error?.message ?? "Failed to allocate payment.";
     logError?.(`Allocation failed: ${error?.message ?? "Unknown error"}`);
-    return res.json({ ok: false, error: "Failed to allocate payment." }, 500);
+    return res.json({ ok: false, error: reason }, error?.code ?? 500);
   }
 };

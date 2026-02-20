@@ -19,7 +19,8 @@ type HouseFormWithEffectiveDate = HouseFormValues & {
 };
 
 export default function HousesPage() {
-  const { user } = useAuth();
+  const { user, permissions } = useAuth();
+  const canManageHouses = permissions.canManageHouses;
   const toast = useToast();
   const [houses, setHouses] = useState<House[]>([]);
   const [selected, setSelected] = useState<House | null>(null);
@@ -60,6 +61,10 @@ export default function HousesPage() {
   };
 
   const handleCreate = async (values: HouseFormWithEffectiveDate) => {
+    if (!canManageHouses) {
+      toast.push("warning", "You do not have permission to create houses.");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -103,6 +108,10 @@ export default function HousesPage() {
 
   const handleUpdate = async (values: HouseFormWithEffectiveDate) => {
     if (!selected) return;
+    if (!canManageHouses) {
+      toast.push("warning", "You do not have permission to edit houses.");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -182,6 +191,10 @@ export default function HousesPage() {
   };
 
   const handleDeactivate = async (house: House) => {
+    if (!canManageHouses) {
+      toast.push("warning", "You do not have permission to deactivate houses.");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -235,15 +248,17 @@ export default function HousesPage() {
               </div>
             </div>
             <div className="flex gap-2">
-              <button
-                onClick={() => {
-                  setMode("create");
-                  setModalOpen(true);
-                }}
-                className="btn-primary text-sm"
-              >
-                Add House
-              </button>
+              {canManageHouses && (
+                <button
+                  onClick={() => {
+                    setMode("create");
+                    setModalOpen(true);
+                  }}
+                  className="btn-primary text-sm"
+                >
+                  Add House
+                </button>
+              )}
               <button
                 onClick={loadHouses}
                 className="btn-secondary text-sm"
@@ -259,16 +274,21 @@ export default function HousesPage() {
             </div>
           )}
 
-            <HouseList
+          <HouseList
             houses={sortedHouses}
             selectedId={selected?.$id}
             onSelect={handleSelect}
-            onEdit={(house) => {
-              setSelected(house);
-              setMode("edit");
-              setModalOpen(true);
-            }}
-            onDeactivate={handleDeactivate}
+            onEdit={
+              canManageHouses
+                ? (house) => {
+                    setSelected(house);
+                    setMode("edit");
+                    setModalOpen(true);
+                  }
+                : undefined
+            }
+            onDeactivate={canManageHouses ? handleDeactivate : undefined}
+            canManage={canManageHouses}
           />
         </div>
 
@@ -276,7 +296,7 @@ export default function HousesPage() {
       </div>
 
       <Modal
-        open={modalOpen}
+        open={canManageHouses && modalOpen}
         title={mode === "edit" ? "Edit House" : "New House"}
         description={
           mode === "edit"

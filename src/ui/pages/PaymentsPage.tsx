@@ -1,8 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Query } from "appwrite";
 import { format, parseISO } from "date-fns";
-import { account, databases, functions, rcmsDatabaseId } from "../../lib/appwrite";
-import { COLLECTIONS } from "../../lib/schema";
+import {
+  account,
+  functions,
+  listAllDocuments,
+  rcmsDatabaseId,
+} from "../../lib/appwrite";
+import { COLLECTIONS, decodeJson } from "../../lib/schema";
 import type {
   House,
   Payment,
@@ -28,8 +33,14 @@ type PreviewState = {
   allocationJson: string;
 };
 
+type FunctionResult =
+  | { ok: true; payment?: Payment; reversal?: Payment }
+  | { ok: false; error?: string };
+
 export default function PaymentsPage() {
-  const { user } = useAuth();
+  const { user, permissions } = useAuth();
+  const canRecordPayments = permissions.canRecordPayments;
+  const canReversePayments = permissions.canReversePayments;
   const toast = useToast();
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [houses, setHouses] = useState<House[]>([]);
@@ -55,19 +66,25 @@ export default function PaymentsPage() {
     setError(null);
     try {
       const [tenantResult, houseResult, paymentResult] = await Promise.all([
-        databases.listDocuments(rcmsDatabaseId, COLLECTIONS.tenants, [
-          Query.orderAsc("fullName"),
-        ]),
-        databases.listDocuments(rcmsDatabaseId, COLLECTIONS.houses, [
-          Query.orderAsc("code"),
-        ]),
-        databases.listDocuments(rcmsDatabaseId, COLLECTIONS.payments, [
-          Query.orderDesc("paymentDate"),
-        ]),
+        listAllDocuments<Tenant>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.tenants,
+          queries: [Query.orderAsc("fullName")],
+        }),
+        listAllDocuments<House>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.houses,
+          queries: [Query.orderAsc("code")],
+        }),
+        listAllDocuments<Payment>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.payments,
+          queries: [Query.orderDesc("paymentDate")],
+        }),
       ]);
-      setTenants(tenantResult.documents as unknown as Tenant[]);
-      setHouses(houseResult.documents as unknown as House[]);
-      setPayments(paymentResult.documents as unknown as Payment[]);
+      setTenants(tenantResult);
+      setHouses(houseResult);
+      setPayments(paymentResult);
     } catch (err) {
       setError("Failed to load payments.");
     } finally {
@@ -87,8 +104,35 @@ export default function PaymentsPage() {
     () => new Map(houses.map((house) => [house.$id, house])),
     [houses]
   );
+  const reversedPaymentIds = useMemo(() => {
+    const ids = new Set<string>();
+    payments.forEach((payment) => {
+      if (payment.isReversal && payment.reversedPaymentId) {
+        ids.add(payment.reversedPaymentId);
+      }
+    });
+    return ids;
+  }, [payments]);
+  const reversalByOriginalId = useMemo(() => {
+    const map = new Map<string, Payment>();
+    payments.forEach((payment) => {
+      if (!payment.isReversal || !payment.reversedPaymentId) return;
+      const existing = map.get(payment.reversedPaymentId);
+      if (!existing || payment.paymentDate > existing.paymentDate) {
+        map.set(payment.reversedPaymentId, payment);
+      }
+    });
+    return map;
+  }, [payments]);
+  const visiblePayments = useMemo(() => {
+    return payments.filter((payment) => !payment.isReversal);
+  }, [payments]);
 
   const handlePreview = (values: PaymentFormValues) => {
+    if (!canRecordPayments) {
+      toast.push("warning", "You do not have permission to record payments.");
+      return;
+    }
     const tenant = tenantLookup.get(values.tenant);
     if (!tenant) {
       setError("Select a tenant to preview allocation.");
@@ -129,7 +173,7 @@ export default function PaymentsPage() {
     setConfirmOpen(true);
   };
 
-  const parseExecution = (response?: string) => {
+  const parseExecutionBody = (response?: string) => {
     try {
       return response ? JSON.parse(response) : null;
     } catch {
@@ -137,34 +181,77 @@ export default function PaymentsPage() {
     }
   };
 
+  const executeAllocationFunction = async (payload: Record<string, unknown>) => {
+    if (!allocateFunctionId) {
+      throw new Error("Allocate payment function ID is missing.");
+    }
+
+    const execution = await functions.createExecution({
+      functionId: allocateFunctionId,
+      body: JSON.stringify(payload),
+      async: false,
+    });
+
+    const readBody = (value: any) =>
+      (value?.responseBody as string | undefined) ??
+      (value?.response as string | undefined) ??
+      "";
+
+    let latest: any = execution;
+    let body = readBody(latest);
+    let attempts = 0;
+
+    while (
+      attempts < 8 &&
+      (!body || latest?.status === "waiting" || latest?.status === "processing")
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      latest = await functions.getExecution({
+        functionId: allocateFunctionId,
+        executionId: latest.$id,
+      });
+      body = readBody(latest);
+      attempts += 1;
+    }
+
+    const parsed = parseExecutionBody(body) as FunctionResult | null;
+    return { parsed, latest, body };
+  };
+
   const handleConfirm = async () => {
     if (!previewState) return;
+    if (!canRecordPayments) {
+      toast.push("warning", "You do not have permission to record payments.");
+      return;
+    }
     setConfirmLoading(true);
     setLoading(true);
     setError(null);
     try {
-      if (!allocateFunctionId) {
-        throw new Error("Allocate payment function ID is missing.");
-      }
       const jwt = await account.createJWT();
-      const execution = await functions.createExecution(
-        allocateFunctionId,
-        JSON.stringify({
-          jwt: jwt.jwt,
-          tenantId: previewState.form.tenant,
-          amount: previewState.form.amount,
-          method: previewState.form.method,
-          paymentDate: previewState.form.paymentDate,
-          reference: previewState.form.reference,
-          notes: previewState.form.notes,
-        })
-      );
-      const result = parseExecution((execution as any).response);
-      if (!result || !result.ok || !result.payment) {
-        console.error("Allocate function returned error:", result);
-        throw new Error("Allocation failed.");
+      const { parsed, latest, body } = await executeAllocationFunction({
+        jwt: jwt.jwt,
+        tenantId: previewState.form.tenant,
+        amount: previewState.form.amount,
+        method: previewState.form.method,
+        paymentDate: previewState.form.paymentDate,
+        reference: previewState.form.reference,
+        notes: previewState.form.notes,
+      });
+      if (!parsed || !parsed.ok || !parsed.payment) {
+        console.error("Allocate function returned error:", {
+          parsed,
+          status: latest?.status,
+          responseStatusCode: latest?.responseStatusCode,
+          errors: latest?.errors,
+          body,
+        });
+        throw new Error(
+          (parsed && !parsed.ok && parsed.error) ||
+            latest?.errors ||
+            "Allocation failed."
+        );
       }
-      setPayments((prev) => [result.payment as Payment, ...prev]);
       setConfirmOpen(false);
       setModalOpen(false);
       await loadData();
@@ -172,7 +259,7 @@ export default function PaymentsPage() {
       if (user) {
         void logAudit({
           entityType: "payment",
-          entityId: (result.payment as Payment).$id,
+          entityId: (parsed.payment as Payment).$id,
           action: "create",
           actorId: user.id,
           details: previewState.form,
@@ -180,8 +267,12 @@ export default function PaymentsPage() {
       }
     } catch (err) {
       console.error("Payment recording failed:", err);
-      setError("Failed to record payment.");
-      toast.push("error", "Failed to record payment.");
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : "Failed to record payment.";
+      setError(message);
+      toast.push("error", message);
     } finally {
       setConfirmLoading(false);
       setLoading(false);
@@ -190,45 +281,61 @@ export default function PaymentsPage() {
 
   const handleReverse = async () => {
     if (!reverseTarget) return;
+    if (!canReversePayments) {
+      toast.push("warning", "You do not have permission to reverse payments.");
+      return;
+    }
+    if (reversedPaymentIds.has(reverseTarget.$id)) {
+      toast.push("warning", "This payment has already been reversed.");
+      setReverseTarget(null);
+      return;
+    }
+    const targetId = reverseTarget.$id;
     setReverseLoadingId(reverseTarget.$id);
     setLoading(true);
     setError(null);
     try {
-      if (!allocateFunctionId) {
-        throw new Error("Allocate payment function ID is missing.");
-      }
       const jwt = await account.createJWT();
-      const execution = await functions.createExecution(
-        allocateFunctionId,
-        JSON.stringify({
-          jwt: jwt.jwt,
-          reversePaymentId: reverseTarget.$id,
-          paymentDate: new Date().toISOString().slice(0, 10),
-          notes: `Reversal of ${reverseTarget.$id}`,
-        })
-      );
-      const result = parseExecution((execution as any).response);
-      if (!result || !result.ok || !result.reversal) {
-        console.error("Reversal function returned error:", result);
-        throw new Error("Reversal failed.");
+      const { parsed, latest, body } = await executeAllocationFunction({
+        jwt: jwt.jwt,
+        reversePaymentId: reverseTarget.$id,
+        paymentDate: new Date().toISOString().slice(0, 10),
+        notes: `Reversal of ${reverseTarget.$id}`,
+      });
+      if (!parsed || !parsed.ok || !parsed.reversal) {
+        console.error("Reversal function returned error:", {
+          parsed,
+          status: latest?.status,
+          responseStatusCode: latest?.responseStatusCode,
+          errors: latest?.errors,
+          body,
+        });
+        throw new Error(
+          (parsed && !parsed.ok && parsed.error) ||
+            latest?.errors ||
+            "Reversal failed."
+        );
       }
-      setPayments((prev) => [result.reversal as Payment, ...prev]);
       setReverseTarget(null);
       await loadData();
       toast.push("success", "Payment reversed.");
       if (user) {
         void logAudit({
           entityType: "payment",
-          entityId: (result.reversal as Payment).$id,
+          entityId: (parsed.reversal as Payment).$id,
           action: "reverse",
           actorId: user.id,
-          details: { reversedPaymentId: reverseTarget.$id },
+          details: { reversedPaymentId: targetId },
         });
       }
     } catch (err) {
       console.error("Payment reversal failed:", err);
-      setError("Failed to reverse payment.");
-      toast.push("error", "Failed to reverse payment.");
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : "Failed to reverse payment.";
+      setError(message);
+      toast.push("error", message);
     } finally {
       setReverseLoadingId(null);
       setLoading(false);
@@ -245,12 +352,14 @@ export default function PaymentsPage() {
           Record rent payments with allocation preview.
         </p>
         </div>
-        <button
-          onClick={() => setModalOpen(true)}
-          className="btn-primary text-sm"
-        >
-          New Payment
-        </button>
+        {canRecordPayments && (
+          <button
+            onClick={() => setModalOpen(true)}
+            className="btn-primary text-sm"
+          >
+            New Payment
+          </button>
+        )}
       </header>
 
       {error && (
@@ -269,15 +378,16 @@ export default function PaymentsPage() {
               Payment History
             </div>
             <div className="mt-3 space-y-3 text-sm text-slate-300">
-              {payments.slice(0, 6).map((payment) => {
+              {visiblePayments.slice(0, 6).map((payment) => {
                 const tenantLabel =
                   typeof payment.tenant === "string"
                     ? tenantLookup.get(payment.tenant)?.fullName ?? payment.tenant
                     : payment.tenant?.fullName ?? "Tenant";
-                const allocation = payment.allocationJson
-                  ? JSON.parse(payment.allocationJson)
-                  : {};
+                const allocation =
+                  decodeJson<Record<string, number>>(payment.allocationJson) ?? {};
                 const isExpanded = expandedPaymentId === payment.$id;
+                const isAlreadyReversed = reversedPaymentIds.has(payment.$id);
+                const reversal = reversalByOriginalId.get(payment.$id);
                 return (
                 <div
                   key={payment.$id}
@@ -309,6 +419,15 @@ export default function PaymentsPage() {
                   </button>
                   {isExpanded && (
                     <div className="mt-3 space-y-2 text-xs text-slate-400">
+                      {isAlreadyReversed && reversal && (
+                        <div className="text-amber-300">
+                          Reversed on {reversal.paymentDate?.slice(0, 10)} (
+                          {Math.abs(Number(reversal.amount)).toLocaleString(undefined, {
+                            minimumFractionDigits: 2,
+                          })}
+                          )
+                        </div>
+                      )}
                       {Object.entries(allocation).map(([month, amount]) => (
                         <div key={`${payment.$id}-${month}`}>
                           {month}:{" "}
@@ -324,7 +443,12 @@ export default function PaymentsPage() {
                     </div>
                   )}
                   <div className="mt-3 flex justify-end">
-                    {!payment.isReversal && (
+                    {isAlreadyReversed && !payment.isReversal && (
+                      <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-3 py-1 text-xs text-amber-300">
+                        Reversed
+                      </span>
+                    )}
+                    {canReversePayments && !payment.isReversal && !isAlreadyReversed && (
                       <button
                         onClick={() => setReverseTarget(payment)}
                         className="btn-danger text-xs"
@@ -336,7 +460,7 @@ export default function PaymentsPage() {
                   </div>
                 </div>
               )})}
-              {payments.length === 0 && (
+              {visiblePayments.length === 0 && (
                 <div className="text-sm text-slate-500">
                   No payments recorded yet.
                 </div>
@@ -349,7 +473,7 @@ export default function PaymentsPage() {
       </div>
 
       <Modal
-        open={modalOpen}
+        open={canRecordPayments && modalOpen}
         title="New Payment"
         description="Preview allocation before confirming."
         onClose={() => setModalOpen(false)}
@@ -358,7 +482,7 @@ export default function PaymentsPage() {
         </Modal>
 
       <ConfirmModal
-        open={confirmOpen}
+        open={canRecordPayments && confirmOpen}
         title="Confirm Payment"
         description="This payment will be saved and applied to arrears first. Continue?"
         onCancel={() => setConfirmOpen(false)}
@@ -366,7 +490,7 @@ export default function PaymentsPage() {
         confirmLoading={confirmLoading}
       />
       <ConfirmModal
-        open={!!reverseTarget}
+        open={canReversePayments && !!reverseTarget}
         title="Reverse Payment"
         description="This will create a reversal entry. Continue?"
         onCancel={() => setReverseTarget(null)}

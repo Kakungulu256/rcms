@@ -4,8 +4,9 @@ type Props = {
   houses: House[];
   selectedId?: string | null;
   onSelect: (house: House) => void;
-  onEdit: (house: House) => void;
-  onDeactivate: (house: House) => void;
+  onEdit?: (house: House) => void;
+  onDeactivate?: (house: House) => void;
+  canManage: boolean;
 };
 
 export default function HouseList({
@@ -14,6 +15,7 @@ export default function HouseList({
   onSelect,
   onEdit,
   onDeactivate,
+  canManage,
 }: Props) {
   return (
     <div
@@ -60,18 +62,22 @@ export default function HouseList({
                     >
                       View
                     </button>
-                    <button
-                      onClick={() => onEdit(house)}
-                      className="btn-secondary text-xs"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      onClick={() => onDeactivate(house)}
-                      className="btn-danger text-xs"
-                    >
-                      Deactivate
-                    </button>
+                    {canManage && onEdit && (
+                      <button
+                        onClick={() => onEdit(house)}
+                        className="btn-secondary text-xs"
+                      >
+                        Edit
+                      </button>
+                    )}
+                    {canManage && onDeactivate && (
+                      <button
+                        onClick={() => onDeactivate(house)}
+                        className="btn-danger text-xs"
+                      >
+                        Deactivate
+                      </button>
+                    )}
                   </div>
                 </td>
               </tr>

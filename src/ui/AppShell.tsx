@@ -1,48 +1,22 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
-import { useNavigate } from "react-router-dom";
-import { account } from "../lib/appwrite";
-
-const navItems = [
-  { to: "/", label: "Dashboard" },
-  { to: "/houses", label: "Houses" },
-  { to: "/tenants", label: "Tenants" },
-  { to: "/payments", label: "Payments" },
-  { to: "/expenses", label: "Expenses" },
-  { to: "/migration", label: "Migration" },
-  { to: "/reports", label: "Reports" },
-  { to: "/settings", label: "Settings" },
-];
 
 export default function AppShell() {
-  const { user, signOut } = useAuth();
-  const navigate = useNavigate();
+  const { user, permissions, signOut } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
-  const [theme, setTheme] = useState(() => {
-    return localStorage.getItem("rcms-theme") ?? "light";
-  });
-  const [sessionLabel, setSessionLabel] = useState("Checking session...");
 
-  useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
-    localStorage.setItem("rcms-theme", theme);
-  }, [theme]);
+  const navItems = [
+    { to: "/", label: "Dashboard", visible: true },
+    { to: "/houses", label: "Houses", visible: true },
+    { to: "/tenants", label: "Tenants", visible: true },
+    { to: "/payments", label: "Payments", visible: true },
+    { to: "/expenses", label: "Expenses", visible: true },
+    { to: "/migration", label: "Migration", visible: permissions.canUseMigration },
+    { to: "/reports", label: "Reports", visible: permissions.canViewReports },
+    // { to: "/settings", label: "Settings", visible: permissions.canAccessSettings },
+  ].filter((item) => item.visible);
 
-  useEffect(() => {
-    let active = true;
-    account
-      .get()
-      .then(() => {
-        if (active) setSessionLabel("Session OK");
-      })
-      .catch(() => {
-        if (active) setSessionLabel("No session");
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <a
@@ -54,36 +28,44 @@ export default function AppShell() {
       <div className="flex min-h-screen">
         <aside
           className={[
-            "flex flex-col border-r px-4 py-6 transition-all duration-200",
-            collapsed ? "w-20" : "w-[260px]",
+            "sidebar-shell relative z-20 flex flex-col overflow-visible border-r px-4 py-6 transition-[width] duration-200",
+            collapsed ? "w-[92px]" : "w-[260px]",
           ].join(" ")}
-          style={{ backgroundColor: "var(--sidebar)", borderColor: "var(--border)" }}
+          style={{ backgroundColor: "var(--sidebar)", borderColor: "var(--sidebar-border)" }}
         >
+          <button
+            type="button"
+            onClick={() => setCollapsed((prev) => !prev)}
+            className="sidebar-toggle absolute -right-3 top-8 z-30 flex h-7 w-7 items-center justify-center rounded-full border text-sm leading-none shadow-sm"
+            style={{ borderColor: "var(--sidebar-border)", color: "var(--sidebar-muted)" }}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-pressed={collapsed}
+          >
+            {collapsed ? ">" : "<"}
+          </button>
+
           <div className="mb-8">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-xs font-semibold" style={{ color: "var(--sidebar-text)" }}>
-                  RCMS
+            <div className="flex items-center">
+              <div
+                className={[
+                  "sidebar-brand rounded-xl",
+                  collapsed ? "w-full px-2 py-2" : "px-4 py-3",
+                ].join(" ")}
+              >
+                <div className={["text-xs font-semibold", collapsed ? "text-center" : ""].join(" ")} style={{ color: "var(--sidebar-brand-text)" }}>
+                  {collapsed ? "RC" : "RCMS"}
                 </div>
                 {!collapsed && (
                   <>
-                    <h1 className="mt-2 text-xl font-semibold" style={{ color: "var(--sidebar-text)" }}>
+                    <h1 className="mt-2 text-xl font-semibold" style={{ color: "var(--sidebar-brand-text)" }}>
                       Rental Collection
                     </h1>
-                    <p className="mt-1 text-sm" style={{ color: "var(--muted)" }}>
+                    <p className="mt-1 text-sm" style={{ color: "var(--sidebar-brand-muted)" }}>
                       Operations & reporting
                     </p>
                   </>
                 )}
               </div>
-              <button
-                onClick={() => setCollapsed((prev) => !prev)}
-                className="rounded-md border px-2 py-1 text-xs"
-                style={{ borderColor: "var(--border)", color: "var(--muted)" }}
-                aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-              >
-                {collapsed ? ">" : "<"}
-              </button>
             </div>
           </div>
 
@@ -94,21 +76,14 @@ export default function AppShell() {
                 to={item.to}
                 className={({ isActive }) =>
                   [
-                    "block rounded-lg px-3 py-2 transition",
-                    isActive
-                      ? "font-semibold"
-                      : "",
+                    "sidebar-link block rounded-lg px-3 py-2 transition",
+                    isActive ? "sidebar-link-active font-semibold" : "",
                   ].join(" ")
                 }
-                style={({ isActive }) => ({
-                  backgroundColor: isActive ? "var(--sidebar-active-bg)" : "transparent",
-                  color: isActive ? "var(--sidebar-active-text)" : "var(--sidebar-text)",
-                  borderLeft: isActive ? `3px solid var(--accent)` : "3px solid transparent",
-                })}
                 title={collapsed ? item.label : undefined}
                 aria-label={item.label}
               >
-                <span className="flex items-center gap-2">
+                <span className={["flex items-center", collapsed ? "justify-center" : "gap-2"].join(" ")}>
                   <span className="text-xs font-semibold">
                     {collapsed ? item.label.charAt(0) : item.label}
                   </span>
@@ -139,29 +114,6 @@ export default function AppShell() {
                 <div className="text-xs" style={{ color: "var(--muted)" }}>
                   {user?.email ?? "Signed in"}
                 </div>
-                <div className="text-xs" style={{ color: "var(--muted)" }}>
-                  {sessionLabel}
-                </div>
-                <button
-                  className="btn-secondary text-sm"
-                  onClick={() => navigate("/reports")}
-                >
-                  Export
-                </button>
-                <button
-                  className="btn-primary text-sm"
-                  onClick={() => navigate("/payments")}
-                >
-                  New Payment
-                </button>
-                <button
-                  onClick={() =>
-                    setTheme((prev) => (prev === "dark" ? "light" : "dark"))
-                  }
-                  className="btn-secondary text-sm"
-                >
-                  {theme === "dark" ? "Light" : "Dark"}
-                </button>
                 <button
                   onClick={signOut}
                   className="btn-secondary text-sm"

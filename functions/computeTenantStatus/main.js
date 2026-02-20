@@ -1,4 +1,4 @@
-import { Client, Databases } from "node-appwrite";
+import { Client, Databases, Query } from "node-appwrite";
 
 function getEnv(name, fallback) {
   return process.env[name] ?? fallback;
@@ -21,12 +21,20 @@ function monthKey(date) {
 
 function buildPaidByMonth(payments) {
   const totals = {};
+  const seenReversalTargets = new Set();
   payments.forEach((payment) => {
+    if (payment.isReversal && payment.reversedPaymentId) {
+      if (seenReversalTargets.has(payment.reversedPaymentId)) return;
+      seenReversalTargets.add(payment.reversedPaymentId);
+    }
     if (!payment.allocationJson) return;
     try {
       const allocation = JSON.parse(payment.allocationJson);
+      const multiplier = payment.isReversal ? -1 : 1;
       Object.entries(allocation).forEach(([month, amount]) => {
-        totals[month] = (totals[month] ?? 0) + Number(amount);
+        const value = Number(amount) * multiplier;
+        if (!Number.isFinite(value) || value === 0) return;
+        totals[month] = (totals[month] ?? 0) + value;
       });
     } catch {
       // ignore malformed allocations
@@ -55,6 +63,29 @@ function resolveRentForMonth(monthKey, tenantHistoryJson, houseHistoryJson, fall
   const monthStart = `${monthKey}-01`;
   const entry = history.filter((item) => item.effectiveDate <= monthStart).at(-1);
   return entry?.amount ?? fallbackRent;
+}
+
+async function listAllTenantPayments(databases, databaseId, tenantId) {
+  const documents = [];
+  let cursor = null;
+  const pageSize = 100;
+
+  while (true) {
+    const queries = [
+      Query.equal("tenant", [tenantId]),
+      Query.orderAsc("paymentDate"),
+      Query.limit(pageSize),
+    ];
+    if (cursor) {
+      queries.push(Query.cursorAfter(cursor));
+    }
+    const page = await databases.listDocuments(databaseId, "payments", queries);
+    documents.push(...page.documents);
+    if (page.documents.length < pageSize) break;
+    cursor = page.documents[page.documents.length - 1].$id;
+  }
+
+  return documents;
 }
 
 export default async (context) => {
@@ -103,11 +134,8 @@ export default async (context) => {
       : null;
     const rent = tenant.rentOverride ?? house?.monthlyRent ?? 0;
 
-    const paymentList = await databases.listDocuments(databaseId, "payments", [
-      `equal("tenant","${body.tenantId}")`,
-    ]);
-
-    const paidByMonth = buildPaidByMonth(paymentList.documents);
+    const paymentList = await listAllTenantPayments(databases, databaseId, body.tenantId);
+    const paidByMonth = buildPaidByMonth(paymentList);
     const currentMonth = monthKey(new Date());
     const rentForMonth = resolveRentForMonth(
       currentMonth,

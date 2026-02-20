@@ -1,0 +1,598 @@
+{
+  "name": "sample data",
+  "version": "1.0.0",
+  "generatedOn": "2026-02-20",
+  "currency": "UGX",
+  "reference": {
+    "importOrder": ["houses", "tenants", "payments", "expenses", "audit_logs"],
+    "relationKeys": {
+      "tenants.house": "houses.ref",
+      "payments.tenant": "tenants.ref",
+      "payments.reversedPaymentId": "payments.ref",
+      "expenses.house": "houses.ref"
+    },
+    "testScenarios": [
+      "active and inactive tenants",
+      "occupied, vacant, and inactive houses",
+      "partial payments, arrears, and overpayment",
+      "payment reversal entries",
+      "historical migrated records",
+      "general and maintenance expenses"
+    ]
+  },
+  "houses": [
+    {
+      "ref": "HSE-001",
+      "code": "A-101",
+      "name": "Block A - 101",
+      "monthlyRent": 500000,
+      "status": "occupied",
+      "currentTenantId": "TEN-001",
+      "rentHistoryJson": "[{\"effectiveDate\":\"2024-01-01\",\"amount\":450000},{\"effectiveDate\":\"2025-07-01\",\"amount\":500000}]",
+      "notes": "Main reference unit with rent review."
+    },
+    {
+      "ref": "HSE-002",
+      "code": "A-102",
+      "name": "Block A - 102",
+      "monthlyRent": 450000,
+      "status": "occupied",
+      "currentTenantId": "TEN-002",
+      "rentHistoryJson": "[{\"effectiveDate\":\"2024-01-01\",\"amount\":450000}]",
+      "notes": "Used for arrears testing."
+    },
+    {
+      "ref": "HSE-003",
+      "code": "B-201",
+      "name": "Block B - 201",
+      "monthlyRent": 700000,
+      "status": "occupied",
+      "currentTenantId": "TEN-003",
+      "rentHistoryJson": "[{\"effectiveDate\":\"2024-01-01\",\"amount\":680000},{\"effectiveDate\":\"2025-11-01\",\"amount\":700000}]",
+      "notes": "Tenant override scenario."
+    },
+    {
+      "ref": "HSE-004",
+      "code": "B-202",
+      "name": "Block B - 202",
+      "monthlyRent": 380000,
+      "status": "vacant",
+      "rentHistoryJson": "[{\"effectiveDate\":\"2023-01-01\",\"amount\":350000},{\"effectiveDate\":\"2024-06-01\",\"amount\":380000}]",
+      "notes": "Was previously occupied."
+    },
+    {
+      "ref": "HSE-005",
+      "code": "C-301",
+      "name": "Block C - 301",
+      "monthlyRent": 550000,
+      "status": "occupied",
+      "currentTenantId": "TEN-005",
+      "rentHistoryJson": "[{\"effectiveDate\":\"2024-01-01\",\"amount\":520000},{\"effectiveDate\":\"2026-01-01\",\"amount\":550000}]",
+      "notes": "New tenant, clean payment history."
+    },
+    {
+      "ref": "HSE-006",
+      "code": "C-302",
+      "name": "Block C - 302",
+      "monthlyRent": 320000,
+      "status": "occupied",
+      "currentTenantId": "TEN-006",
+      "rentHistoryJson": "[{\"effectiveDate\":\"2024-01-01\",\"amount\":300000},{\"effectiveDate\":\"2025-03-01\",\"amount\":320000}]",
+      "notes": "No payment this month."
+    },
+    {
+      "ref": "HSE-007",
+      "code": "D-401",
+      "name": "Block D - 401",
+      "monthlyRent": 600000,
+      "status": "inactive",
+      "rentHistoryJson": "[{\"effectiveDate\":\"2023-01-01\",\"amount\":600000}]",
+      "notes": "Inactive unit for filtering tests."
+    },
+    {
+      "ref": "HSE-008",
+      "code": "D-402",
+      "name": "Block D - 402",
+      "monthlyRent": 400000,
+      "status": "vacant",
+      "rentHistoryJson": "[{\"effectiveDate\":\"2023-01-01\",\"amount\":380000},{\"effectiveDate\":\"2025-01-01\",\"amount\":400000}]",
+      "notes": "Used by historical moved-out tenant."
+    },
+    {
+      "ref": "HSE-009",
+      "code": "E-501",
+      "name": "Block E - 501",
+      "monthlyRent": 650000,
+      "status": "occupied",
+      "currentTenantId": "TEN-008",
+      "rentHistoryJson": "[{\"effectiveDate\":\"2024-01-01\",\"amount\":650000}]",
+      "notes": "High-value rent with arrears carry-over."
+    }
+  ],
+  "tenants": [
+    {
+      "ref": "TEN-001",
+      "fullName": "Alice Nankya",
+      "phone": "+256700100001",
+      "house": "HSE-001",
+      "moveInDate": "2025-01-10",
+      "status": "active",
+      "notes": "Pays in mixed chunks."
+    },
+    {
+      "ref": "TEN-002",
+      "fullName": "Brian Ssemanda",
+      "phone": "+256700100002",
+      "house": "HSE-002",
+      "moveInDate": "2024-07-01",
+      "status": "active",
+      "notes": "Persistent arrears for status testing."
+    },
+    {
+      "ref": "TEN-003",
+      "fullName": "Carla Kemigisha",
+      "phone": "+256700100003",
+      "house": "HSE-003",
+      "moveInDate": "2025-11-01",
+      "status": "active",
+      "rentOverride": 720000,
+      "rentHistoryJson": "[{\"effectiveDate\":\"2025-11-01\",\"amount\":720000}]",
+      "notes": "Override rent plus overpayment scenario."
+    },
+    {
+      "ref": "TEN-004",
+      "fullName": "David Tumusiime",
+      "phone": "+256700100004",
+      "house": "HSE-004",
+      "moveInDate": "2023-02-01",
+      "moveOutDate": "2025-06-15",
+      "status": "inactive",
+      "isMigrated": true,
+      "notes": "Historical record captured from paper files."
+    },
+    {
+      "ref": "TEN-005",
+      "fullName": "Esther Namubiru",
+      "phone": "+256700100005", 
+      "house": "HSE-005",
+      "moveInDate": "2026-01-05",
+      "status": "active",
+      "notes": "New tenant with full payments."
+    },
+    {
+      "ref": "TEN-006",
+      "fullName": "Frank Aine",
+      "phone": "+256700100006",
+      "house": "HSE-006",
+      "moveInDate": "2025-05-20",
+      "status": "active",
+      "notes": "Missed current month payment."
+    },
+    {
+      "ref": "TEN-007",
+      "fullName": "Grace Kiconco",
+      "phone": "+256700100007",
+      "house": "HSE-008",
+      "moveInDate": "2023-06-01",
+      "moveOutDate": "2024-12-20",
+      "status": "inactive",
+      "isMigrated": true,
+      "notes": "Back-captured legacy tenant."
+    },
+    {
+      "ref": "TEN-008",
+      "fullName": "Henry Mugisha",
+      "phone": "+256700100008",
+      "house": "HSE-009",
+      "moveInDate": "2025-09-01",
+      "status": "active",
+      "notes": "Large catch-up payment case."
+    }
+  ],
+  "payments": [
+    {
+      "ref": "PAY-001",
+      "tenant": "TEN-001",
+      "amount": 500000,
+      "method": "bank",
+      "paymentDate": "2025-12-03",
+      "recordedBy": "admin@example.com",
+      "reference": "DEP-1203-A1",
+      "notes": "December rent paid in full.",
+      "allocationJson": "{\"2025-12\":500000}"
+    },
+    {
+      "ref": "PAY-002",
+      "tenant": "TEN-001",
+      "amount": 500000,
+      "method": "cash",
+      "paymentDate": "2026-01-04",
+      "recordedBy": "clerk@example.com",
+      "reference": "CASH-0104-A1",
+      "notes": "January rent paid in full.",
+      "allocationJson": "{\"2026-01\":500000}"
+    },
+    {
+      "ref": "PAY-003",
+      "tenant": "TEN-001",
+      "amount": 300000,
+      "method": "cash",
+      "paymentDate": "2026-02-06",
+      "recordedBy": "clerk@example.com",
+      "reference": "CASH-0206-A1",
+      "notes": "Partial February payment.",
+      "allocationJson": "{\"2026-02\":300000}"
+    },
+    {
+      "ref": "PAY-004",
+      "tenant": "TEN-002",
+      "amount": 300000,
+      "method": "cash",
+      "paymentDate": "2025-11-28",
+      "recordedBy": "clerk@example.com",
+      "reference": "CASH-1128-B2",
+      "notes": "Partial payment creates arrears.",
+      "allocationJson": "{\"2025-11\":300000}"
+    },
+    {
+      "ref": "PAY-005",
+      "tenant": "TEN-002",
+      "amount": 700000,
+      "method": "bank",
+      "paymentDate": "2026-01-12",
+      "recordedBy": "admin@example.com",
+      "reference": "DEP-0112-B2",
+      "notes": "Catch-up allocation across months.",
+      "allocationJson": "{\"2025-11\":150000,\"2025-12\":450000,\"2026-01\":100000}"
+    },
+    {
+      "ref": "PAY-006",
+      "tenant": "TEN-002",
+      "amount": 200000,
+      "method": "cash",
+      "paymentDate": "2026-02-10",
+      "recordedBy": "clerk@example.com",
+      "reference": "CASH-0210-B2",
+      "notes": "Still partially in arrears after this payment.",
+      "allocationJson": "{\"2026-01\":200000}"
+    },
+    {
+      "ref": "PAY-007",
+      "tenant": "TEN-003",
+      "amount": 400000,
+      "method": "cash",
+      "paymentDate": "2025-11-25",
+      "recordedBy": "clerk@example.com",
+      "reference": "CASH-1125-C3",
+      "notes": "Partial for move-in month.",
+      "allocationJson": "{\"2025-11\":400000}"
+    },
+    {
+      "ref": "PAY-008",
+      "tenant": "TEN-003",
+      "amount": 900000,
+      "method": "bank",
+      "paymentDate": "2025-12-20",
+      "recordedBy": "admin@example.com",
+      "reference": "DEP-1220-C3",
+      "notes": "Completes previous month and current month.",
+      "allocationJson": "{\"2025-11\":320000,\"2025-12\":580000}"
+    },
+    {
+      "ref": "PAY-009",
+      "tenant": "TEN-003",
+      "amount": 1500000,
+      "method": "bank",
+      "paymentDate": "2026-01-10",
+      "recordedBy": "admin@example.com",
+      "reference": "DEP-0110-C3",
+      "notes": "Overpayment extends into future period.",
+      "allocationJson": "{\"2025-12\":140000,\"2026-01\":720000,\"2026-02\":640000}"
+    },
+    {
+      "ref": "PAY-010",
+      "tenant": "TEN-004",
+      "amount": 380000,
+      "method": "cash",
+      "paymentDate": "2024-03-04",
+      "recordedBy": "migration-user",
+      "isMigrated": true,
+      "reference": "MIG-0001",
+      "notes": "Legacy payment from paper record.",
+      "allocationJson": "{\"2024-03\":380000}"
+    },
+    {
+      "ref": "PAY-011",
+      "tenant": "TEN-004",
+      "amount": -380000,
+      "method": "cash",
+      "paymentDate": "2024-03-20",
+      "recordedBy": "admin@example.com",
+      "isReversal": true,
+      "reversedPaymentId": "PAY-010",
+      "reference": "REV-0001",
+      "notes": "Reversal for wrong tenant entry.",
+      "allocationJson": "{\"2024-03\":380000}"
+    },
+    {
+      "ref": "PAY-012",
+      "tenant": "TEN-004",
+      "amount": 760000,
+      "method": "bank",
+      "paymentDate": "2024-04-02",
+      "recordedBy": "migration-user",
+      "isMigrated": true,
+      "reference": "MIG-0002",
+      "notes": "Historical double-month deposit.",
+      "allocationJson": "{\"2024-04\":380000,\"2024-05\":380000}"
+    },
+    {
+      "ref": "PAY-013",
+      "tenant": "TEN-005",
+      "amount": 550000,
+      "method": "bank",
+      "paymentDate": "2026-01-08",
+      "recordedBy": "clerk@example.com",
+      "reference": "DEP-0108-E5",
+      "notes": "January full payment.",
+      "allocationJson": "{\"2026-01\":550000}"
+    },
+    {
+      "ref": "PAY-014",
+      "tenant": "TEN-005",
+      "amount": 550000,
+      "method": "bank",
+      "paymentDate": "2026-02-08",
+      "recordedBy": "clerk@example.com",
+      "reference": "DEP-0208-E5",
+      "notes": "February full payment.",
+      "allocationJson": "{\"2026-02\":550000}"
+    },
+    {
+      "ref": "PAY-015",
+      "tenant": "TEN-006",
+      "amount": 320000,
+      "method": "cash",
+      "paymentDate": "2025-12-01",
+      "recordedBy": "clerk@example.com",
+      "reference": "CASH-1201-F6",
+      "notes": "December full payment.",
+      "allocationJson": "{\"2025-12\":320000}"
+    },
+    {
+      "ref": "PAY-016",
+      "tenant": "TEN-006",
+      "amount": 320000,
+      "method": "cash",
+      "paymentDate": "2026-01-02",
+      "recordedBy": "clerk@example.com",
+      "reference": "CASH-0102-F6",
+      "notes": "January full payment.",
+      "allocationJson": "{\"2026-01\":320000}"
+    },
+    {
+      "ref": "PAY-017",
+      "tenant": "TEN-007",
+      "amount": 400000,
+      "method": "cash",
+      "paymentDate": "2023-09-05",
+      "recordedBy": "migration-user",
+      "isMigrated": true,
+      "reference": "MIG-1001",
+      "notes": "Historical migrated payment.",
+      "allocationJson": "{\"2023-09\":400000}"
+    },
+    {
+      "ref": "PAY-018",
+      "tenant": "TEN-007",
+      "amount": 400000,
+      "method": "bank",
+      "paymentDate": "2023-10-07",
+      "recordedBy": "migration-user",
+      "isMigrated": true,
+      "reference": "MIG-1002",
+      "notes": "Historical migrated payment.",
+      "allocationJson": "{\"2023-10\":400000}"
+    },
+    {
+      "ref": "PAY-019",
+      "tenant": "TEN-008",
+      "amount": 200000,
+      "method": "cash",
+      "paymentDate": "2025-12-15",
+      "recordedBy": "clerk@example.com",
+      "reference": "CASH-1215-H8",
+      "notes": "Partial payment leaves arrears.",
+      "allocationJson": "{\"2025-12\":200000}"
+    },
+    {
+      "ref": "PAY-020",
+      "tenant": "TEN-008",
+      "amount": 1000000,
+      "method": "bank",
+      "paymentDate": "2026-02-12",
+      "recordedBy": "admin@example.com",
+      "reference": "DEP-0212-H8",
+      "notes": "Large allocation to oldest unpaid months first.",
+      "allocationJson": "{\"2025-12\":450000,\"2026-01\":650000}"
+    }
+  ],
+  "expenses": [
+    {
+      "ref": "EXP-001",
+      "category": "general",
+      "description": "Caretaker salary - January",
+      "amount": 250000,
+      "source": "rent_cash",
+      "expenseDate": "2026-01-31",
+      "house": "HSE-001",
+      "notes": "Operational cost allocated to block A."
+    },
+    {
+      "ref": "EXP-002",
+      "category": "general",
+      "description": "Security guard wages - January",
+      "amount": 300000,
+      "source": "rent_cash",
+      "expenseDate": "2026-01-31",
+      "house": "HSE-002",
+      "notes": "Operational overhead."
+    },
+    {
+      "ref": "EXP-003",
+      "category": "maintenance",
+      "description": "Electrical rewiring in kitchen",
+      "amount": 180000,
+      "source": "external",
+      "expenseDate": "2026-02-05",
+      "house": "HSE-003",
+      "maintenanceType": "electrical",
+      "notes": "Emergency repair."
+    },
+    {
+      "ref": "EXP-004",
+      "category": "maintenance",
+      "description": "Plumbing leak fix",
+      "amount": 120000,
+      "source": "rent_cash",
+      "expenseDate": "2026-02-08",
+      "house": "HSE-005",
+      "maintenanceType": "plumbing",
+      "notes": "Bathroom sink and pipes."
+    },
+    {
+      "ref": "EXP-005",
+      "category": "general",
+      "description": "Rubbish collection - February",
+      "amount": 90000,
+      "source": "external",
+      "expenseDate": "2026-02-10",
+      "house": "HSE-006",
+      "notes": "Monthly sanitation charge."
+    },
+    {
+      "ref": "EXP-006",
+      "category": "maintenance",
+      "description": "Wall repainting",
+      "amount": 210000,
+      "source": "rent_cash",
+      "expenseDate": "2025-12-18",
+      "house": "HSE-001",
+      "maintenanceType": "painting",
+      "notes": "Painted living room and corridor."
+    },
+    {
+      "ref": "EXP-007",
+      "category": "maintenance",
+      "description": "Door lock replacement",
+      "amount": 60000,
+      "source": "external",
+      "expenseDate": "2025-11-22",
+      "house": "HSE-002",
+      "maintenanceType": "hardware",
+      "notes": "Changed front door lock."
+    },
+    {
+      "ref": "EXP-008",
+      "category": "general",
+      "description": "Office stationery",
+      "amount": 45000,
+      "source": "external",
+      "expenseDate": "2025-10-14",
+      "house": "HSE-004",
+      "notes": "Receipts and files."
+    },
+    {
+      "ref": "EXP-009",
+      "category": "maintenance",
+      "description": "Roof patchwork",
+      "amount": 350000,
+      "source": "external",
+      "expenseDate": "2024-09-03",
+      "house": "HSE-008",
+      "maintenanceType": "construction",
+      "isMigrated": true,
+      "notes": "Historical back-captured repair."
+    },
+    {
+      "ref": "EXP-010",
+      "category": "general",
+      "description": "Caretaker salary - historical",
+      "amount": 220000,
+      "source": "rent_cash",
+      "expenseDate": "2024-03-31",
+      "house": "HSE-004",
+      "isMigrated": true,
+      "notes": "Migrated from paper ledger."
+    },
+    {
+      "ref": "EXP-011",
+      "category": "maintenance",
+      "description": "Septic tank service",
+      "amount": 140000,
+      "source": "rent_cash",
+      "expenseDate": "2026-02-15",
+      "house": "HSE-009",
+      "maintenanceType": "sanitation",
+      "notes": "Routine service."
+    },
+    {
+      "ref": "EXP-012",
+      "category": "maintenance",
+      "description": "Window frame replacement",
+      "amount": 130000,
+      "source": "external",
+      "expenseDate": "2026-01-21",
+      "house": "HSE-006",
+      "maintenanceType": "carpentry",
+      "notes": "Broken frame replacement."
+    }
+  ],
+  "audit_logs": [
+    {
+      "ref": "AUD-001",
+      "entityType": "payment",
+      "entityId": "PAY-005",
+      "action": "create",
+      "actorId": "admin@example.com",
+      "timestamp": "2026-01-12T10:25:00.000Z",
+      "detailsJson": "{\"tenant\":\"TEN-002\",\"amount\":700000,\"method\":\"bank\"}"
+    },
+    {
+      "ref": "AUD-002",
+      "entityType": "payment",
+      "entityId": "PAY-011",
+      "action": "reverse",
+      "actorId": "admin@example.com",
+      "timestamp": "2024-03-20T09:10:00.000Z",
+      "detailsJson": "{\"reversedPaymentId\":\"PAY-010\"}"
+    },
+    {
+      "ref": "AUD-003",
+      "entityType": "expense",
+      "entityId": "EXP-003",
+      "action": "create",
+      "actorId": "clerk@example.com",
+      "timestamp": "2026-02-05T14:40:00.000Z",
+      "detailsJson": "{\"category\":\"maintenance\",\"house\":\"HSE-003\"}"
+    },
+    {
+      "ref": "AUD-004",
+      "entityType": "tenant",
+      "entityId": "TEN-004",
+      "action": "update",
+      "actorId": "admin@example.com",
+      "timestamp": "2025-06-15T18:05:00.000Z",
+      "detailsJson": "{\"status\":\"inactive\",\"moveOutDate\":\"2025-06-15\"}"
+    },
+    {
+      "ref": "AUD-005",
+      "entityType": "house",
+      "entityId": "HSE-007",
+      "action": "update",
+      "actorId": "admin@example.com",
+      "timestamp": "2025-12-01T08:30:00.000Z",
+      "detailsJson": "{\"status\":\"inactive\"}"
+    }
+  ]
+}

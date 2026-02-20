@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import {
   EXPENSE_CATEGORIES,
@@ -10,22 +11,50 @@ type Props = {
   onSubmit: (values: ExpenseFormValues) => void;
   disabled?: boolean;
   loading?: boolean;
+  initialValues?: Partial<ExpenseFormValues> | null;
+  submitLabel?: string;
 };
 
-export default function ExpenseForm({ houses, onSubmit, disabled, loading }: Props) {
-  const { register, handleSubmit, watch, formState } =
+function buildEmptyValues(): ExpenseFormValues {
+  return {
+    category: "general",
+    description: "",
+    amount: 0,
+    source: "rent_cash",
+    expenseDate: new Date().toISOString().slice(0, 10),
+    house: "",
+    maintenanceType: "",
+    notes: "",
+  };
+}
+
+export default function ExpenseForm({
+  houses,
+  onSubmit,
+  disabled,
+  loading,
+  initialValues,
+  submitLabel,
+}: Props) {
+  const { register, handleSubmit, watch, formState, reset } =
     useForm<ExpenseFormValues>({
-      defaultValues: {
-        category: "general",
-        description: "",
-        amount: 0,
-        source: "rent_cash",
-        expenseDate: new Date().toISOString().slice(0, 10),
-        house: "",
-        maintenanceType: "",
-        notes: "",
-      },
+      defaultValues: buildEmptyValues(),
     });
+
+  useEffect(() => {
+    const emptyValues = buildEmptyValues();
+    if (initialValues) {
+      reset({
+        ...emptyValues,
+        ...initialValues,
+        house: initialValues.house ?? "",
+        maintenanceType: initialValues.maintenanceType ?? "",
+        notes: initialValues.notes ?? "",
+      });
+      return;
+    }
+    reset(emptyValues);
+  }, [initialValues, reset]);
 
   const category = watch("category");
 
@@ -132,7 +161,11 @@ export default function ExpenseForm({ houses, onSubmit, disabled, loading }: Pro
         disabled={disabled}
         className="btn-primary w-full text-sm disabled:opacity-60"
       >
-        {loading ? "Recording..." : "Record Expense"}
+        {loading
+          ? submitLabel === "Save Changes"
+            ? "Saving..."
+            : "Recording..."
+          : submitLabel ?? "Record Expense"}
       </button>
 
       {formState.errors.description && (
