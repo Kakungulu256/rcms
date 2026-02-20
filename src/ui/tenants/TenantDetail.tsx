@@ -177,9 +177,9 @@ export default function TenantDetail({
               </select>
             </div>
             <div className="mt-4 max-h-[60vh] overflow-auto pr-2">
-              <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/40">
-                <table className="min-w-[760px] w-full text-left text-sm text-slate-300">
-                  <thead className="text-xs text-slate-500" style={{ backgroundColor: "var(--surface-strong)" }}>
+              <div className="overflow-x-auto rounded-xl border border-slate-800 bg-white">
+                <table className="tenant-status-table min-w-[760px] w-full text-left text-sm text-slate-300">
+                  <thead className="text-xs text-slate-500" style={{ backgroundColor: "#ffffff" }}>
                     <tr>
                       <th className="px-4 py-3">Month</th>
                       <th className="px-4 py-3">Date Paid</th>
@@ -212,12 +212,12 @@ export default function TenantDetail({
                           <tr
                             key={month}
                             className="border-t"
-                            style={{ borderColor: "var(--border)" }}
+                            style={{ borderColor: "var(--border)", backgroundColor: "#ffffff" }}
                           >
                             <td className="px-4 py-3 text-slate-100">{month}</td>
                             <td className="px-4 py-3 text-slate-500">N/A</td>
                             <td className="amount px-4 py-3">0.00</td>
-                            <td className="amount px-4 py-3 text-rose-200">
+                            <td className="amount px-4 py-3 text-slate-200">
                               {remaining.toLocaleString(undefined, {
                                 minimumFractionDigits: 2,
                               })}
@@ -235,7 +235,7 @@ export default function TenantDetail({
                         <tr
                           key={`${month}-${entry.paymentDate}-${index}`}
                           className="border-t"
-                          style={{ borderColor: "var(--border)" }}
+                          style={{ borderColor: "var(--border)", backgroundColor: "#ffffff" }}
                         >
                           <td className="px-4 py-3 text-slate-100">
                             {index === 0 ? month : ""}
@@ -246,7 +246,7 @@ export default function TenantDetail({
                               minimumFractionDigits: 2,
                             })}
                           </td>
-                          <td className="amount px-4 py-3 text-rose-200">
+                          <td className="amount px-4 py-3 text-slate-200">
                             {index === 0
                               ? remaining.toLocaleString(undefined, {
                                   minimumFractionDigits: 2,

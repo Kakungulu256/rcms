@@ -1136,19 +1136,18 @@ export default function ReportsPage() {
         );
         drawTable(
           ["Month", "Paid", "Arrears"],
-          summary.tenantDetailRows.map((row) => [
-            row.month,
-            currency(row.paid),
-            currency(row.balance),
-          ])
-        );
-        drawTable(
-          ["Totals", "Paid", "Arrears"],
-          [[
+          [
+            ...summary.tenantDetailRows.map((row) => [
+              row.month,
+              currency(row.paid),
+              currency(row.balance),
+            ]),
+            [
             "Totals",
             currency(summary.tenantDetailTotals.paid),
             currency(summary.tenantDetailTotals.balance),
-          ]]
+            ],
+          ]
         );
       }
       const fileSuffix =

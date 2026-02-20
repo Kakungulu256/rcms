@@ -265,6 +265,14 @@ table tbody tr:hover {
   background-color: var(--hover);
 }
 
+.tenant-status-table tbody tr:nth-child(even) {
+  background-color: #ffffff !important;
+}
+
+.tenant-status-table tbody tr:hover {
+  background-color: #ffffff !important;
+}
+
 .amount {
   font-family: "Manrope", -apple-system, system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
