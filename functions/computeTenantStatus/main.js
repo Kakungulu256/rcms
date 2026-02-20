@@ -56,10 +56,30 @@ function parseHistory(value) {
   }
 }
 
+function entryPriority(entry) {
+  return entry?.source === "house" ? 0 : 1;
+}
+
+function buildEffectiveHistory(tenantHistory, houseHistory) {
+  const tenantSpecificHistory = tenantHistory.filter((entry) => entry?.source !== "house");
+  const baseHistory =
+    tenantSpecificHistory.length > 0
+      ? [...houseHistory, ...tenantSpecificHistory]
+      : houseHistory.length > 0
+        ? houseHistory
+        : tenantHistory;
+
+  return baseHistory.sort((a, b) => {
+    const dateOrder = String(a.effectiveDate).localeCompare(String(b.effectiveDate));
+    if (dateOrder !== 0) return dateOrder;
+    return entryPriority(a) - entryPriority(b);
+  });
+}
+
 function resolveRentForMonth(monthKey, tenantHistoryJson, houseHistoryJson, fallbackRent) {
   const tenantHistory = parseHistory(tenantHistoryJson);
   const houseHistory = parseHistory(houseHistoryJson);
-  const history = tenantHistory.length > 0 ? tenantHistory : houseHistory;
+  const history = buildEffectiveHistory(tenantHistory, houseHistory);
   const monthStart = `${monthKey}-01`;
   const entry = history.filter((item) => item.effectiveDate <= monthStart).at(-1);
   return entry?.amount ?? fallbackRent;

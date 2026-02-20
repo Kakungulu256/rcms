@@ -4,7 +4,7 @@ import HouseDetail from "../houses/HouseDetail";
 import HouseForm from "../houses/HouseForm";
 import HouseList from "../houses/HouseList";
 import Modal from "../Modal";
-import { databases, rcmsDatabaseId } from "../../lib/appwrite";
+import { databases, listAllDocuments, rcmsDatabaseId } from "../../lib/appwrite";
 import { COLLECTIONS } from "../../lib/schema";
 import type { House, HouseForm as HouseFormValues, Tenant } from "../../lib/schema";
 import { logAudit } from "../../lib/audit";
@@ -38,12 +38,12 @@ export default function HousesPage() {
     setLoading(true);
     setError(null);
     try {
-      const result = await databases.listDocuments(
-        rcmsDatabaseId,
-        COLLECTIONS.houses,
-        [Query.orderAsc("code")]
-      );
-      setHouses(result.documents as unknown as House[]);
+      const result = await listAllDocuments<House>({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.houses,
+        queries: [Query.orderAsc("code")],
+      });
+      setHouses(result);
     } catch (err) {
       setError("Failed to load houses.");
     } finally {
@@ -116,6 +116,19 @@ export default function HousesPage() {
     setError(null);
     try {
       const { rentEffectiveDate, ...rest } = values;
+      const tenantsForHouse = await listAllDocuments<Tenant>({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.tenants,
+        queries: [Query.equal("house", [selected.$id]), Query.orderAsc("fullName")],
+      });
+      const hasActiveOccupant = tenantsForHouse.some(
+        (tenant) => tenant.status === "active" && !tenant.moveOutDate
+      );
+      const normalizedStatus =
+        hasActiveOccupant && rest.status === "vacant" ? "occupied" : rest.status;
+      if (hasActiveOccupant && rest.status === "vacant") {
+        toast.push("warning", "House has active tenant(s). Status kept as occupied.");
+      }
       const rentChanged = rest.monthlyRent !== selected.monthlyRent;
       const effectiveDate =
         rentEffectiveDate ?? new Date().toISOString().slice(0, 10);
@@ -126,6 +139,7 @@ export default function HousesPage() {
       }
       const updatedPayload = {
         ...rest,
+        status: normalizedStatus,
         rentHistoryJson: rentChanged
           ? appendRentHistory(selected.rentHistoryJson ?? null, {
               effectiveDate,
@@ -146,30 +160,6 @@ export default function HousesPage() {
         )
       );
       setSelected(updated as unknown as House);
-      if (rentChanged) {
-        const tenantResult = await databases.listDocuments(
-          rcmsDatabaseId,
-          COLLECTIONS.tenants,
-          [Query.equal("house", [selected.$id])]
-        );
-        const tenantsForHouse = tenantResult.documents as unknown as Tenant[];
-        const activeTenants = tenantsForHouse.filter(
-          (tenant) => tenant.status === "active" && !tenant.moveOutDate
-        );
-        await Promise.all(
-          activeTenants
-            .filter((tenant) => tenant.rentOverride == null)
-            .map((tenant) =>
-              databases.updateDocument(rcmsDatabaseId, COLLECTIONS.tenants, tenant.$id, {
-                rentHistoryJson: appendRentHistory(tenant.rentHistoryJson ?? null, {
-                  effectiveDate,
-                  amount: values.monthlyRent,
-                  source: "house",
-                }),
-              })
-            )
-        );
-      }
       setMode("list");
       setModalOpen(false);
       toast.push("success", "House updated.");

@@ -1,7 +1,7 @@
 export type RentHistoryEntry = {
   effectiveDate: string;
   amount: number;
-  source: "house" | "override" | "manual";
+  source?: "house" | "override" | "manual";
   note?: string;
 };
 
@@ -24,6 +24,29 @@ export function parseRentHistory(value?: string | null): RentHistoryEntry[] {
   }
 }
 
+function entryPriority(entry: RentHistoryEntry) {
+  return entry.source === "house" ? 0 : 1;
+}
+
+function buildEffectiveHistory(
+  tenantHistory: RentHistoryEntry[],
+  houseHistory: RentHistoryEntry[]
+) {
+  const tenantSpecificHistory = tenantHistory.filter((entry) => entry.source !== "house");
+  const baseHistory =
+    tenantSpecificHistory.length > 0
+      ? [...houseHistory, ...tenantSpecificHistory]
+      : houseHistory.length > 0
+        ? houseHistory
+        : tenantHistory;
+
+  return baseHistory.sort((a, b) => {
+    const dateOrder = a.effectiveDate.localeCompare(b.effectiveDate);
+    if (dateOrder !== 0) return dateOrder;
+    return entryPriority(a) - entryPriority(b);
+  });
+}
+
 export function buildRentByMonth(params: {
   months: string[];
   tenantHistoryJson?: string | null;
@@ -33,7 +56,7 @@ export function buildRentByMonth(params: {
   const { months, tenantHistoryJson, houseHistoryJson, fallbackRent } = params;
   const tenantHistory = parseRentHistory(tenantHistoryJson);
   const houseHistory = parseRentHistory(houseHistoryJson);
-  const history = tenantHistory.length > 0 ? tenantHistory : houseHistory;
+  const history = buildEffectiveHistory(tenantHistory, houseHistory);
   const rentByMonth: Record<string, number> = {};
   months.forEach((month) => {
     const monthStart = `${month}-01`;

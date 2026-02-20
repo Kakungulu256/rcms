@@ -1,4 +1,5 @@
 import type { House } from "../../lib/schema";
+import { parseRentHistory } from "../../lib/rentHistory";
 
 type Props = {
   house?: House | null;
@@ -12,6 +13,8 @@ export default function HouseDetail({ house }: Props) {
       </div>
     );
   }
+
+  const history = parseRentHistory(house.rentHistoryJson ?? null);
 
   return (
     <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6">
@@ -44,6 +47,28 @@ export default function HouseDetail({ house }: Props) {
           </div>
           <div className="mt-2 text-sm text-slate-300">
             {house.notes || "No notes yet."}
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+          <div className="text-xs uppercase tracking-[0.2em] text-slate-500">
+            Rent History
+          </div>
+          <div className="mt-2 space-y-2 text-sm text-slate-300">
+            {history.length > 0 ? (
+              history
+                .slice()
+                .reverse()
+                .map((entry, index) => (
+                  <div key={`${entry.effectiveDate}-${entry.amount}-${index}`}>
+                    {entry.effectiveDate}:{" "}
+                    {entry.amount.toLocaleString(undefined, {
+                      minimumFractionDigits: 2,
+                    })}
+                  </div>
+                ))
+            ) : (
+              <div className="text-slate-500">No rent history recorded.</div>
+            )}
           </div>
         </div>
       </div>

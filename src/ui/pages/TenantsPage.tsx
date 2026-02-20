@@ -132,6 +132,55 @@ export default function TenantsPage() {
     notes: values.notes?.trim() ? values.notes.trim() : null,
   });
 
+  const syncHouseOccupancy = async (
+    houseId: string,
+    options?: { preferredTenantId?: string }
+  ) => {
+    const house = houses.find((item) => item.$id === houseId);
+    if (!house) return;
+
+    const houseTenants = await listAllDocuments<Tenant>({
+      databaseId: rcmsDatabaseId,
+      collectionId: COLLECTIONS.tenants,
+      queries: [Query.equal("house", [houseId]), Query.orderAsc("fullName")],
+    });
+    const activeCurrentTenants = houseTenants.filter(
+      (tenant) => tenant.status === "active" && !tenant.moveOutDate
+    );
+    const preferredTenant = options?.preferredTenantId
+      ? activeCurrentTenants.find((tenant) => tenant.$id === options.preferredTenantId)
+      : null;
+    const occupant = preferredTenant ?? activeCurrentTenants[0] ?? null;
+    const nextStatus = occupant
+      ? "occupied"
+      : house.status === "inactive"
+        ? "inactive"
+        : "vacant";
+    const nextCurrentTenantId = occupant?.$id ?? null;
+
+    if (
+      house.status === nextStatus &&
+      (house.currentTenantId ?? null) === nextCurrentTenantId
+    ) {
+      return;
+    }
+
+    const updatedHouse = await databases.updateDocument(
+      rcmsDatabaseId,
+      COLLECTIONS.houses,
+      houseId,
+      {
+        status: nextStatus,
+        currentTenantId: nextCurrentTenantId,
+      }
+    );
+    setHouses((prev) =>
+      prev.map((item) =>
+        item.$id === houseId ? (updatedHouse as unknown as House) : item
+      )
+    );
+  };
+
   useEffect(() => {
     loadData();
   }, []);
@@ -163,11 +212,14 @@ export default function TenantsPage() {
       const effectiveDate = rentEffectiveDate?.trim() || normalized.moveInDate;
       const payload = {
         ...normalized,
-        rentHistoryJson: appendRentHistory(null, {
-          effectiveDate,
-          amount: rent,
-          source: normalized.rentOverride != null ? "override" : "house",
-        }),
+        rentHistoryJson:
+          normalized.rentOverride != null
+            ? appendRentHistory(null, {
+                effectiveDate,
+                amount: rent,
+                source: "override",
+              })
+            : null,
       };
       const created = await databases.createDocument(
         rcmsDatabaseId,
@@ -175,15 +227,28 @@ export default function TenantsPage() {
         ID.unique(),
         payload
       );
-      setTenants((prev) => [...prev, created as unknown as Tenant]);
-      setSelected(created as unknown as Tenant);
+      const createdTenant = created as unknown as Tenant;
+      const createdHouseId =
+        typeof createdTenant.house === "string"
+          ? createdTenant.house
+          : createdTenant.house?.$id ?? normalized.house;
+      if (createdHouseId) {
+        await syncHouseOccupancy(createdHouseId, {
+          preferredTenantId:
+            createdTenant.status === "active" && !createdTenant.moveOutDate
+              ? createdTenant.$id
+              : undefined,
+        });
+      }
+      setTenants((prev) => [...prev, createdTenant]);
+      setSelected(createdTenant);
       setMode("list");
       setModalOpen(false);
       toast.push("success", "Tenant created.");
       if (user) {
         void logAudit({
           entityType: "tenant",
-          entityId: (created as unknown as Tenant).$id,
+          entityId: createdTenant.$id,
           action: "create",
           actorId: user.id,
           details: payload,
@@ -228,11 +293,13 @@ export default function TenantsPage() {
       const payload = {
         ...normalized,
         rentHistoryJson: rentChanged
-          ? appendRentHistory(selected.rentHistoryJson ?? null, {
-              effectiveDate,
-              amount: newRent,
-              source: normalized.rentOverride != null ? "override" : "house",
-            })
+          ? normalized.rentOverride != null
+            ? appendRentHistory(selected.rentHistoryJson ?? null, {
+                effectiveDate,
+                amount: newRent,
+                source: "override",
+              })
+            : selected.rentHistoryJson ?? null
           : selected.rentHistoryJson ?? null,
       };
       const updated = await databases.updateDocument(
@@ -241,19 +308,39 @@ export default function TenantsPage() {
         selected.$id,
         payload
       );
-      setTenants((prev) =>
-        prev.map((tenant) =>
-          tenant.$id === selected.$id ? (updated as unknown as Tenant) : tenant
+      const updatedTenant = updated as unknown as Tenant;
+      const updatedHouseId =
+        typeof updatedTenant.house === "string"
+          ? updatedTenant.house
+          : updatedTenant.house?.$id ?? normalized.house;
+      const houseIdsToSync = new Set<string>();
+      if (selectedHouseId) houseIdsToSync.add(selectedHouseId);
+      if (updatedHouseId) houseIdsToSync.add(updatedHouseId);
+      await Promise.all(
+        Array.from(houseIdsToSync).map((houseId) =>
+          syncHouseOccupancy(houseId, {
+            preferredTenantId:
+              houseId === updatedHouseId &&
+              updatedTenant.status === "active" &&
+              !updatedTenant.moveOutDate
+                ? updatedTenant.$id
+                : undefined,
+          })
         )
       );
-      setSelected(updated as unknown as Tenant);
+      setTenants((prev) =>
+        prev.map((tenant) =>
+          tenant.$id === selected.$id ? updatedTenant : tenant
+        )
+      );
+      setSelected(updatedTenant);
       setMode("list");
       setModalOpen(false);
       toast.push("success", "Tenant updated.");
       if (user) {
         void logAudit({
           entityType: "tenant",
-          entityId: (updated as unknown as Tenant).$id,
+          entityId: updatedTenant.$id,
           action: "update",
           actorId: user.id,
           details: payload,

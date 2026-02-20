@@ -10,12 +10,13 @@ import {
 } from "../payments/allocation";
 import type { House, Payment, Tenant } from "../../lib/schema";
 import { useToast } from "../ToastContext";
-import { buildRentByMonth } from "../../lib/rentHistory";
+import { appendRentHistory, buildRentByMonth } from "../../lib/rentHistory";
 
 type HouseRow = {
   HouseCode?: string;
   HouseName?: string;
   MonthlyRent?: number | string;
+  RentEffectiveDate?: string;
   Status?: string;
   Notes?: string;
 };
@@ -146,6 +147,8 @@ export default function MigrationPage() {
           continue;
         }
         if (houseByCode.has(code)) continue;
+        const monthlyRent = parseNumber(row.MonthlyRent);
+        const effectiveDate = normalize(row.RentEffectiveDate) || new Date().toISOString().slice(0, 10);
         const created = await databases.createDocument(
           rcmsDatabaseId,
           COLLECTIONS.houses,
@@ -153,9 +156,14 @@ export default function MigrationPage() {
           {
             code,
             name: normalize(row.HouseName) || null,
-            monthlyRent: parseNumber(row.MonthlyRent),
+            monthlyRent,
             status: normalize(row.Status).toLowerCase() || "vacant",
             notes: normalize(row.Notes) || null,
+            rentHistoryJson: appendRentHistory(null, {
+              effectiveDate,
+              amount: monthlyRent,
+              source: "house",
+            }),
             isMigrated: true,
           }
         );
