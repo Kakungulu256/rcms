@@ -177,61 +177,103 @@ export default function TenantDetail({
               </select>
             </div>
             <div className="mt-4 max-h-[60vh] overflow-auto pr-2">
-              <div className="grid gap-3 md:grid-cols-2">
-                {filteredMonths.map((month) => {
-                  const paid = paidByMonth[month] ?? 0;
-                  const expected = rentByMonth[month] ?? rent;
-                  const remaining = Math.max(expected - paid, 0);
-                  const status =
-                    paid >= expected && expected > 0
-                      ? "Paid"
-                      : paid > 0
-                      ? "Partial"
-                      : "Unpaid";
-                  const statusClass =
-                    status === "Paid"
-                      ? "text-white border-emerald-600 bg-emerald-600"
-                      : status === "Partial"
-                      ? "text-white border-amber-500 bg-amber-500"
-                      : "text-white border-rose-600 bg-rose-600";
-                  return (
-                    <div
-                      key={month}
-                      className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950/60 px-4 py-3 text-sm"
-                    >
-                      <div>
-                        <div className="text-slate-100">{month}</div>
-                        <div className="text-xs text-slate-500">
-                          Paid{" "}
-                          {paid.toLocaleString(undefined, {
-                            minimumFractionDigits: 2,
-                          })}
-                        </div>
-                        <div className="text-xs text-slate-500">
-                          Balance{" "}
-                          {remaining.toLocaleString(undefined, {
-                            minimumFractionDigits: 2,
-                          })}
-                        </div>
-                        {paymentSummaryByMonth[month]?.length ? (
-                          <div className="mt-2 space-y-1 text-xs text-slate-400">
-                            {paymentSummaryByMonth[month].map((entry, index) => (
-                              <div key={`${month}-${entry.paymentDate}-${index}`}>
-                                {entry.paymentDate} -{" "}
-                                {entry.amount.toLocaleString(undefined, {
+              <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/40">
+                <table className="min-w-[760px] w-full text-left text-sm text-slate-300">
+                  <thead className="text-xs text-slate-500" style={{ backgroundColor: "var(--surface-strong)" }}>
+                    <tr>
+                      <th className="px-4 py-3">Month</th>
+                      <th className="px-4 py-3">Date Paid</th>
+                      <th className="px-4 py-3">Amount</th>
+                      <th className="px-4 py-3">Balance</th>
+                      <th className="px-4 py-3">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredMonths.map((month) => {
+                      const paid = paidByMonth[month] ?? 0;
+                      const expected = rentByMonth[month] ?? rent;
+                      const remaining = Math.max(expected - paid, 0);
+                      const status =
+                        paid >= expected && expected > 0
+                          ? "Paid"
+                          : paid > 0
+                            ? "Partial"
+                            : "Unpaid";
+                      const statusClass =
+                        status === "Paid"
+                          ? "text-white border-emerald-600 bg-emerald-600"
+                          : status === "Partial"
+                            ? "text-white border-amber-500 bg-amber-500"
+                            : "text-white border-rose-600 bg-rose-600";
+                      const entries = paymentSummaryByMonth[month] ?? [];
+
+                      if (entries.length === 0) {
+                        return (
+                          <tr
+                            key={month}
+                            className="border-t"
+                            style={{ borderColor: "var(--border)" }}
+                          >
+                            <td className="px-4 py-3 text-slate-100">{month}</td>
+                            <td className="px-4 py-3 text-slate-500">N/A</td>
+                            <td className="amount px-4 py-3">0.00</td>
+                            <td className="amount px-4 py-3 text-rose-200">
+                              {remaining.toLocaleString(undefined, {
+                                minimumFractionDigits: 2,
+                              })}
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`rounded-full border px-3 py-1 text-xs ${statusClass}`}>
+                                {status}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      }
+
+                      return entries.map((entry, index) => (
+                        <tr
+                          key={`${month}-${entry.paymentDate}-${index}`}
+                          className="border-t"
+                          style={{ borderColor: "var(--border)" }}
+                        >
+                          <td className="px-4 py-3 text-slate-100">
+                            {index === 0 ? month : ""}
+                          </td>
+                          <td className="px-4 py-3 text-slate-400">{entry.paymentDate}</td>
+                          <td className="amount px-4 py-3">
+                            {entry.amount.toLocaleString(undefined, {
+                              minimumFractionDigits: 2,
+                            })}
+                          </td>
+                          <td className="amount px-4 py-3 text-rose-200">
+                            {index === 0
+                              ? remaining.toLocaleString(undefined, {
                                   minimumFractionDigits: 2,
-                                })}
-                              </div>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                      <span className={`rounded-full border px-3 py-1 text-xs ${statusClass}`}>
-                        {status}
-                      </span>
-                    </div>
-                  );
-                })}
+                                })
+                              : ""}
+                          </td>
+                          <td className="px-4 py-3">
+                            {index === 0 ? (
+                              <span className={`rounded-full border px-3 py-1 text-xs ${statusClass}`}>
+                                {status}
+                              </span>
+                            ) : (
+                              ""
+                            )}
+                          </td>
+                        </tr>
+                      ));
+                    })}
+                    {filteredMonths.length === 0 && (
+                      <tr>
+                        <td className="px-4 py-4 text-slate-500" colSpan={5}>
+                          No payment status records for the selected year.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>

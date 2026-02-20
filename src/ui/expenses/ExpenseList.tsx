@@ -9,7 +9,9 @@ type Props = {
 
 function resolveHouseLabel(expense: Expense, houses: House[]) {
   if (!expense.house) return "--";
-  const match = houses.find((house) => house.$id === expense.house);
+  const houseId =
+    typeof expense.house === "string" ? expense.house : expense.house?.$id ?? "";
+  const match = houses.find((house) => house.$id === houseId);
   return match ? match.code : "--";
 }
 
@@ -18,10 +20,10 @@ export default function ExpenseList({ expenses, houses, canEdit, onEdit }: Props
 
   return (
     <div
-      className="overflow-hidden rounded-2xl border"
+      className="overflow-x-auto rounded-2xl border"
       style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
     >
-      <table className="w-full text-left text-sm">
+      <table className="min-w-[760px] w-full text-left text-sm">
         <thead className="text-xs text-slate-500" style={{ backgroundColor: "var(--surface-strong)" }}>
           <tr>
             <th className="px-5 py-4">Category</th>

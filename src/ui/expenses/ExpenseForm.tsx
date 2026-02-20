@@ -28,6 +28,19 @@ function buildEmptyValues(): ExpenseFormValues {
   };
 }
 
+function normalizeRelationValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (
+    value &&
+    typeof value === "object" &&
+    "$id" in value &&
+    typeof (value as { $id?: unknown }).$id === "string"
+  ) {
+    return (value as { $id: string }).$id;
+  }
+  return "";
+}
+
 export default function ExpenseForm({
   houses,
   onSubmit,
@@ -47,7 +60,7 @@ export default function ExpenseForm({
       reset({
         ...emptyValues,
         ...initialValues,
-        house: initialValues.house ?? "",
+        house: normalizeRelationValue(initialValues.house),
         maintenanceType: initialValues.maintenanceType ?? "",
         notes: initialValues.notes ?? "",
       });

@@ -3,11 +3,12 @@ import { Query } from "appwrite";
 import { format, parseISO } from "date-fns";
 import {
   account,
+  databases,
   functions,
   listAllDocuments,
   rcmsDatabaseId,
 } from "../../lib/appwrite";
-import { COLLECTIONS, decodeJson } from "../../lib/schema";
+import { COLLECTIONS, decodeJson, PAYMENT_METHODS } from "../../lib/schema";
 import type {
   House,
   Payment,
@@ -33,6 +34,14 @@ type PreviewState = {
   allocationJson: string;
 };
 
+type PaymentEditValues = {
+  amount: number;
+  method: "cash" | "bank";
+  paymentDate: string;
+  reference: string;
+  notes: string;
+};
+
 type FunctionResult =
   | { ok: true; payment?: Payment; reversal?: Payment }
   | { ok: false; error?: string };
@@ -55,6 +64,10 @@ export default function PaymentsPage() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [reverseTarget, setReverseTarget] = useState<Payment | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editingPayment, setEditingPayment] = useState<Payment | null>(null);
+  const [editValues, setEditValues] = useState<PaymentEditValues | null>(null);
+  const [editSaving, setEditSaving] = useState(false);
   const [confirmLoading, setConfirmLoading] = useState(false);
   const [reverseLoadingId, setReverseLoadingId] = useState<string | null>(null);
   const allocateFunctionId = import.meta.env.VITE_ALLOCATE_RENT_PAYMENT_FUNCTION_ID as
@@ -127,6 +140,47 @@ export default function PaymentsPage() {
   const visiblePayments = useMemo(() => {
     return payments.filter((payment) => !payment.isReversal);
   }, [payments]);
+  const currentMonthKey = format(new Date(), "yyyy-MM");
+
+  const getPaymentTenantId = (payment: Payment) =>
+    typeof payment.tenant === "string" ? payment.tenant : payment.tenant?.$id ?? "";
+
+  const canEditPaymentRow = (payment: Payment) => {
+    if (!canRecordPayments) return false;
+    if (payment.isReversal) return false;
+    if (reversedPaymentIds.has(payment.$id)) return false;
+    if (payment.paymentDate?.slice(0, 7) !== currentMonthKey) return false;
+    const tenantId = getPaymentTenantId(payment);
+    if (!tenantId) return false;
+    const hasLaterPayment = payments.some((candidate) => {
+      if (candidate.$id === payment.$id) return false;
+      if (candidate.isReversal) return false;
+      return (
+        getPaymentTenantId(candidate) === tenantId &&
+        candidate.paymentDate > payment.paymentDate
+      );
+    });
+    return !hasLaterPayment;
+  };
+
+  const openEditPayment = (payment: Payment) => {
+    if (!canEditPaymentRow(payment)) {
+      toast.push(
+        "warning",
+        "Only latest non-reversed payments in the current month can be edited."
+      );
+      return;
+    }
+    setEditingPayment(payment);
+    setEditValues({
+      amount: Number(payment.amount) || 0,
+      method: payment.method,
+      paymentDate: payment.paymentDate?.slice(0, 10) ?? "",
+      reference: payment.reference ?? "",
+      notes: payment.notes ?? "",
+    });
+    setEditOpen(true);
+  };
 
   const handlePreview = (values: PaymentFormValues) => {
     if (!canRecordPayments) {
@@ -342,6 +396,106 @@ export default function PaymentsPage() {
     }
   };
 
+  const handleSaveEdit = async () => {
+    if (!editingPayment || !editValues) return;
+    if (!canRecordPayments) {
+      toast.push("warning", "You do not have permission to edit payments.");
+      return;
+    }
+    const tenantId = getPaymentTenantId(editingPayment);
+    const tenant = tenantLookup.get(tenantId);
+    if (!tenant) {
+      toast.push("error", "Tenant not found for this payment.");
+      return;
+    }
+    if (!canEditPaymentRow(editingPayment)) {
+      toast.push(
+        "warning",
+        "Only latest non-reversed payments in the current month can be edited."
+      );
+      setEditOpen(false);
+      setEditingPayment(null);
+      setEditValues(null);
+      return;
+    }
+    setEditSaving(true);
+    setLoading(true);
+    setError(null);
+    try {
+      const houseId =
+        typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
+      const house = houseLookup.get(houseId);
+      const rent = tenant.rentOverride ?? house?.monthlyRent ?? 0;
+      const tenantPayments = payments.filter((payment) => {
+        const paymentTenantId = getPaymentTenantId(payment);
+        return paymentTenantId === tenant.$id && payment.$id !== editingPayment.$id;
+      });
+      const paidByMonth = buildPaidByMonth(tenantPayments);
+      const months = buildMonthSeries(tenant.moveInDate, editValues.paymentDate, 24);
+      const rentByMonth = buildRentByMonth({
+        months,
+        tenantHistoryJson: tenant.rentHistoryJson ?? null,
+        houseHistoryJson: house?.rentHistoryJson ?? null,
+        fallbackRent: rent,
+      });
+      const allocation = previewAllocation({
+        amount: editValues.amount,
+        months,
+        paidByMonth,
+        rentByMonth,
+      });
+      const allocationJson = JSON.stringify(
+        Object.fromEntries(
+          allocation.lines
+            .filter((line) => line.applied > 0)
+            .map((line) => [line.month, line.applied])
+        )
+      );
+
+      await databases.updateDocument(
+        rcmsDatabaseId,
+        COLLECTIONS.payments,
+        editingPayment.$id,
+        {
+          amount: editValues.amount,
+          method: editValues.method,
+          paymentDate: editValues.paymentDate,
+          reference: editValues.reference?.trim() ? editValues.reference.trim() : null,
+          notes: editValues.notes?.trim() ? editValues.notes.trim() : null,
+          allocationJson,
+        }
+      );
+
+      if (user) {
+        void logAudit({
+          entityType: "payment",
+          entityId: editingPayment.$id,
+          action: "update",
+          actorId: user.id,
+          details: {
+            amount: editValues.amount,
+            method: editValues.method,
+            paymentDate: editValues.paymentDate,
+          },
+        });
+      }
+      setEditOpen(false);
+      setEditingPayment(null);
+      setEditValues(null);
+      await loadData();
+      toast.push("success", "Payment updated.");
+    } catch (err) {
+      console.error("Payment edit failed:", err);
+      const message =
+        err instanceof Error && err.message ? err.message : "Failed to update payment.";
+      setError(message);
+      toast.push("error", message);
+    } finally {
+      setEditSaving(false);
+      setLoading(false);
+    }
+  };
+
   return (
     <section className="space-y-6">
       <header className="flex flex-wrap items-center justify-between gap-3">
@@ -385,6 +539,9 @@ export default function PaymentsPage() {
                     : payment.tenant?.fullName ?? "Tenant";
                 const allocation =
                   decodeJson<Record<string, number>>(payment.allocationJson) ?? {};
+                const allocationRows = Object.entries(allocation).sort(([a], [b]) =>
+                  a.localeCompare(b)
+                );
                 const isExpanded = expandedPaymentId === payment.$id;
                 const isAlreadyReversed = reversedPaymentIds.has(payment.$id);
                 const reversal = reversalByOriginalId.get(payment.$id);
@@ -428,18 +585,49 @@ export default function PaymentsPage() {
                           )
                         </div>
                       )}
-                      {Object.entries(allocation).map(([month, amount]) => (
-                        <div key={`${payment.$id}-${month}`}>
-                          {month}:{" "}
-                          {Number(amount).toLocaleString(undefined, {
-                            minimumFractionDigits: 2,
-                          })}{" "}
-                          ({payment.paymentDate?.slice(0, 10)})
-                        </div>
-                      ))}
-                      {Object.keys(allocation).length === 0 && (
-                        <div>No allocation details.</div>
-                      )}
+                      <div className="overflow-x-auto rounded-lg border border-slate-200/20">
+                        <table className="min-w-[360px] w-full text-left text-xs">
+                          <thead className="text-slate-300">
+                            <tr>
+                              <th className="px-3 py-2">Paid for</th>
+                              <th className="px-3 py-2">Amount</th>
+                              <th className="px-3 py-2">Date paid</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {allocationRows.length > 0 ? (
+                              allocationRows.map(([month, amount]) => (
+                                <tr
+                                  key={`${payment.$id}-${month}`}
+                                  className="border-t border-slate-200/10"
+                                >
+                                  <td className="px-3 py-2">{month}</td>
+                                  <td className="px-3 py-2">
+                                    {Number(amount).toLocaleString(undefined, {
+                                      minimumFractionDigits: 2,
+                                    })}
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    {payment.paymentDate?.slice(0, 10)}
+                                  </td>
+                                </tr>
+                              ))
+                            ) : (
+                              <tr className="border-t border-slate-200/10">
+                                <td className="px-3 py-2">Unspecified</td>
+                                <td className="px-3 py-2">
+                                  {Number(payment.amount).toLocaleString(undefined, {
+                                    minimumFractionDigits: 2,
+                                  })}
+                                </td>
+                                <td className="px-3 py-2">
+                                  {payment.paymentDate?.slice(0, 10)}
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
                   )}
                   <div className="mt-3 flex justify-end">
@@ -447,6 +635,14 @@ export default function PaymentsPage() {
                       <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-3 py-1 text-xs text-amber-300">
                         Reversed
                       </span>
+                    )}
+                    {canEditPaymentRow(payment) && (
+                      <button
+                        onClick={() => openEditPayment(payment)}
+                        className="btn-secondary mr-2 text-xs"
+                      >
+                        Edit
+                      </button>
                     )}
                     {canReversePayments && !payment.isReversal && !isAlreadyReversed && (
                       <button
@@ -497,6 +693,111 @@ export default function PaymentsPage() {
         onConfirm={handleReverse}
         confirmLoading={reverseLoadingId === reverseTarget?.$id}
       />
+      <Modal
+        open={canRecordPayments && editOpen && !!editingPayment && !!editValues}
+        title="Edit Payment"
+        description="Update latest current-month payment details."
+        onClose={() => {
+          setEditOpen(false);
+          setEditingPayment(null);
+          setEditValues(null);
+        }}
+      >
+        {editValues && (
+          <form
+            className="space-y-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void handleSaveEdit();
+            }}
+          >
+            <label className="block text-sm text-slate-300">
+              Amount
+              <input
+                type="number"
+                step="0.01"
+                className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                value={editValues.amount}
+                onChange={(event) =>
+                  setEditValues((prev) =>
+                    prev
+                      ? { ...prev, amount: Number(event.target.value) || 0 }
+                      : prev
+                  )
+                }
+                required
+              />
+            </label>
+            <label className="block text-sm text-slate-300">
+              Payment Method
+              <select
+                className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                value={editValues.method}
+                onChange={(event) =>
+                  setEditValues((prev) =>
+                    prev
+                      ? { ...prev, method: event.target.value as "cash" | "bank" }
+                      : prev
+                  )
+                }
+                required
+              >
+                {PAYMENT_METHODS.map((method) => (
+                  <option key={method} value={method}>
+                    {method === "cash" ? "Cash" : "Bank Deposit"}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block text-sm text-slate-300">
+              Payment Date
+              <input
+                type="date"
+                className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                value={editValues.paymentDate}
+                onChange={(event) =>
+                  setEditValues((prev) =>
+                    prev ? { ...prev, paymentDate: event.target.value } : prev
+                  )
+                }
+                required
+              />
+            </label>
+            <label className="block text-sm text-slate-300">
+              Reference
+              <input
+                className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                value={editValues.reference}
+                onChange={(event) =>
+                  setEditValues((prev) =>
+                    prev ? { ...prev, reference: event.target.value } : prev
+                  )
+                }
+              />
+            </label>
+            <label className="block text-sm text-slate-300">
+              Notes
+              <textarea
+                rows={3}
+                className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                value={editValues.notes}
+                onChange={(event) =>
+                  setEditValues((prev) =>
+                    prev ? { ...prev, notes: event.target.value } : prev
+                  )
+                }
+              />
+            </label>
+            <button
+              type="submit"
+              disabled={editSaving}
+              className="btn-primary w-full text-sm disabled:opacity-60"
+            >
+              {editSaving ? "Saving..." : "Save Changes"}
+            </button>
+          </form>
+        )}
+      </Modal>
     </section>
   );
 }

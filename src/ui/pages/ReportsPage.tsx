@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Query } from "appwrite";
 import {
+  addMonths,
   endOfMonth,
   endOfYear,
   format,
@@ -30,6 +31,7 @@ type ArrearsRow = {
   tenantId: string;
   tenantName: string;
   houseLabel: string;
+  statusLabel: string;
   expected: number;
   paid: number;
   balance: number;
@@ -40,8 +42,41 @@ type ExpenseCategoryRow = {
   total: number;
 };
 
+type HouseRangeRow = {
+  houseId: string;
+  houseCode: string;
+  houseName: string;
+  collected: number;
+  owed: number;
+  occupancyStatus: string;
+  occupiedPeriods: string;
+  vacantPeriods: string;
+};
+
+type MonthlyTenantStatusRow = {
+  tenantId: string;
+  unitNo: string;
+  tenantName: string;
+  contact: string;
+  rate: number;
+  nextRate: number;
+  rentPaid: number;
+  balance: number;
+  datePaid: string;
+  status: string;
+};
+
+type DisbursementRow = {
+  label: string;
+  amount: number;
+};
+
 function currency(value: number) {
   return value.toLocaleString(undefined, { minimumFractionDigits: 2 });
+}
+
+function ush(value: number) {
+  return `USh ${currency(value)}`;
 }
 
 function dateKey(value: string | Date) {
@@ -49,6 +84,55 @@ function dateKey(value: string | Date) {
     return value.slice(0, 10);
   }
   return format(value, "yyyy-MM-dd");
+}
+
+function formatRangeLabel(start: Date, end: Date) {
+  return `${dateKey(start)} to ${dateKey(end)}`;
+}
+
+function mergeIntervals(
+  intervals: Array<{ start: Date; end: Date }>
+): Array<{ start: Date; end: Date }> {
+  if (intervals.length === 0) return [];
+  const sorted = intervals
+    .slice()
+    .sort((a, b) => a.start.getTime() - b.start.getTime());
+  const merged: Array<{ start: Date; end: Date }> = [];
+  let current = { ...sorted[0] };
+  for (let i = 1; i < sorted.length; i += 1) {
+    const next = sorted[i];
+    if (next.start.getTime() <= current.end.getTime()) {
+      if (next.end.getTime() > current.end.getTime()) {
+        current.end = next.end;
+      }
+    } else {
+      merged.push(current);
+      current = { ...next };
+    }
+  }
+  merged.push(current);
+  return merged;
+}
+
+function invertIntervals(
+  range: { start: Date; end: Date },
+  occupied: Array<{ start: Date; end: Date }>
+): Array<{ start: Date; end: Date }> {
+  if (occupied.length === 0) return [{ start: range.start, end: range.end }];
+  const gaps: Array<{ start: Date; end: Date }> = [];
+  let cursor = range.start;
+  occupied.forEach((slot) => {
+    if (slot.start.getTime() > cursor.getTime()) {
+      gaps.push({ start: cursor, end: slot.start });
+    }
+    if (slot.end.getTime() > cursor.getTime()) {
+      cursor = slot.end;
+    }
+  });
+  if (cursor.getTime() < range.end.getTime()) {
+    gaps.push({ start: cursor, end: range.end });
+  }
+  return gaps;
 }
 
 export default function ReportsPage() {
@@ -177,13 +261,10 @@ export default function ReportsPage() {
       const key = dateKey(expense.expenseDate);
       return key >= rangeStartKey && key <= rangeEndKey;
     });
-    const generalExpenses = expensesInRange
-      .filter((expense) => expense.category === "general")
-      .reduce((sum, expense) => sum + expense.amount, 0);
-    const maintenanceExpenses = expensesInRange
-      .filter((expense) => expense.category === "maintenance")
-      .reduce((sum, expense) => sum + expense.amount, 0);
-    const totalExpenses = generalExpenses + maintenanceExpenses;
+    const totalExpenses = expensesInRange.reduce(
+      (sum, expense) => sum + expense.amount,
+      0
+    );
     const netCollection = paidInRange - totalExpenses;
 
     const rows: SummaryRow[] = [
@@ -192,8 +273,6 @@ export default function ReportsPage() {
         value: `${rangeStartKey} to ${rangeEndKey}`,
       },
       { metric: "Rent Collected", value: currency(paidInRange) },
-      { metric: "General Expenses", value: currency(generalExpenses) },
-      { metric: "Maintenance Expenses", value: currency(maintenanceExpenses) },
       { metric: "Total Expenses", value: currency(totalExpenses) },
       { metric: "Net Collection", value: currency(netCollection) },
       { metric: "Active Tenants", value: String(tenants.filter((t) => t.status === "active").length) },
@@ -268,18 +347,106 @@ export default function ReportsPage() {
       }))
       .sort((a, b) => b.total - a.total);
 
+    const byHouseRangeRows: HouseRangeRow[] = houses
+      .map((house) => {
+        const houseTenants = tenants.filter((tenant) => {
+          const tenantHouseId =
+            typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
+          return tenantHouseId === house.$id;
+        });
+        const occupiedIntervalsRaw = houseTenants
+          .map((tenant) => {
+            const moveIn = parseISO(tenant.moveInDate);
+            const moveOut = tenant.moveOutDate ? parseISO(tenant.moveOutDate) : range.end;
+            const start = moveIn > range.start ? moveIn : range.start;
+            const end = moveOut < range.end ? moveOut : range.end;
+            if (start.getTime() > end.getTime()) return null;
+            return { start, end };
+          })
+          .filter((item): item is { start: Date; end: Date } => Boolean(item));
+        const occupiedIntervals = mergeIntervals(occupiedIntervalsRaw);
+        const vacantIntervals = invertIntervals(range, occupiedIntervals);
+
+        let occupancyStatus = "Vacant";
+        if (occupiedIntervals.length > 0) {
+          const fullyOccupied = occupiedIntervals.some(
+            (interval) =>
+              interval.start.getTime() <= range.start.getTime() &&
+              interval.end.getTime() >= range.end.getTime()
+          );
+          occupancyStatus = fullyOccupied ? "Occupied" : "Mixed";
+        }
+
+        const occupiedPeriods =
+          occupiedIntervals.length > 0
+            ? occupiedIntervals
+                .map((interval) => formatRangeLabel(interval.start, interval.end))
+                .join("; ")
+            : "None";
+        const vacantPeriods =
+          vacantIntervals.length > 0
+            ? vacantIntervals
+                .map((interval) => formatRangeLabel(interval.start, interval.end))
+                .join("; ")
+            : "None";
+
+        const houseCollected = houseTenants.reduce((sum, tenant) => {
+          const tenantPayments = payments.filter((payment) => {
+            const tenantId =
+              typeof payment.tenant === "string"
+                ? payment.tenant
+                : payment.tenant?.$id ?? "";
+            return tenantId === tenant.$id;
+          });
+          const paidByMonth = buildPaidByMonth(tenantPayments);
+          const months = buildMonthSeries(tenant.moveInDate, range.end).filter(
+            (month) => month >= rangeStartMonth && month <= rangeEndMonth
+          );
+          return (
+            sum +
+            months.reduce((monthSum, month) => monthSum + (paidByMonth[month] ?? 0), 0)
+          );
+        }, 0);
+
+        const houseExpected = houseTenants.reduce((sum, tenant) => {
+          const months = buildMonthSeries(tenant.moveInDate, range.end).filter((month) => {
+            if (month < rangeStartMonth || month > rangeEndMonth) return false;
+            if (!tenant.moveOutDate) return true;
+            return month <= tenant.moveOutDate.slice(0, 7);
+          });
+          const rentByMonth = buildRentByMonth({
+            months,
+            tenantHistoryJson: tenant.rentHistoryJson ?? null,
+            houseHistoryJson: house.rentHistoryJson ?? null,
+            fallbackRent: tenant.rentOverride ?? house.monthlyRent ?? 0,
+          });
+          return sum + months.reduce((monthSum, month) => monthSum + (rentByMonth[month] ?? 0), 0);
+        }, 0);
+
+        return {
+          houseId: house.$id,
+          houseCode: house.code,
+          houseName: house.name ?? "",
+          collected: houseCollected,
+          owed: Math.max(houseExpected - houseCollected, 0),
+          occupancyStatus,
+          occupiedPeriods,
+          vacantPeriods,
+        };
+      })
+      .sort((a, b) => b.collected - a.collected);
+
+    const today = new Date();
+    const currentDateKey = dateKey(today);
+
     const arrearsRows: ArrearsRow[] = tenants
-      .filter((tenant) => tenant.status === "active")
       .map((tenant) => {
         const houseId =
           typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
         const house = houseLookup.get(houseId);
         const moveOut = tenant.moveOutDate ? parseISO(tenant.moveOutDate) : null;
-        const effectiveEnd = moveOut && moveOut < range.end ? moveOut : range.end;
-        const months = buildMonthSeries(tenant.moveInDate, effectiveEnd);
-        const monthsInRange = months.filter(
-          (month) => month >= rangeStartMonth && month <= rangeEndMonth
-        );
+        const effectiveEnd = moveOut && moveOut < today ? moveOut : today;
+        const monthsInRange = buildMonthSeries(tenant.moveInDate, effectiveEnd);
         const rentByMonth = buildRentByMonth({
           months: monthsInRange,
           tenantHistoryJson: tenant.rentHistoryJson ?? null,
@@ -307,6 +474,10 @@ export default function ReportsPage() {
           tenantId: tenant.$id,
           tenantName: tenant.fullName,
           houseLabel: house?.code ?? "--",
+          statusLabel:
+            tenant.status === "active" && !tenant.moveOutDate
+              ? "active"
+              : "inactive (moved out)",
           expected,
           paid,
           balance,
@@ -314,6 +485,140 @@ export default function ReportsPage() {
       })
       .filter((row) => row.balance > 0)
       .sort((a, b) => b.balance - a.balance);
+    const totalTenantBalance = arrearsRows.reduce((sum, row) => sum + row.balance, 0);
+    rows.push({
+      metric: "Outstanding Tenant Balances",
+      value: currency(totalTenantBalance),
+    });
+
+    const reportMonthKey = rangeEndMonth;
+    const reportMonthDate = parseISO(`${reportMonthKey}-01`);
+    const reportMonthStart = startOfMonth(reportMonthDate);
+    const reportMonthEnd = endOfMonth(reportMonthDate);
+    const nextMonthDate = addMonths(reportMonthDate, 1);
+    const nextMonthKey = format(nextMonthDate, "yyyy-MM");
+    const reportMonthLabel = format(reportMonthDate, "MMMM yyyy");
+    const nextMonthLabel = format(nextMonthDate, "MMMM yyyy");
+
+    const monthlyTenancyRows: MonthlyTenantStatusRow[] = tenants
+      .filter((tenant) => {
+        const moveIn = parseISO(tenant.moveInDate);
+        const moveOut = tenant.moveOutDate ? parseISO(tenant.moveOutDate) : null;
+        if (moveIn > reportMonthEnd) return false;
+        if (moveOut && moveOut < reportMonthStart) return false;
+        return true;
+      })
+      .map((tenant) => {
+        const houseId =
+          typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
+        const house = houseLookup.get(houseId);
+        const tenantPayments = payments.filter((payment) => {
+          const tenantId =
+            typeof payment.tenant === "string"
+              ? payment.tenant
+              : payment.tenant?.$id ?? "";
+          return tenantId === tenant.$id;
+        });
+        const paidByMonth = buildPaidByMonth(tenantPayments);
+        const paymentSummaryByMonth = buildPaymentSummaryByMonth(tenantPayments);
+        const monthsToReport = buildMonthSeries(tenant.moveInDate, reportMonthDate);
+        const monthsForRates = Array.from(
+          new Set([...monthsToReport, reportMonthKey, nextMonthKey])
+        );
+        const rentByMonth = buildRentByMonth({
+          months: monthsForRates,
+          tenantHistoryJson: tenant.rentHistoryJson ?? null,
+          houseHistoryJson: house?.rentHistoryJson ?? null,
+          fallbackRent: tenant.rentOverride ?? house?.monthlyRent ?? 0,
+        });
+        const expectedUpToReport = monthsToReport.reduce(
+          (sum, month) => sum + (rentByMonth[month] ?? 0),
+          0
+        );
+        const paidUpToReport = monthsToReport.reduce(
+          (sum, month) => sum + (paidByMonth[month] ?? 0),
+          0
+        );
+        const rate = rentByMonth[reportMonthKey] ?? 0;
+        const nextRate = rentByMonth[nextMonthKey] ?? rate;
+        const rentPaid = paidByMonth[reportMonthKey] ?? 0;
+        const balance = Math.max(expectedUpToReport - paidUpToReport, 0);
+        const paymentDatesThisMonth = (paymentSummaryByMonth[reportMonthKey] ?? [])
+          .filter((item) => item.amount > 0)
+          .map((item) => item.paymentDate)
+          .sort((a, b) => a.localeCompare(b));
+        const latestPaymentDate =
+          paymentDatesThisMonth.length > 0
+            ? paymentDatesThisMonth[paymentDatesThisMonth.length - 1]
+            : "N/A";
+        const status =
+          balance > 0 && rentPaid <= 0
+            ? "Arrears"
+            : rentPaid >= rate && balance > 0
+              ? "Paid / Arrears"
+              : rentPaid >= rate
+                ? "Paid"
+                : rentPaid > 0
+                  ? "Partial"
+                  : "Unpaid";
+
+        return {
+          tenantId: tenant.$id,
+          unitNo: house?.code ?? "--",
+          tenantName: tenant.fullName,
+          contact: tenant.phone?.trim() || "N/A",
+          rate,
+          nextRate,
+          rentPaid,
+          balance,
+          datePaid: latestPaymentDate,
+          status,
+        };
+      })
+      .sort((a, b) => {
+        const unitSort = a.unitNo.localeCompare(b.unitNo);
+        if (unitSort !== 0) return unitSort;
+        return a.tenantName.localeCompare(b.tenantName);
+      });
+
+    const rentExpectedThisMonth = monthlyTenancyRows.reduce(
+      (sum, row) => sum + row.rate,
+      0
+    );
+    const amountPaidThisMonth = monthlyTenancyRows.reduce(
+      (sum, row) => sum + Math.max(row.rentPaid, 0),
+      0
+    );
+    const unpaidRentThisMonth = Math.max(rentExpectedThisMonth - amountPaidThisMonth, 0);
+    const rentExpectedNextMonth = monthlyTenancyRows.reduce(
+      (sum, row) => sum + row.nextRate,
+      0
+    );
+    const tenantsWithArrearsCount = monthlyTenancyRows.filter(
+      (row) => row.balance > 0
+    ).length;
+
+    const expensesForReportMonth = expenses.filter(
+      (expense) => expense.expenseDate?.slice(0, 7) === reportMonthKey
+    );
+    const disbursementMap = new Map<string, number>();
+    expensesForReportMonth.forEach((expense) => {
+      const label = expense.description?.trim()
+        ? expense.description.trim()
+        : expense.category === "maintenance"
+          ? "Maintenance"
+          : "General Expense";
+      disbursementMap.set(label, (disbursementMap.get(label) ?? 0) + expense.amount);
+    });
+    const disbursementRows: DisbursementRow[] = Array.from(disbursementMap.entries()).map(
+      ([label, amount]) => ({ label, amount })
+    );
+    const totalDisbursements = disbursementRows.reduce(
+      (sum, row) => sum + row.amount,
+      0
+    );
+    const totalCashToLandlord = amountPaidThisMonth - totalDisbursements;
+    const totalExpectedNextMonth = rentExpectedNextMonth + totalTenantBalance;
 
     const selectedTenant = selectedTenantId
       ? tenantLookup.get(selectedTenantId) ?? null
@@ -336,7 +641,6 @@ export default function ReportsPage() {
       : [];
     const paidByMonth = buildPaidByMonth(tenantPayments);
     const paymentSummaryByMonth = buildPaymentSummaryByMonth(tenantPayments);
-    const today = new Date();
     const selectedTenantMoveOut = selectedTenant?.moveOutDate
       ? parseISO(selectedTenant.moveOutDate)
       : null;
@@ -382,6 +686,12 @@ export default function ReportsPage() {
       ? selectedTenant.moveInDate?.slice(0, 10) ?? ""
       : "";
     const tenantDetailRangeEndKey = selectedTenant ? dateKey(selectedTenantEnd) : "";
+    const tenantDetailCurrentDateKey = dateKey(today);
+    const tenantDetailStatusLabel = selectedTenant
+      ? selectedTenant.status === "active" && !selectedTenant.moveOutDate
+        ? "active"
+        : "inactive (moved out)"
+      : "";
 
     return {
       rows,
@@ -394,14 +704,33 @@ export default function ReportsPage() {
       rangeEndMonth,
       tenantRows,
       houseRows,
+      byHouseRangeRows,
       tenantDetailRows,
       tenantDetailTotals,
       tenantDetailRangeStartKey,
       tenantDetailRangeEndKey,
+      tenantDetailCurrentDateKey,
+      tenantDetailStatusLabel,
       selectedTenant,
       selectedHouse,
       arrearsRows,
       expenseCategoryRows,
+      totalTenantBalance,
+      currentDateKey,
+      reportMonthKey,
+      reportMonthLabel,
+      nextMonthLabel,
+      monthlyTenancyRows,
+      disbursementRows,
+      expensesForReportMonth,
+      rentExpectedThisMonth,
+      amountPaidThisMonth,
+      unpaidRentThisMonth,
+      rentExpectedNextMonth,
+      totalExpectedNextMonth,
+      totalDisbursements,
+      totalCashToLandlord,
+      tenantsWithArrearsCount,
     };
   }, [
     expenses,
@@ -433,7 +762,8 @@ export default function ReportsPage() {
             Tenant: summary.selectedTenant.fullName,
             House: summary.selectedHouse?.code ?? "--",
             MoveInDate: summary.selectedTenant.moveInDate?.slice(0, 10) ?? "",
-            Period: `${summary.tenantDetailRangeStartKey} to ${summary.tenantDetailRangeEndKey}`,
+            CurrentDate: summary.tenantDetailCurrentDateKey,
+            Status: summary.tenantDetailStatusLabel,
           },
         ];
         XLSX.utils.book_append_sheet(
@@ -445,14 +775,22 @@ export default function ReportsPage() {
         XLSX.utils.book_append_sheet(
           workbook,
           XLSX.utils.json_to_sheet(
-            summary.tenantDetailRows.map((row) => ({
-              Month: row.month,
-              PaidForMonth: row.paid,
-              ArrearsForMonth: row.balance,
-              PaymentDates: row.payments
-                .map((payment) => `${payment.paymentDate} (${currency(payment.amount)})`)
-                .join("; "),
-            }))
+            [
+              ...summary.tenantDetailRows.map((row) => ({
+                Month: row.month,
+                PaidForMonth: row.paid,
+                ArrearsForMonth: row.balance,
+                PaymentDates: row.payments
+                  .map((payment) => `${payment.paymentDate} (${currency(payment.amount)})`)
+                  .join("; "),
+              })),
+              {
+                Month: "Totals",
+                PaidForMonth: summary.tenantDetailTotals.paid,
+                ArrearsForMonth: summary.tenantDetailTotals.balance,
+                PaymentDates: "",
+              },
+            ]
           ),
           "TenantDetail"
         );
@@ -487,16 +825,15 @@ export default function ReportsPage() {
       } else if (reportType === "byHouse") {
         XLSX.utils.book_append_sheet(
           workbook,
-          XLSX.utils.json_to_sheet(summary.rows),
-          "Summary"
-        );
-        XLSX.utils.book_append_sheet(
-          workbook,
           XLSX.utils.json_to_sheet(
-            summary.houseRows.map((row) => ({
+            summary.byHouseRangeRows.map((row) => ({
               House: row.houseCode,
               Name: row.houseName,
-              Total: row.total,
+              Collected: row.collected,
+              Owed: row.owed,
+              Occupancy: row.occupancyStatus,
+              OccupiedDates: row.occupiedPeriods,
+              VacantDates: row.vacantPeriods,
             }))
           ),
           "ByHouse"
@@ -506,6 +843,52 @@ export default function ReportsPage() {
           workbook,
           XLSX.utils.json_to_sheet(summary.rows),
           "Summary"
+        );
+
+        XLSX.utils.book_append_sheet(
+          workbook,
+          XLSX.utils.json_to_sheet(
+            summary.monthlyTenancyRows.map((row) => ({
+              UnitNo: row.unitNo,
+              TenantName: row.tenantName,
+              Contact: row.contact,
+              Rate: row.rate,
+              RentPaid: row.rentPaid,
+              Balance: row.balance,
+              DatePaid: row.datePaid,
+              Status: row.status,
+            }))
+          ),
+          "MonthlyTenancy"
+        );
+
+        XLSX.utils.book_append_sheet(
+          workbook,
+          XLSX.utils.json_to_sheet([
+            { Item: "Total Rent Collected", Amount: summary.amountPaidThisMonth },
+            ...summary.disbursementRows.map((row) => ({
+              Item: row.label,
+              Amount: row.amount,
+            })),
+            { Item: "Total Cash To Landlord", Amount: summary.totalCashToLandlord },
+          ]),
+          "Disbursements"
+        );
+
+        XLSX.utils.book_append_sheet(
+          workbook,
+          XLSX.utils.json_to_sheet([
+            { Note: `Report Month`, Value: summary.reportMonthLabel },
+            { Note: "Rent expected this Month", Value: summary.rentExpectedThisMonth },
+            { Note: "Amount of rent paid", Value: summary.amountPaidThisMonth },
+            { Note: "Unpaid rent", Value: summary.unpaidRentThisMonth },
+            { Note: "Total expected next month", Value: summary.totalExpectedNextMonth },
+            {
+              Note: "Tenants with arrears",
+              Value: summary.tenantsWithArrearsCount,
+            },
+          ]),
+          "Notes"
         );
 
         const paymentRows = payments
@@ -536,7 +919,10 @@ export default function ReportsPage() {
           Amount: expense.amount,
           Source: expense.source,
           ExpenseDate: expense.expenseDate,
-          House: expense.house ?? "",
+          House:
+            typeof expense.house === "string"
+              ? expense.house
+              : expense.house?.$id ?? "",
         }));
         XLSX.utils.book_append_sheet(
           workbook,
@@ -550,6 +936,7 @@ export default function ReportsPage() {
             summary.arrearsRows.map((row) => ({
               Tenant: row.tenantName,
               House: row.houseLabel,
+              Status: row.statusLabel,
               Expected: row.expected,
               Paid: row.paid,
               Balance: row.balance,
@@ -605,11 +992,13 @@ export default function ReportsPage() {
         return;
       }
 
-      const doc = new jsPDF();
+      const doc = new jsPDF({
+        orientation: reportType === "summary" ? "landscape" : "portrait",
+      });
       doc.setFontSize(16);
       const title =
         reportType === "summary"
-          ? "RCMS Summary"
+          ? `MONTHLY TENANCY REPORT FOR ${summary.reportMonthLabel.toUpperCase()}`
           : reportType === "byHouse"
           ? "RCMS Collections by House"
           : "RCMS Tenant Collection";
@@ -654,7 +1043,7 @@ export default function ReportsPage() {
         y += 6;
       };
 
-      if (reportType !== "tenantDetail") {
+      if (reportType === "summary") {
         drawTable(
           ["Metric", "Value"],
           summary.rows.map((row) => [row.metric, row.value])
@@ -662,38 +1051,87 @@ export default function ReportsPage() {
       }
       if (reportType === "byHouse") {
         drawTable(
-          ["House", "Name", "Total"],
-          summary.houseRows.map((row) => [
+          ["House", "Collected", "Owed", "Occupancy"],
+          summary.byHouseRangeRows.map((row) => [
             row.houseCode,
-            row.houseName || "--",
-            currency(row.total),
+            currency(row.collected),
+            currency(row.owed),
+            row.occupancyStatus,
           ])
         );
       }
       if (reportType === "summary") {
+        doc.setFontSize(10);
+        doc.text(`Date: ${summary.currentDateKey}`, left, y);
+        y += 6;
+        doc.text("Summary of Tenants' Payment Status", left, y);
+        y += 4;
+        doc.setFontSize(11);
+
         drawTable(
-          ["Category", "Total"],
-          summary.expenseCategoryRows.map((row) => [
-            row.category,
-            currency(row.total),
-          ])
-        );
-        drawTable(
-          ["Tenant", "House", "Balance"],
-          summary.arrearsRows.map((row) => [
+          ["Unit No.", "Tenant Name", "Contact", "Rate", "Rent Paid", "Balance", "Date Paid", "Status"],
+          summary.monthlyTenancyRows.map((row) => [
+            row.unitNo,
             row.tenantName,
-            row.houseLabel,
-            currency(row.balance),
+            row.contact,
+            row.rate > 0 ? ush(row.rate) : "NIL",
+            row.rentPaid > 0 ? ush(row.rentPaid) : "NIL",
+            row.balance > 0 ? ush(row.balance) : "NIL",
+            row.datePaid,
+            row.status,
           ])
         );
+
+        drawTable(
+          ["Summary of Disbursements", "Amount"],
+          [
+            ["Total Rent Collected", ush(summary.amountPaidThisMonth)],
+            ...summary.disbursementRows.map((row) => [row.label, ush(row.amount)]),
+            ["Total cash to transfer to Landlord", ush(summary.totalCashToLandlord)],
+          ]
+        );
+
+        ensureSpace(34);
+        doc.setFontSize(11);
+        doc.text("Notes:", left, y);
+        y += 6;
+        doc.setFontSize(10);
+        doc.text(`1. This is a summary of payments as of ${summary.currentDateKey}.`, left + 4, y);
+        y += 5;
+        doc.text("2. Breakdown of totals:", left + 4, y);
+        y += 5;
+        doc.text(`a) Rent expected this month: ${ush(summary.rentExpectedThisMonth)}`, left + 8, y);
+        y += 5;
+        doc.text(`b) Amount of rent paid: ${ush(summary.amountPaidThisMonth)}`, left + 8, y);
+        y += 5;
+        doc.text(`c) Unpaid rent: ${ush(summary.unpaidRentThisMonth)}`, left + 8, y);
+        y += 5;
+        doc.text(`d) Total expected next month: ${ush(summary.totalExpectedNextMonth)}`, left + 8, y);
+        y += 5;
+        doc.text(
+          `3. ${summary.tenantsWithArrearsCount} tenant(s) remained with arrears to be collected in the next month.`,
+          left + 4,
+          y
+        );
+
+        const fileSuffix = `_${summary.reportMonthKey.replace("-", "")}`;
+        const startFileKey = format(summary.range.start, "yyyyMMdd");
+        const endFileKey = format(summary.range.end, "yyyyMMdd");
+        doc.save(
+          `RCMS_Monthly_Tenancy_Report${fileSuffix}_${startFileKey}_${endFileKey}.pdf`
+        );
+        toast.push("success", "Report exported as PDF.");
+        return;
       }
+
       if (reportType === "tenantDetail" && summary.selectedTenant) {
         drawTable(
-          ["Tenant", "Move-in", "Period End"],
+          ["Tenant", "Move-in", "Current Date", "Status"],
           [[
             summary.selectedTenant.fullName,
             summary.selectedTenant.moveInDate?.slice(0, 10) ?? "--",
-            summary.tenantDetailRangeEndKey || "--",
+            summary.tenantDetailCurrentDateKey || "--",
+            summary.tenantDetailStatusLabel || "--",
           ]]
         );
         drawTable(
@@ -879,7 +1317,7 @@ export default function ReportsPage() {
         </button>
       </div>
 
-      {reportType !== "tenantDetail" && (
+      {reportType === "summary" && (
         <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
           {summary.rows.map((row) => (
             <div
@@ -899,46 +1337,59 @@ export default function ReportsPage() {
       )}
 
       {reportType === "summary" && (
-        <div className="grid gap-6 xl:grid-cols-[1.6fr_1fr]">
+        <div className="space-y-6">
           <div
             className="rounded-2xl border p-6"
             style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
           >
-            <div className="text-sm font-semibold text-slate-100">
-              Arrears by Tenant (Range)
+            <div className="text-center text-sm font-semibold uppercase tracking-[0.15em] text-slate-200">
+              Monthly Tenancy Report For {summary.reportMonthLabel}
             </div>
-            <div className="mt-4 overflow-hidden rounded-2xl border border-slate-800">
-              <table className="w-full text-left text-sm text-slate-300">
+            <div className="mt-2 text-center text-xs text-slate-500">
+              Date: {summary.currentDateKey}
+            </div>
+            <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-800">
+              <table className="min-w-[980px] w-full text-left text-sm text-slate-300">
                 <thead
                   className="text-xs text-slate-500"
                   style={{ backgroundColor: "var(--surface-strong)" }}
                 >
                   <tr>
-                    <th className="px-4 py-3">Tenant</th>
-                    <th className="px-4 py-3">House</th>
-                    <th className="px-4 py-3">Expected</th>
-                    <th className="px-4 py-3">Paid</th>
+                    <th className="px-4 py-3">Unit No.</th>
+                    <th className="px-4 py-3">Tenant Name</th>
+                    <th className="px-4 py-3">Contact</th>
+                    <th className="px-4 py-3">Rate</th>
+                    <th className="px-4 py-3">Rent Paid</th>
                     <th className="px-4 py-3">Balance</th>
+                    <th className="px-4 py-3">Date Paid</th>
+                    <th className="px-4 py-3">Status</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {summary.arrearsRows.map((row) => (
+                  {summary.monthlyTenancyRows.map((row) => (
                     <tr
                       key={row.tenantId}
                       className="border-t odd:bg-slate-950/30"
                       style={{ borderColor: "var(--border)" }}
                     >
+                      <td className="px-4 py-3 text-slate-200">{row.unitNo}</td>
                       <td className="px-4 py-3 text-slate-100">{row.tenantName}</td>
-                      <td className="px-4 py-3 text-slate-400">{row.houseLabel}</td>
-                      <td className="amount px-4 py-3">{currency(row.expected)}</td>
-                      <td className="amount px-4 py-3">{currency(row.paid)}</td>
-                      <td className="amount px-4 py-3 text-rose-200">{currency(row.balance)}</td>
+                      <td className="px-4 py-3 text-slate-400">{row.contact}</td>
+                      <td className="amount px-4 py-3">{row.rate > 0 ? ush(row.rate) : "NIL"}</td>
+                      <td className="amount px-4 py-3">
+                        {row.rentPaid > 0 ? ush(row.rentPaid) : "NIL"}
+                      </td>
+                      <td className="amount px-4 py-3 text-rose-200">
+                        {row.balance > 0 ? ush(row.balance) : "NIL"}
+                      </td>
+                      <td className="px-4 py-3 text-slate-400">{row.datePaid}</td>
+                      <td className="px-4 py-3 text-slate-300">{row.status}</td>
                     </tr>
                   ))}
-                  {summary.arrearsRows.length === 0 && (
+                  {summary.monthlyTenancyRows.length === 0 && (
                     <tr>
-                      <td className="px-4 py-4 text-slate-500" colSpan={5}>
-                        No arrears in range.
+                      <td className="px-4 py-4 text-slate-500" colSpan={8}>
+                        No tenants found for {summary.reportMonthLabel}.
                       </td>
                     </tr>
                   )}
@@ -951,40 +1402,66 @@ export default function ReportsPage() {
             className="rounded-2xl border p-6"
             style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
           >
-            <div className="text-sm font-semibold text-slate-100">
-              Expenses by Category (Range)
+            <div className="text-sm font-semibold uppercase tracking-[0.1em] text-slate-100">
+              Summary Of Disbursements
             </div>
-            <div className="mt-4 overflow-hidden rounded-2xl border border-slate-800">
-              <table className="w-full text-left text-sm text-slate-300">
+            <div className="mt-1 text-xs text-slate-500">
+              Expenses recorded in {summary.reportMonthLabel}
+            </div>
+            <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-800">
+              <table className="min-w-[480px] w-full text-left text-sm text-slate-300">
                 <thead
                   className="text-xs text-slate-500"
                   style={{ backgroundColor: "var(--surface-strong)" }}
                 >
                   <tr>
-                    <th className="px-4 py-3">Category</th>
+                    <th className="px-4 py-3">Item</th>
                     <th className="px-4 py-3">Total</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {summary.expenseCategoryRows.map((row) => (
+                  <tr className="border-t" style={{ borderColor: "var(--border)" }}>
+                    <td className="px-4 py-3 text-slate-100">Total Rent Collected</td>
+                    <td className="amount px-4 py-3">{ush(summary.amountPaidThisMonth)}</td>
+                  </tr>
+                  {summary.disbursementRows.map((row) => (
                     <tr
-                      key={row.category}
+                      key={row.label}
                       className="border-t odd:bg-slate-950/30"
                       style={{ borderColor: "var(--border)" }}
                     >
-                      <td className="px-4 py-3 text-slate-100">{row.category}</td>
-                      <td className="amount px-4 py-3">{currency(row.total)}</td>
+                      <td className="px-4 py-3 text-slate-100">{row.label}</td>
+                      <td className="amount px-4 py-3">{ush(row.amount)}</td>
                     </tr>
                   ))}
-                  {summary.expenseCategoryRows.length === 0 && (
+                  <tr className="border-t" style={{ borderColor: "var(--border)" }}>
+                    <td className="px-4 py-3 text-slate-100">Total cash to transfer to Landlord</td>
+                    <td className="amount px-4 py-3 text-emerald-300">
+                      {ush(summary.totalCashToLandlord)}
+                    </td>
+                  </tr>
+                  {summary.disbursementRows.length === 0 && (
                     <tr>
                       <td className="px-4 py-4 text-slate-500" colSpan={2}>
-                        No expenses in range.
+                        No disbursement entries found.
                       </td>
                     </tr>
                   )}
                 </tbody>
               </table>
+            </div>
+
+            <div className="mt-6 space-y-2 text-sm text-slate-300">
+              <div className="font-semibold text-slate-100">Notes</div>
+              <div>1. This is a summary of payments as of {summary.currentDateKey}.</div>
+              <div>2. Breakdown of totals:</div>
+              <div className="pl-4">a. Rent expected this Month: {ush(summary.rentExpectedThisMonth)}</div>
+              <div className="pl-4">b. Amount of rent paid: {ush(summary.amountPaidThisMonth)}</div>
+              <div className="pl-4">c. Unpaid rent: {ush(summary.unpaidRentThisMonth)}</div>
+              <div className="pl-4">d. Total Expected next month: {ush(summary.totalExpectedNextMonth)}</div>
+              <div>
+                3. {summary.tenantsWithArrearsCount} tenant(s) remained with arrears. This is to be collected in {summary.nextMonthLabel}.
+              </div>
             </div>
           </div>
         </div>
@@ -995,9 +1472,14 @@ export default function ReportsPage() {
           className="rounded-2xl border p-6"
           style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
         >
-          <div className="text-sm font-semibold text-slate-100">Collections by House</div>
-          <div className="mt-4 overflow-hidden rounded-2xl border border-slate-800">
-            <table className="w-full text-left text-sm text-slate-300">
+          <div className="text-sm font-semibold text-slate-100">
+            House Collection & Occupancy (Selected Range)
+          </div>
+          <div className="mt-1 text-xs text-slate-500">
+            {summary.rangeStartKey} to {summary.rangeEndKey}
+          </div>
+          <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-800">
+            <table className="min-w-[1100px] w-full text-left text-sm text-slate-300">
               <thead
                 className="text-xs text-slate-500"
                 style={{ backgroundColor: "var(--surface-strong)" }}
@@ -1005,11 +1487,15 @@ export default function ReportsPage() {
                 <tr>
                   <th className="px-4 py-3">House</th>
                   <th className="px-4 py-3">Name</th>
-                  <th className="px-4 py-3">Total Collected</th>
+                  <th className="px-4 py-3">Collected</th>
+                  <th className="px-4 py-3">Owed</th>
+                  <th className="px-4 py-3">Occupancy</th>
+                  <th className="px-4 py-3">Occupied Dates</th>
+                  <th className="px-4 py-3">Vacant Dates</th>
                 </tr>
               </thead>
               <tbody>
-                {summary.houseRows.map((row) => (
+                {summary.byHouseRangeRows.map((row) => (
                   <tr
                     key={row.houseId}
                     className="border-t"
@@ -1019,12 +1505,16 @@ export default function ReportsPage() {
                     <td className="px-4 py-3 text-slate-400">
                       {row.houseName || "--"}
                     </td>
-                    <td className="amount px-4 py-3">{currency(row.total)}</td>
+                    <td className="amount px-4 py-3">{currency(row.collected)}</td>
+                    <td className="amount px-4 py-3 text-rose-200">{currency(row.owed)}</td>
+                    <td className="px-4 py-3 text-slate-300">{row.occupancyStatus}</td>
+                    <td className="px-4 py-3 text-slate-400">{row.occupiedPeriods}</td>
+                    <td className="px-4 py-3 text-slate-400">{row.vacantPeriods}</td>
                   </tr>
                 ))}
-                {summary.houseRows.length === 0 && (
+                {summary.byHouseRangeRows.length === 0 && (
                   <tr>
-                    <td className="px-4 py-4 text-slate-500" colSpan={3}>
+                    <td className="px-4 py-4 text-slate-500" colSpan={8}>
                       No house collections in range.
                     </td>
                   </tr>
@@ -1068,24 +1558,29 @@ export default function ReportsPage() {
                 </div>
                 <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
                   <div className="text-xs uppercase tracking-[0.2em] text-slate-500">
-                    Totals
+                    Account
+                  </div>
+                  <div className="mt-2 text-xs text-slate-500">
+                    Current Date: {summary.tenantDetailCurrentDateKey}
+                  </div>
+                  <div className="mt-1 text-xs text-slate-500">
+                    Status: {summary.tenantDetailStatusLabel}
                   </div>
                   <div className="amount mt-2 text-slate-100">
-                    Paid {currency(summary.tenantDetailTotals.paid)}
+                    {currency(summary.tenantDetailTotals.paid)}
                   </div>
                   <div className="mt-1 text-xs text-slate-500">
-                    Period {summary.tenantDetailRangeStartKey} to{" "}
-                    {summary.tenantDetailRangeEndKey}
+                    Paid
                   </div>
-                  <div className="mt-1 text-xs text-slate-500">
-                    Arrears{" "}
+                  <div className="amount mt-2 text-rose-200">
                     {currency(summary.tenantDetailTotals.balance)}
                   </div>
+                  <div className="mt-1 text-xs text-slate-500">Arrears</div>
                 </div>
               </div>
 
-              <div className="mt-6 overflow-hidden rounded-2xl border border-slate-800">
-                <table className="w-full text-left text-sm text-slate-300">
+              <div className="mt-6 overflow-x-auto rounded-2xl border border-slate-800">
+                <table className="min-w-[760px] w-full text-left text-sm text-slate-300">
                   <thead
                     className="text-xs text-slate-500"
                     style={{ backgroundColor: "var(--surface-strong)" }}
@@ -1127,6 +1622,18 @@ export default function ReportsPage() {
                         <td className="px-4 py-4 text-slate-500" colSpan={4}>
                           No months available for this tenant yet.
                         </td>
+                      </tr>
+                    )}
+                    {summary.tenantDetailRows.length > 0 && (
+                      <tr className="border-t" style={{ borderColor: "var(--border)" }}>
+                        <td className="px-4 py-3 font-semibold text-slate-100">Totals</td>
+                        <td className="amount px-4 py-3 font-semibold text-slate-100">
+                          {currency(summary.tenantDetailTotals.paid)}
+                        </td>
+                        <td className="amount px-4 py-3 font-semibold text-rose-200">
+                          {currency(summary.tenantDetailTotals.balance)}
+                        </td>
+                        <td className="px-4 py-3 text-slate-500">--</td>
                       </tr>
                     )}
                   </tbody>

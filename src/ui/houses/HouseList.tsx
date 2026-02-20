@@ -5,7 +5,6 @@ type Props = {
   selectedId?: string | null;
   onSelect: (house: House) => void;
   onEdit?: (house: House) => void;
-  onDeactivate?: (house: House) => void;
   canManage: boolean;
 };
 
@@ -14,15 +13,14 @@ export default function HouseList({
   selectedId,
   onSelect,
   onEdit,
-  onDeactivate,
   canManage,
 }: Props) {
   return (
     <div
-      className="overflow-hidden rounded-2xl border"
+      className="overflow-x-auto rounded-2xl border"
       style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
     >
-      <table className="w-full text-left text-sm">
+      <table className="min-w-[680px] w-full text-left text-sm">
         <thead className="text-xs text-slate-500" style={{ backgroundColor: "var(--surface-strong)" }}>
           <tr>
             <th className="px-5 py-4">House</th>
@@ -68,14 +66,6 @@ export default function HouseList({
                         className="btn-secondary text-xs"
                       >
                         Edit
-                      </button>
-                    )}
-                    {canManage && onDeactivate && (
-                      <button
-                        onClick={() => onDeactivate(house)}
-                        className="btn-danger text-xs"
-                      >
-                        Deactivate
                       </button>
                     )}
                   </div>

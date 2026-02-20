@@ -180,51 +180,13 @@ export default function HousesPage() {
     }
   };
 
-  const handleDeactivate = async (house: House) => {
-    if (!canManageHouses) {
-      toast.push("warning", "You do not have permission to deactivate houses.");
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const updated = await databases.updateDocument(
-        rcmsDatabaseId,
-        COLLECTIONS.houses,
-        house.$id,
-        { status: "inactive" }
-      );
-      setHouses((prev) =>
-        prev.map((item) => (item.$id === house.$id ? (updated as unknown as House) : item))
-      );
-      if (selected?.$id === house.$id) {
-        setSelected(updated as unknown as House);
-      }
-      toast.push("success", "House deactivated.");
-      if (user) {
-        void logAudit({
-          entityType: "house",
-          entityId: (updated as unknown as House).$id,
-          action: "update",
-          actorId: user.id,
-          details: { status: "inactive" },
-        });
-      }
-    } catch (err) {
-      setError("Failed to deactivate house.");
-      toast.push("error", "Failed to deactivate house.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
   return (
     <section className="space-y-6">
       <header>
         <div className="text-sm text-slate-500">Houses</div>
         <h3 className="mt-2 text-xl font-semibold text-white">Manage Houses</h3>
         <p className="mt-1 text-sm text-slate-500">
-          Create, update, and deactivate rental units.
+          Create and update rental units.
         </p>
       </header>
 
@@ -277,7 +239,6 @@ export default function HousesPage() {
                   }
                 : undefined
             }
-            onDeactivate={canManageHouses ? handleDeactivate : undefined}
             canManage={canManageHouses}
           />
         </div>

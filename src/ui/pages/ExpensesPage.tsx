@@ -10,6 +10,11 @@ import { logAudit } from "../../lib/audit";
 import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../ToastContext";
 
+function resolveExpenseHouseId(expense: Expense) {
+  if (typeof expense.house === "string") return expense.house;
+  return expense.house?.$id ?? "";
+}
+
 export default function ExpensesPage() {
   const { user, permissions } = useAuth();
   const canRecordExpenses = permissions.canRecordExpenses;
@@ -224,7 +229,7 @@ export default function ExpensesPage() {
                   amount: editingExpense.amount,
                   source: editingExpense.source,
                   expenseDate: editingExpense.expenseDate?.slice(0, 10),
-                  house: editingExpense.house ?? "",
+                  house: resolveExpenseHouseId(editingExpense),
                   maintenanceType: editingExpense.maintenanceType ?? "",
                   notes: editingExpense.notes ?? "",
                 }

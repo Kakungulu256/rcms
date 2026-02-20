@@ -139,12 +139,10 @@ export default function DashboardPage() {
     const expensesThisMonth = expenses.filter(
       (expense) => expense.expenseDate?.slice(0, 7) === monthKey
     );
-    const generalExpenses = expensesThisMonth
-      .filter((expense) => expense.category === "general")
-      .reduce((sum, expense) => sum + expense.amount, 0);
-    const maintenanceExpenses = expensesThisMonth
-      .filter((expense) => expense.category === "maintenance")
-      .reduce((sum, expense) => sum + expense.amount, 0);
+    const totalExpenses = expensesThisMonth.reduce(
+      (sum, expense) => sum + expense.amount,
+      0
+    );
     const monthExpenseCount = expensesThisMonth.length;
     const monthPaymentCount = normalizedPayments.filter((payment) => {
       const allocation = decodeJson<PaymentAllocation>(payment.allocationJson);
@@ -176,14 +174,9 @@ export default function DashboardPage() {
         helper: "Total expected vs paid to date",
       },
       {
-        label: "General Expenses",
-        value: currency(generalExpenses),
+        label: "Total Expenses",
+        value: currency(totalExpenses),
         helper: `This month (${monthKey}) - ${monthExpenseCount} expense records`,
-      },
-      {
-        label: "Maintenance Expenses",
-        value: currency(maintenanceExpenses),
-        helper: `This month (${monthKey})`,
       },
     ];
 

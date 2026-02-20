@@ -29,10 +29,10 @@ export default function TenantList({
 }: Props) {
   return (
     <div
-      className="overflow-hidden rounded-2xl border"
+      className="overflow-x-auto rounded-2xl border"
       style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
     >
-      <table className="w-full text-left text-sm">
+      <table className="min-w-[760px] w-full text-left text-sm">
         <thead className="text-xs text-slate-500" style={{ backgroundColor: "var(--surface-strong)" }}>
           <tr>
             <th className="px-5 py-4">Tenant</th>

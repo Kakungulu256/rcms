@@ -97,7 +97,7 @@ export type Expense = {
   amount: number;
   source: ExpenseSource;
   expenseDate: string;
-  house?: string;
+  house?: string | { $id?: string; code?: string; name?: string };
   maintenanceType?: string;
   isMigrated?: boolean;
   notes?: string;
