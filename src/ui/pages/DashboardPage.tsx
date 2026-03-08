@@ -5,7 +5,11 @@ import { listAllDocuments, rcmsDatabaseId } from "../../lib/appwrite";
 import { COLLECTIONS } from "../../lib/schema";
 import { buildPaidByMonth, getPaymentMonthAmounts } from "../payments/allocation";
 import { buildRentByMonth } from "../../lib/rentHistory";
-import { buildTenantMonthSeries, getTenantEffectiveEndDate } from "../../lib/tenancyDates";
+import {
+  buildTenantMonthSeries,
+  getTenantEffectiveEndDate,
+  isTenantInactiveAtDate,
+} from "../../lib/tenancyDates";
 import { formatDisplayDate, formatShortMonth } from "../../lib/dateDisplay";
 import type { Expense, House, Payment, Tenant } from "../../lib/schema";
 
@@ -244,7 +248,7 @@ export default function DashboardPage() {
       0
     );
 
-    const arrears = tenants.reduce((sum, tenant) => {
+    const tenantBalanceRows = tenants.map((tenant) => {
       const houseId =
         typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
       const house = houseLookup.get(houseId);
@@ -257,7 +261,11 @@ export default function DashboardPage() {
         (month) => month <= effectiveEndMonthKey
       );
       if (months.length === 0) {
-        return sum;
+        return {
+          tenantId: tenant.$id,
+          inactive: isTenantInactiveAtDate(tenant, effectiveEnd),
+          balance: 0,
+        };
       }
       const paidByMonth = buildPaidByMonth(tenantPayments);
       const rentByMonth = buildRentByMonth({
@@ -268,8 +276,22 @@ export default function DashboardPage() {
       });
       const expected = months.reduce((acc, month) => acc + (rentByMonth[month] ?? 0), 0);
       const paid = months.reduce((acc, month) => acc + (paidByMonth[month] ?? 0), 0);
-      return sum + Math.max(expected - paid, 0);
-    }, 0);
+      return {
+        tenantId: tenant.$id,
+        inactive: isTenantInactiveAtDate(tenant, effectiveEnd),
+        balance: Math.max(expected - paid, 0),
+      };
+    });
+
+    const arrears = tenantBalanceRows
+      .filter((row) => !row.inactive)
+      .reduce((sum, row) => sum + row.balance, 0);
+    const inactiveTenantArrears = tenantBalanceRows
+      .filter((row) => row.inactive)
+      .reduce((sum, row) => sum + row.balance, 0);
+    const inactiveTenantArrearsCount = tenantBalanceRows.filter(
+      (row) => row.inactive && row.balance > 0
+    ).length;
 
     const expensesInPeriod = expenses.filter((expense) => {
       const expenseMonth = expense.expenseDate?.slice(0, 7) ?? "";
@@ -312,7 +334,12 @@ export default function DashboardPage() {
       {
         label: "Outstanding Arrears",
         value: currency(arrears),
-        helper: `Total expected vs paid up to ${formatDisplayDate(effectiveEnd)}`,
+        helper: `Active tenants only up to ${formatDisplayDate(effectiveEnd)}`,
+      },
+      {
+        label: "Inactive Tenant Arrears",
+        value: currency(inactiveTenantArrears),
+        helper: `${inactiveTenantArrearsCount} tenant(s) left with unpaid balance`,
       },
       {
         label: "Total Expenses",

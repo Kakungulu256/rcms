@@ -161,10 +161,18 @@ async function ensureReceiptsBucket() {
   try {
     await storage.getBucket(receiptsBucketId);
     console.log(`Bucket exists: ${receiptsBucketId}`);
-    await storage.updateBucket({
-      bucketId: receiptsBucketId,
-      ...bucketConfig,
-    });
+    await storage.updateBucket(
+      receiptsBucketId,
+      bucketConfig.name,
+      bucketConfig.permissions,
+      bucketConfig.fileSecurity,
+      bucketConfig.enabled,
+      bucketConfig.maximumFileSize,
+      bucketConfig.allowedFileExtensions,
+      bucketConfig.compression,
+      bucketConfig.encryption,
+      bucketConfig.antivirus
+    );
     console.log(`Updated bucket permissions: ${receiptsBucketId}`);
   } catch (error) {
     if (!isNotFoundError(error)) {
@@ -172,10 +180,18 @@ async function ensureReceiptsBucket() {
     }
 
     console.log(`Creating bucket: ${receiptsBucketId}`);
-    await storage.createBucket({
-      bucketId: receiptsBucketId,
-      ...bucketConfig,
-    });
+    await storage.createBucket(
+      receiptsBucketId,
+      bucketConfig.name,
+      bucketConfig.permissions,
+      bucketConfig.fileSecurity,
+      bucketConfig.enabled,
+      bucketConfig.maximumFileSize,
+      bucketConfig.allowedFileExtensions,
+      bucketConfig.compression,
+      bucketConfig.encryption,
+      bucketConfig.antivirus
+    );
   }
 }
 
@@ -187,14 +203,14 @@ async function ensureCollection(
   try {
     const existing = await databases.getCollection(databaseId, collectionId);
     console.log(`Collection exists: ${collectionId}`);
-    await databases.updateCollection({
+    await databases.updateCollection(
       databaseId,
       collectionId,
-      name: existing.name ?? name,
+      name,
       permissions,
-      documentSecurity: existing.documentSecurity,
-      enabled: existing.enabled,
-    });
+      existing.documentSecurity,
+      existing.enabled
+    );
     console.log(`Updated collection permissions: ${collectionId}`);
   } catch (error) {
     if (!isNotFoundError(error)) {
@@ -202,12 +218,12 @@ async function ensureCollection(
     }
 
     console.log(`Creating collection: ${collectionId}`);
-    await databases.createCollection({
+    await databases.createCollection(
       databaseId,
       collectionId,
       name,
-      permissions,
-    });
+      permissions
+    );
   }
 }
 

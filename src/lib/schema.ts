@@ -135,6 +135,7 @@ export type ExpenseForm = {
   maintenanceType?: string;
   notes?: string;
   receiptFile?: FileList;
+  removeReceipt?: boolean;
 };
 
 export type AuditLog = {

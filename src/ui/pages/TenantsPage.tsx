@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ID, Query } from "appwrite";
+import { endOfMonth, subMonths } from "date-fns";
 import TenantDetail from "../tenants/TenantDetail";
 import TenantForm from "../tenants/TenantForm";
 import TenantList from "../tenants/TenantList";
@@ -44,6 +45,7 @@ export default function TenantsPage() {
   const sortedTenants = useMemo(() => {
     const houseLookup = new Map(houses.map((house) => [house.$id, house]));
     const today = new Date();
+    const arrearsCutoffDate = endOfMonth(subMonths(today, 1));
 
     return [...tenants]
       .filter((tenant) => {
@@ -62,7 +64,7 @@ export default function TenantsPage() {
               typeof payment.tenant === "string" ? payment.tenant : payment.tenant?.$id;
             return paymentTenantId === tenant.$id;
           });
-          const months = buildMonthSeries(tenant.moveInDate, today);
+          const months = buildMonthSeries(tenant.moveInDate, arrearsCutoffDate);
           const paidByMonth = buildPaidByMonth(tenantPayments);
           const rentByMonth = buildRentByMonth({
             months,

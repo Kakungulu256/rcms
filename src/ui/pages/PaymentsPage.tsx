@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ID, Query } from "appwrite";
-import { format } from "date-fns";
+import { format, startOfMonth } from "date-fns";
 import {
   account,
   databases,
@@ -48,6 +48,8 @@ type PaymentEditValues = {
   paymentDate: string;
   reference: string;
   notes: string;
+  receiptFile: File | null;
+  removeReceipt: boolean;
 };
 
 type FunctionResult =
@@ -94,6 +96,12 @@ function parseDateInput(value?: string) {
   return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
 }
 
+function parseOptionalDate(value?: string | null) {
+  if (!value) return null;
+  const parsed = new Date(`${value.slice(0, 10)}T00:00:00`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 function buildAllocationMonths(params: {
   tenant: Tenant;
   paymentDate: string;
@@ -103,7 +111,12 @@ function buildAllocationMonths(params: {
   const { tenant, paymentDate, allocatableAmount, rent } = params;
   const paymentDateValue = parseDateInput(paymentDate);
   const effectiveEndDate = getTenantEffectiveEndDate(tenant, paymentDateValue);
-  const canCarryForward = tenant.status === "active" && !tenant.moveOutDate;
+  const moveOutDate = parseOptionalDate(tenant.moveOutDate);
+  const movedOutBeforePaymentMonth =
+    moveOutDate != null
+      ? startOfMonth(moveOutDate).getTime() < startOfMonth(paymentDateValue).getTime()
+      : false;
+  const canCarryForward = tenant.status === "active" && !movedOutBeforePaymentMonth;
   const extraMonths =
     canCarryForward && rent > 0 && allocatableAmount > 0
       ? Math.max(24, Math.ceil(allocatableAmount / rent) + 12)
@@ -266,6 +279,8 @@ export default function PaymentsPage() {
       paymentDate: payment.paymentDate?.slice(0, 10) ?? "",
       reference: payment.reference ?? "",
       notes: payment.notes ?? "",
+      receiptFile: null,
+      removeReceipt: false,
     });
     setEditOpen(true);
   };
@@ -359,11 +374,11 @@ export default function PaymentsPage() {
       throw new Error("Allocate payment function ID is missing.");
     }
 
-    const execution = await functions.createExecution({
-      functionId: allocateFunctionId,
-      body: JSON.stringify(payload),
-      async: false,
-    });
+    const execution = await functions.createExecution(
+      allocateFunctionId,
+      JSON.stringify(payload),
+      false
+    );
 
     const readBody = (value: any) =>
       (value?.responseBody as string | undefined) ??
@@ -379,10 +394,7 @@ export default function PaymentsPage() {
       (!body || latest?.status === "waiting" || latest?.status === "processing")
     ) {
       await new Promise((resolve) => setTimeout(resolve, 400));
-      latest = await functions.getExecution({
-        functionId: allocateFunctionId,
-        executionId: latest.$id,
-      });
+      latest = await functions.getExecution(allocateFunctionId, latest.$id);
       body = readBody(latest);
       attempts += 1;
     }
@@ -563,6 +575,11 @@ export default function PaymentsPage() {
       toast.push("warning", "You do not have permission to edit payments.");
       return;
     }
+    const normalizedAmount = Number(editValues.amount);
+    if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
+      toast.push("warning", "Amount must be greater than zero.");
+      return;
+    }
     const normalizedNote = normalizePaymentNote(editValues.notes);
     if (!normalizedNote) {
       toast.push("warning", "Payment status note is required.");
@@ -587,6 +604,12 @@ export default function PaymentsPage() {
     setEditSaving(true);
     setLoading(true);
     setError(null);
+    let uploadedReceipt: UploadedReceipt | null = null;
+    let shouldDeleteOldReceipt = false;
+    let receiptAction: "unchanged" | "replaced" | "removed" = "unchanged";
+    const existingReceiptFileId = editingPayment.receiptFileId?.trim() ?? "";
+    const existingReceiptBucketId =
+      editingPayment.receiptBucketId?.trim() || rcmsReceiptsBucketId;
     try {
       const houseId =
         typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
@@ -610,7 +633,7 @@ export default function PaymentsPage() {
         fallbackRent: rent,
       });
       const allocation = previewAllocation({
-        amount: editValues.amount,
+        amount: normalizedAmount,
         months,
         paidByMonth,
         rentByMonth,
@@ -623,19 +646,62 @@ export default function PaymentsPage() {
         )
       );
 
+      const selectedEditReceipt = editValues.receiptFile;
+      if (selectedEditReceipt) {
+        if (selectedEditReceipt.size > 10 * 1024 * 1024) {
+          throw new Error("Receipt file must be 10MB or smaller.");
+        }
+        uploadedReceipt = await uploadReceipt(selectedEditReceipt);
+      }
+
+      const shouldRemoveExistingReceipt = Boolean(
+        editValues.removeReceipt && !uploadedReceipt
+      );
+      if (uploadedReceipt) {
+        receiptAction = "replaced";
+        shouldDeleteOldReceipt = Boolean(existingReceiptFileId);
+      } else if (shouldRemoveExistingReceipt) {
+        receiptAction = "removed";
+        shouldDeleteOldReceipt = Boolean(existingReceiptFileId);
+      }
+
+      const paymentUpdatePayload: Record<string, unknown> = {
+        amount: normalizedAmount,
+        method: editValues.method,
+        paymentDate: editValues.paymentDate,
+        reference: editValues.reference?.trim() ? editValues.reference.trim() : null,
+        notes: normalizedNote,
+        allocationJson,
+      };
+
+      if (uploadedReceipt) {
+        paymentUpdatePayload.receiptFileId = uploadedReceipt.fileId;
+        paymentUpdatePayload.receiptBucketId = uploadedReceipt.bucketId;
+        paymentUpdatePayload.receiptFileName = uploadedReceipt.fileName;
+        paymentUpdatePayload.receiptFileMimeType = uploadedReceipt.mimeType;
+        paymentUpdatePayload.receiptFileSize = uploadedReceipt.fileSize;
+      } else if (shouldRemoveExistingReceipt) {
+        paymentUpdatePayload.receiptFileId = null;
+        paymentUpdatePayload.receiptBucketId = null;
+        paymentUpdatePayload.receiptFileName = null;
+        paymentUpdatePayload.receiptFileMimeType = null;
+        paymentUpdatePayload.receiptFileSize = null;
+      }
+
       await databases.updateDocument(
         rcmsDatabaseId,
         COLLECTIONS.payments,
         editingPayment.$id,
-        {
-          amount: editValues.amount,
-          method: editValues.method,
-          paymentDate: editValues.paymentDate,
-          reference: editValues.reference?.trim() ? editValues.reference.trim() : null,
-          notes: normalizedNote,
-          allocationJson,
-        }
+        paymentUpdatePayload
       );
+
+      if (shouldDeleteOldReceipt && existingReceiptFileId) {
+        try {
+          await storage.deleteFile(existingReceiptBucketId, existingReceiptFileId);
+        } catch (receiptDeleteError) {
+          console.error("Failed to delete replaced payment receipt:", receiptDeleteError);
+        }
+      }
 
       if (user) {
         void logAudit({
@@ -644,9 +710,11 @@ export default function PaymentsPage() {
           action: "update",
           actorId: user.id,
           details: {
-            amount: editValues.amount,
+            amount: normalizedAmount,
             method: editValues.method,
             paymentDate: editValues.paymentDate,
+            receiptAction,
+            receiptFileId: uploadedReceipt?.fileId ?? null,
           },
         });
       }
@@ -656,6 +724,13 @@ export default function PaymentsPage() {
       await loadData();
       toast.push("success", "Payment updated.");
     } catch (err) {
+      if (uploadedReceipt) {
+        try {
+          await storage.deleteFile(uploadedReceipt.bucketId, uploadedReceipt.fileId);
+        } catch (cleanupError) {
+          console.error("Failed to clean up uploaded receipt:", cleanupError);
+        }
+      }
       console.error("Payment edit failed:", err);
       const message =
         err instanceof Error && err.message ? err.message : "Failed to update payment.";
@@ -948,6 +1023,7 @@ export default function PaymentsPage() {
               <input
                 type="number"
                 step="0.01"
+                min="0.01"
                 className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
                 value={editValues.amount}
                 onChange={(event) =>
@@ -1020,6 +1096,90 @@ export default function PaymentsPage() {
                 }
               />
             </label>
+            <div className="space-y-3 rounded-md border border-slate-700/60 bg-slate-950/40 p-3">
+              <div className="text-sm text-slate-300">Receipt (optional)</div>
+              {editingPayment?.receiptFileId ? (
+                <div className="text-xs text-slate-400">
+                  Current:{" "}
+                  <a
+                    href={storage.getFileView(
+                      editingPayment.receiptBucketId?.trim() || rcmsReceiptsBucketId,
+                      editingPayment.receiptFileId
+                    )}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-sky-300 underline"
+                  >
+                    {editingPayment.receiptFileName?.trim() || "View receipt"}
+                  </a>{" "}
+                  <span className="text-slate-500">
+                    ({formatFileSize(editingPayment.receiptFileSize)})
+                  </span>
+                </div>
+              ) : (
+                <div className="text-xs text-slate-500">No receipt attached.</div>
+              )}
+              <label className="block text-xs text-slate-300">
+                Replace receipt file
+                <input
+                  type="file"
+                  accept=".jpg,.jpeg,.png,.webp,.pdf,application/pdf,image/*"
+                  className="mt-2 block w-full text-xs text-slate-300 file:mr-3 file:rounded-md file:border-0 file:bg-slate-800 file:px-3 file:py-2 file:text-xs file:text-slate-100"
+                  onChange={(event) => {
+                    const nextFile = event.target.files?.item(0) ?? null;
+                    setEditValues((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            receiptFile: nextFile,
+                            removeReceipt: nextFile ? false : prev.removeReceipt,
+                          }
+                        : prev
+                    );
+                  }}
+                />
+              </label>
+              {editValues.receiptFile && (
+                <div className="flex items-center justify-between gap-2 text-xs text-slate-400">
+                  <span>
+                    Selected: {editValues.receiptFile.name} (
+                    {formatFileSize(editValues.receiptFile.size)})
+                  </span>
+                  <button
+                    type="button"
+                    className="text-slate-300 underline"
+                    onClick={() =>
+                      setEditValues((prev) =>
+                        prev ? { ...prev, receiptFile: null } : prev
+                      )
+                    }
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
+              {editingPayment?.receiptFileId && (
+                <label className="flex items-center gap-2 text-xs text-slate-300">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-slate-500 bg-slate-900"
+                    checked={editValues.removeReceipt}
+                    disabled={Boolean(editValues.receiptFile)}
+                    onChange={(event) =>
+                      setEditValues((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              removeReceipt: event.target.checked,
+                            }
+                          : prev
+                      )
+                    }
+                  />
+                  Remove current receipt
+                </label>
+              )}
+            </div>
             <button
               type="submit"
               disabled={editSaving}

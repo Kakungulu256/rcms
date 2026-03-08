@@ -1,9 +1,21 @@
-import { Client, Databases, ID, Query } from "node-appwrite";
+import { Client, Databases, ID, Query, Teams } from "node-appwrite";
 
 const REQUIRED_FIELDS = ["tenantId", "amount", "method", "paymentDate"];
 
 function getEnv(name, fallback) {
   return process.env[name] ?? fallback;
+}
+
+async function callerHasAdminRole({ endpoint, projectId, jwt, adminTeamId }) {
+  if (!jwt) return true;
+  const callerClient = new Client().setEndpoint(endpoint).setProject(projectId).setJWT(jwt);
+  const teams = new Teams(callerClient);
+  const teamList = await teams.list();
+  return (teamList.teams ?? []).some((team) => {
+    const byId = adminTeamId && team.$id === adminTeamId;
+    const byName = String(team.name ?? "").trim().toLowerCase() === "admin";
+    return Boolean(byId || byName);
+  });
 }
 
 function parseJson(body) {
@@ -302,6 +314,8 @@ export default async (context) => {
     getEnv("APPWRITE_API_KEY") ||
     getEnv("APPWRITE_FUNCTION_API_KEY");
   const databaseId = getEnv("RCMS_APPWRITE_DATABASE_ID") || "rcms";
+  const adminTeamId =
+    getEnv("RCMS_APPWRITE_TEAM_ADMIN_ID") || getEnv("APPWRITE_TEAM_ADMIN_ID");
 
   if (!endpoint || !projectId) {
     log?.("Missing Appwrite endpoint or project in function env.");
@@ -363,6 +377,18 @@ export default async (context) => {
 
   if (reversePaymentId) {
     try {
+      const isAdmin = await callerHasAdminRole({
+        endpoint,
+        projectId,
+        jwt,
+        adminTeamId,
+      });
+      if (!isAdmin) {
+        return res.json(
+          { ok: false, error: "Only admins can reverse payments." },
+          403
+        );
+      }
       log?.(`Reversing payment ${reversePaymentId}`);
       log?.("Fetching original payment...");
       const original = await databases.getDocument(databaseId, "payments", reversePaymentId);

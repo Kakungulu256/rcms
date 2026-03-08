@@ -13,6 +13,11 @@ type Props = {
   loading?: boolean;
   initialValues?: Partial<ExpenseFormValues> | null;
   submitLabel?: string;
+  currentReceipt?: {
+    url: string;
+    name: string;
+    size?: number;
+  } | null;
 };
 
 function buildEmptyValues(): ExpenseFormValues {
@@ -25,6 +30,7 @@ function buildEmptyValues(): ExpenseFormValues {
     house: "",
     maintenanceType: "",
     notes: "",
+    removeReceipt: false,
   };
 }
 
@@ -48,8 +54,9 @@ export default function ExpenseForm({
   loading,
   initialValues,
   submitLabel,
+  currentReceipt,
 }: Props) {
-  const { register, handleSubmit, watch, formState, reset } =
+  const { register, handleSubmit, watch, formState, reset, setValue } =
     useForm<ExpenseFormValues>({
       defaultValues: buildEmptyValues(),
     });
@@ -70,6 +77,16 @@ export default function ExpenseForm({
   }, [initialValues, reset]);
 
   const category = watch("category");
+  const selectedReceipt = watch("receiptFile");
+  const hasSelectedReceipt = Boolean(selectedReceipt && selectedReceipt.length > 0);
+
+  const formatFileSize = (bytes?: number) => {
+    const size = Number(bytes ?? 0);
+    if (!Number.isFinite(size) || size <= 0) return "--";
+    if (size < 1024) return `${size} B`;
+    if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  };
 
   return (
     <form className="space-y-4" onSubmit={handleSubmit(onSubmit)}>
@@ -171,14 +188,45 @@ export default function ExpenseForm({
 
       <label className="block text-sm text-slate-300">
         Receipt Upload (Optional)
+        {currentReceipt && (
+          <div className="mt-2 rounded-md border border-slate-700/60 bg-slate-950/40 p-3 text-xs text-slate-400">
+            Current:{" "}
+            <a
+              href={currentReceipt.url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-sky-300 underline"
+            >
+              {currentReceipt.name || "View receipt"}
+            </a>{" "}
+            <span className="text-slate-500">({formatFileSize(currentReceipt.size)})</span>
+          </div>
+        )}
         <input
           type="file"
           accept=".pdf,image/*"
           className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm file:mr-3 file:rounded file:border-0 file:bg-slate-700 file:px-3 file:py-1 file:text-xs file:text-slate-100"
-          {...register("receiptFile")}
+          {...register("receiptFile", {
+            onChange: (event) => {
+              if (event?.target?.files?.length) {
+                setValue("removeReceipt", false);
+              }
+            },
+          })}
         />
+        {currentReceipt && (
+          <label className="mt-2 flex items-center gap-2 text-xs text-slate-300">
+            <input
+              type="checkbox"
+              className="h-4 w-4 rounded border-slate-500 bg-slate-900"
+              disabled={hasSelectedReceipt}
+              {...register("removeReceipt")}
+            />
+            Remove current receipt
+          </label>
+        )}
         <span className="mt-1 block text-xs text-slate-500">
-          Upload an expense receipt image or PDF.
+          Upload an expense receipt image or PDF. Selecting a new file replaces the current receipt.
         </span>
       </label>
 

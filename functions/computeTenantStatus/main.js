@@ -19,6 +19,10 @@ function monthKey(date) {
   return `${year}-${month}`;
 }
 
+function roundMoney(value) {
+  return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+}
+
 function buildPaidByMonth(payments) {
   const totals = {};
   const seenReversalTargets = new Set();
@@ -27,14 +31,20 @@ function buildPaidByMonth(payments) {
       if (seenReversalTargets.has(payment.reversedPaymentId)) return;
       seenReversalTargets.add(payment.reversedPaymentId);
     }
-    if (!payment.allocationJson) return;
+    const multiplier = payment.isReversal ? -1 : 1;
+    if (!payment.allocationJson) {
+      const month = String(payment.paymentDate ?? "").slice(0, 7);
+      const amount = roundMoney(Math.abs(Number(payment.amount) || 0) * multiplier);
+      if (!month || !Number.isFinite(amount) || amount === 0) return;
+      totals[month] = roundMoney((totals[month] ?? 0) + amount);
+      return;
+    }
     try {
       const allocation = JSON.parse(payment.allocationJson);
-      const multiplier = payment.isReversal ? -1 : 1;
       Object.entries(allocation).forEach(([month, amount]) => {
-        const value = Number(amount) * multiplier;
+        const value = roundMoney(Number(amount) * multiplier);
         if (!Number.isFinite(value) || value === 0) return;
-        totals[month] = (totals[month] ?? 0) + value;
+        totals[month] = roundMoney((totals[month] ?? 0) + value);
       });
     } catch {
       // ignore malformed allocations

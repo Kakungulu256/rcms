@@ -38,3 +38,15 @@ Set these env vars in the Appwrite Function:
 - `RCMS_APPWRITE_TEAM_ADMIN_ID`
 - `RCMS_APPWRITE_TEAM_CLERK_ID`
 - `RCMS_APPWRITE_TEAM_VIEWER_ID`
+
+## migrateHistoricalData Environment
+Set these env vars in the Appwrite Function:
+- `RCMS_APPWRITE_ENDPOINT`
+- `RCMS_APPWRITE_PROJECT_ID`
+- `RCMS_APPWRITE_API_KEY`
+- `RCMS_APPWRITE_DATABASE_ID` (optional, defaults to `rcms`)
+- `RCMS_APPWRITE_TEAM_ADMIN_ID` (optional if team names are exactly `Admin`/`admin`)
+- `RCMS_APPWRITE_TEAM_CLERK_ID` (optional if team names are exactly `Clerk`/`clerk`)
+
+Frontend env var (in app `.env`):
+- `VITE_MIGRATE_HISTORICAL_DATA_FUNCTION_ID=<your-appwrite-function-id>`

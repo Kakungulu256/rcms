@@ -1,7 +1,13 @@
 import { useMemo, useState } from "react";
 import * as XLSX from "xlsx";
 import { ID, Query } from "appwrite";
-import { databases, listAllDocuments, rcmsDatabaseId } from "../../lib/appwrite";
+import {
+  account,
+  databases,
+  functions as appwriteFunctions,
+  listAllDocuments,
+  rcmsDatabaseId,
+} from "../../lib/appwrite";
 import { COLLECTIONS } from "../../lib/schema";
 import {
   buildMonthSeries,
@@ -65,6 +71,142 @@ type ParsedData = {
   expenses: ExpenseRow[];
 };
 
+type MigrationFunctionSuccess = {
+  ok: true;
+  message?: string;
+  warnings?: string[];
+  counters?: {
+    housesCreated?: number;
+    tenantsCreated?: number;
+    paymentsCreated?: number;
+    expensesCreated?: number;
+    housesUpdated?: number;
+  };
+};
+
+type MigrationFunctionFailure = {
+  ok: false;
+  error?: string;
+};
+
+type MigrationFunctionResult = MigrationFunctionSuccess | MigrationFunctionFailure;
+
+const TEMPLATE_FILE_NAME = "RCMS_Old_Records_Template.xlsx";
+
+function buildTemplateSheet(headers: string[], sample: string[]) {
+  return XLSX.utils.aoa_to_sheet([headers, sample]);
+}
+
+function downloadMigrationTemplate() {
+  const workbook = XLSX.utils.book_new();
+
+  const guide = XLSX.utils.aoa_to_sheet([
+    ["RCMS Old Records Upload Template"],
+    [""],
+    ["How to use"],
+    ["1. Keep sheet names exactly: Houses, Tenants, Payments, Expenses."],
+    ["2. Keep column headers exactly as provided in row 1."],
+    ["3. Use YYYY-MM-DD for all dates."],
+    ["4. Required fields: HouseCode, FullName, HouseCode, MoveInDate, Amount, PaymentDate, Category, Description, ExpenseDate."],
+    ["5. Allowed values examples:"],
+    ["   Houses.Status -> occupied | vacant | inactive"],
+    ["   Tenants.Status -> active | inactive"],
+    ["   Tenants.TenantType -> new | old"],
+    ["   Payments.Method -> cash | bank"],
+    ["   Expenses.Category -> general | maintenance"],
+    ["   Expenses.Source -> rent_cash | external"],
+  ]);
+  XLSX.utils.book_append_sheet(workbook, guide, "Guide");
+
+  const houses = buildTemplateSheet(
+    ["HouseCode", "HouseName", "MonthlyRent", "RentEffectiveDate", "Status", "Notes"],
+    ["A-101", "Block A 101", "450000", "2026-01-01", "vacant", "Optional note"]
+  );
+  XLSX.utils.book_append_sheet(workbook, houses, "Houses");
+
+  const tenants = buildTemplateSheet(
+    [
+      "FullName",
+      "Phone",
+      "HouseCode",
+      "MoveInDate",
+      "MoveOutDate",
+      "Status",
+      "TenantType",
+      "RentOverride",
+      "Notes",
+      "IsMigrated",
+    ],
+    [
+      "Jane Doe",
+      "+256700000001",
+      "A-101",
+      "2026-01-01",
+      "",
+      "active",
+      "old",
+      "",
+      "Optional note",
+      "true",
+    ]
+  );
+  XLSX.utils.book_append_sheet(workbook, tenants, "Tenants");
+
+  const payments = buildTemplateSheet(
+    [
+      "TenantFullName",
+      "TenantId",
+      "HouseCode",
+      "Amount",
+      "Method",
+      "PaymentDate",
+      "Reference",
+      "Notes",
+      "IsMigrated",
+    ],
+    [
+      "Jane Doe",
+      "",
+      "A-101",
+      "900000",
+      "cash",
+      "2026-02-01",
+      "RCPT-001",
+      "Paid at office",
+      "true",
+    ]
+  );
+  XLSX.utils.book_append_sheet(workbook, payments, "Payments");
+
+  const expenses = buildTemplateSheet(
+    [
+      "Category",
+      "Description",
+      "Amount",
+      "Source",
+      "ExpenseDate",
+      "HouseCode",
+      "MaintenanceType",
+      "Notes",
+      "IsMigrated",
+    ],
+    [
+      "general",
+      "Caretaker salary",
+      "150000",
+      "rent_cash",
+      "2026-02-02",
+      "",
+      "",
+      "Optional note",
+      "true",
+    ]
+  );
+  XLSX.utils.book_append_sheet(workbook, expenses, "Expenses");
+
+  XLSX.writeFile(workbook, TEMPLATE_FILE_NAME);
+}
+
 function normalize(value?: string | number) {
   if (value === undefined || value === null) return "";
   return String(value).trim();
@@ -94,8 +236,58 @@ function parseSheet<T>(workbook: XLSX.WorkBook, name: string): T[] {
   return XLSX.utils.sheet_to_json<T>(sheet, { defval: "" });
 }
 
+function parseExecutionBody(response?: string): MigrationFunctionResult | null {
+  try {
+    return response ? (JSON.parse(response) as MigrationFunctionResult) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function executeMigrationFunction(
+  functionId: string,
+  payload: Record<string, unknown>
+) {
+  const execution = await appwriteFunctions.createExecution(
+    functionId,
+    JSON.stringify(payload),
+    false
+  );
+
+  const readBody = (value: unknown) =>
+    (value as { responseBody?: string; response?: string }).responseBody ??
+    (value as { responseBody?: string; response?: string }).response ??
+    "";
+
+  let latest: unknown = execution;
+  let body = readBody(latest);
+  let attempts = 0;
+
+  while (
+    attempts < 10 &&
+    (!body ||
+      (latest as { status?: string }).status === "waiting" ||
+      (latest as { status?: string }).status === "processing")
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    latest = await appwriteFunctions.getExecution(
+      functionId,
+      (latest as { $id: string }).$id
+    );
+    body = readBody(latest);
+    attempts += 1;
+  }
+
+  return {
+    parsed: parseExecutionBody(body),
+    latest: latest as { errors?: string; status?: string; responseStatusCode?: number },
+  };
+}
+
 export default function MigrationPage() {
   const toast = useToast();
+  const migrateFunctionId = import.meta.env
+    .VITE_MIGRATE_HISTORICAL_DATA_FUNCTION_ID as string | undefined;
   const [parsed, setParsed] = useState<ParsedData | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
   const [status, setStatus] = useState<string | null>(null);
@@ -130,6 +322,60 @@ export default function MigrationPage() {
     setStatus(null);
 
     const newErrors: string[] = [];
+
+    if (migrateFunctionId) {
+      try {
+        const jwt = await account.createJWT();
+        const { parsed: migrationResult, latest } = await executeMigrationFunction(
+          migrateFunctionId,
+          {
+            jwt: jwt.jwt,
+            data: parsed,
+          }
+        );
+
+        if (!migrationResult || !migrationResult.ok) {
+          const message =
+            (migrationResult && !migrationResult.ok && migrationResult.error) ||
+            latest?.errors ||
+            "Upload failed.";
+          throw new Error(message);
+        }
+
+        const warnings = migrationResult.warnings ?? [];
+        const createdSummary = migrationResult.counters
+          ? `Houses ${migrationResult.counters.housesCreated ?? 0}, Tenants ${
+              migrationResult.counters.tenantsCreated ?? 0
+            }, Payments ${migrationResult.counters.paymentsCreated ?? 0}, Expenses ${
+              migrationResult.counters.expensesCreated ?? 0
+            }`
+          : null;
+
+        setErrors(warnings);
+        setStatus(
+          migrationResult.message ??
+            (warnings.length === 0
+              ? "Upload complete."
+              : "Upload completed with warnings.")
+        );
+
+        if (warnings.length === 0) {
+          toast.push(
+            "success",
+            createdSummary ? `Upload complete. ${createdSummary}` : "Upload complete."
+          );
+        } else {
+          toast.push("warning", "Upload completed with warnings.");
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Upload failed.";
+        setErrors([`Upload failed: ${message}`]);
+        toast.push("error", message);
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
 
     try {
       const houseResult = await databases.listDocuments(
@@ -419,11 +665,23 @@ export default function MigrationPage() {
         className="rounded-2xl border p-5"
         style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
       >
-        <div className="text-sm font-semibold text-slate-100">
-          Upload Excel File
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="text-sm font-semibold text-slate-100">
+            Upload Excel File
+          </div>
+          <button
+            type="button"
+            className="btn-secondary text-sm"
+            onClick={downloadMigrationTemplate}
+          >
+            Download Template
+          </button>
         </div>
         <div className="mt-2 text-xs text-slate-500">
           Sheets: Houses, Tenants, Payments, Expenses
+        </div>
+        <div className="mt-2 text-xs text-slate-500">
+          Use the template to get required columns and examples.
         </div>
         <input
           type="file"

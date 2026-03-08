@@ -76,7 +76,11 @@ export default function ExpensesPage() {
   }, []);
 
   const normalizePayload = (values: ExpenseFormValues) => {
-    const { receiptFile: _ignoredReceiptFile, ...baseValues } = values;
+    const {
+      receiptFile: _ignoredReceiptFile,
+      removeReceipt: _ignoredRemoveReceipt,
+      ...baseValues
+    } = values;
     return {
       ...baseValues,
       house: values.category === "maintenance" ? values.house || null : null,
@@ -116,18 +120,38 @@ export default function ExpensesPage() {
       }
 
       const payload: Record<string, unknown> = normalizePayload(values);
+      const previousReceiptFileId = editingExpense?.receiptFileId?.trim() || "";
+      const previousReceiptBucketId =
+        editingExpense?.receiptBucketId?.trim() || rcmsReceiptsBucketId;
+      const shouldRemoveCurrentReceipt = Boolean(
+        editingExpense && !uploadedReceipt && values.removeReceipt && previousReceiptFileId
+      );
+      const shouldDeletePreviousReceipt = Boolean(
+        editingExpense &&
+          previousReceiptFileId &&
+          (uploadedReceipt || shouldRemoveCurrentReceipt)
+      );
+
       if (uploadedReceipt) {
         payload.receiptFileId = uploadedReceipt.fileId;
         payload.receiptBucketId = uploadedReceipt.bucketId;
         payload.receiptFileName = uploadedReceipt.fileName;
         payload.receiptFileMimeType = uploadedReceipt.mimeType;
         payload.receiptFileSize = uploadedReceipt.fileSize;
+      } else if (shouldRemoveCurrentReceipt) {
+        payload.receiptFileId = null;
+        payload.receiptBucketId = null;
+        payload.receiptFileName = null;
+        payload.receiptFileMimeType = null;
+        payload.receiptFileSize = null;
       }
 
       if (editingExpense) {
-        const previousReceiptFileId = editingExpense.receiptFileId?.trim() || "";
-        const previousReceiptBucketId =
-          editingExpense.receiptBucketId?.trim() || rcmsReceiptsBucketId;
+        const receiptAction: "unchanged" | "replaced" | "removed" = uploadedReceipt
+          ? "replaced"
+          : shouldRemoveCurrentReceipt
+            ? "removed"
+            : "unchanged";
         const updated = await databases.updateDocument(
           rcmsDatabaseId,
           COLLECTIONS.expenses,
@@ -146,14 +170,14 @@ export default function ExpensesPage() {
             entityId: editingExpense.$id,
             action: "update",
             actorId: user.id,
-            details: payload,
+            details: {
+              ...payload,
+              receiptAction,
+              receiptFileId: uploadedReceipt?.fileId ?? null,
+            },
           });
         }
-        if (
-          uploadedReceipt &&
-          previousReceiptFileId &&
-          previousReceiptFileId !== uploadedReceipt.fileId
-        ) {
+        if (shouldDeletePreviousReceipt && previousReceiptFileId) {
           try {
             await storage.deleteFile(previousReceiptBucketId, previousReceiptFileId);
           } catch (cleanupError) {
@@ -302,6 +326,18 @@ export default function ExpensesPage() {
                   house: resolveExpenseHouseId(editingExpense),
                   maintenanceType: editingExpense.maintenanceType ?? "",
                   notes: editingExpense.notes ?? "",
+                }
+              : null
+          }
+          currentReceipt={
+            editingExpense?.receiptFileId
+              ? {
+                  url: storage.getFileView(
+                    editingExpense.receiptBucketId?.trim() || rcmsReceiptsBucketId,
+                    editingExpense.receiptFileId
+                  ),
+                  name: editingExpense.receiptFileName?.trim() || "View receipt",
+                  size: editingExpense.receiptFileSize,
                 }
               : null
           }

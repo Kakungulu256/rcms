@@ -37,11 +37,11 @@ async function executeManageUsersFunction(
   functionId: string,
   payload: Record<string, unknown>
 ) {
-  const execution = await functions.createExecution({
+  const execution = await functions.createExecution(
     functionId,
-    body: JSON.stringify(payload),
-    async: false,
-  });
+    JSON.stringify(payload),
+    false
+  );
 
   const readBody = (value: unknown) =>
     (value as { responseBody?: string; response?: string }).responseBody ??
@@ -59,10 +59,10 @@ async function executeManageUsersFunction(
       (latest as { status?: string }).status === "processing")
   ) {
     await new Promise((resolve) => setTimeout(resolve, 400));
-    latest = await functions.getExecution({
+    latest = await functions.getExecution(
       functionId,
-      executionId: (latest as { $id: string }).$id,
-    });
+      (latest as { $id: string }).$id
+    );
     body = readBody(latest);
     attempts += 1;
   }

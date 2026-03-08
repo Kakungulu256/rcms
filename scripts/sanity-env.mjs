@@ -1,3 +1,5 @@
+import "dotenv/config";
+
 const required = [
   "VITE_APPWRITE_ENDPOINT",
   "VITE_APPWRITE_PROJECT_ID",

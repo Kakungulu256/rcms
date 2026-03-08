@@ -21,7 +21,11 @@ import {
   getPaymentMonthAmounts,
 } from "../payments/allocation";
 import { buildRentByMonth } from "../../lib/rentHistory";
-import { buildTenantMonthSeries, getTenantEffectiveEndDate } from "../../lib/tenancyDates";
+import {
+  buildTenantMonthSeries,
+  getTenantEffectiveEndDate,
+  isTenantInactiveAtDate,
+} from "../../lib/tenancyDates";
 import { getLatestPaymentNoteForMonth } from "../../lib/paymentNotes";
 import { formatDisplayDate, formatShortMonth } from "../../lib/dateDisplay";
 
@@ -71,6 +75,16 @@ type DisbursementRow = {
   amount: number;
 };
 
+type InactiveArrearsRow = {
+  tenantId: string;
+  tenantName: string;
+  houseLabel: string;
+  moveInDate: string;
+  moveOutDate: string;
+  totalPaid: number;
+  balanceLeft: number;
+};
+
 function currency(value: number) {
   return value.toLocaleString(undefined, {
     minimumFractionDigits: 0,
@@ -79,7 +93,7 @@ function currency(value: number) {
 }
 
 function ush(value: number) {
-  return `USh ${currency(value)}`;
+  return currency(value);
 }
 
 function roundMoney(value: number) {
@@ -155,9 +169,9 @@ export default function ReportsPage() {
   const [year, setYear] = useState(() => format(new Date(), "yyyy"));
   const [rangeStart, setRangeStart] = useState(() => format(new Date(), "yyyy-MM-dd"));
   const [rangeEnd, setRangeEnd] = useState(() => format(new Date(), "yyyy-MM-dd"));
-  const [reportType, setReportType] = useState<"summary" | "byHouse" | "tenantDetail">(
-    "summary"
-  );
+  const [reportType, setReportType] = useState<
+    "summary" | "byHouse" | "tenantDetail" | "inactiveArrears"
+  >("summary");
   const [selectedTenantId, setSelectedTenantId] = useState<string>("");
   const [noteEditorOpen, setNoteEditorOpen] = useState(false);
   const [personalReportNote, setPersonalReportNote] = useState("");
@@ -251,15 +265,35 @@ export default function ReportsPage() {
     const rangeEndDisplay = formatDisplayDate(range.end);
     const rangeStartMonth = format(range.start, "yyyy-MM");
     const rangeEndMonth = format(range.end, "yyyy-MM");
+    const isCustomRange = rangeMode === "custom";
+    const isMonthRange = rangeMode === "month";
 
-    const paidInRange = payments.reduce((total, payment) => {
-      const allocationTotal = getPaymentMonthAmounts(payment).reduce((sum, entry) => {
+    const isPaymentDateWithinRange = (payment: Payment) => {
+      const paymentDateKey = dateKey(payment.paymentDate);
+      return paymentDateKey >= rangeStartKey && paymentDateKey <= rangeEndKey;
+    };
+
+    const paymentAllocationForMonthsInRange = (payment: Payment) =>
+      getPaymentMonthAmounts(payment).reduce((sum, entry) => {
         if (entry.month < rangeStartMonth || entry.month > rangeEndMonth) {
           return sum;
         }
         return sum + entry.amount;
       }, 0);
-      return total + allocationTotal;
+
+    const paymentAllocationTotal = (payment: Payment) =>
+      getPaymentMonthAmounts(payment).reduce((sum, entry) => sum + entry.amount, 0);
+
+    const paymentAmountForSelectedRange = (payment: Payment) => {
+      if (isCustomRange) {
+        if (!isPaymentDateWithinRange(payment)) return 0;
+        return paymentAllocationTotal(payment);
+      }
+      return paymentAllocationForMonthsInRange(payment);
+    };
+
+    const paidInRange = payments.reduce((total, payment) => {
+      return total + paymentAmountForSelectedRange(payment);
     }, 0);
 
     const expensesInRange = expenses.filter((expense) => {
@@ -287,12 +321,7 @@ export default function ReportsPage() {
       const houseId =
         typeof tenant?.house === "string" ? tenant.house : tenant?.house?.$id ?? "";
 
-      const paymentTotalInRange = getPaymentMonthAmounts(payment).reduce((sum, entry) => {
-        if (entry.month < rangeStartMonth || entry.month > rangeEndMonth) {
-          return sum;
-        }
-        return sum + entry.amount;
-      }, 0);
+      const paymentTotalInRange = paymentAmountForSelectedRange(payment);
 
       if (paymentTotalInRange === 0) {
         return;
@@ -378,6 +407,16 @@ export default function ReportsPage() {
                 : payment.tenant?.$id ?? "";
             return tenantId === tenant.$id;
           });
+          if (isCustomRange) {
+            return (
+              sum +
+              tenantPayments.reduce(
+                (tenantSum, payment) =>
+                  tenantSum + paymentAmountForSelectedRange(payment),
+                0
+              )
+            );
+          }
           const paidByMonth = buildPaidByMonth(tenantPayments);
           const months = buildTenantMonthSeries(tenant, range.end).filter(
             (month) => month >= rangeStartMonth && month <= rangeEndMonth
@@ -450,10 +489,7 @@ export default function ReportsPage() {
           tenantId: tenant.$id,
           tenantName: tenant.fullName,
           houseLabel: house?.code ?? "--",
-          statusLabel:
-            tenant.status === "active" && !tenant.moveOutDate
-              ? "active"
-              : "inactive",
+          statusLabel: isTenantInactiveAtDate(tenant, today) ? "inactive" : "active",
           expected,
           paid,
           balance,
@@ -461,7 +497,67 @@ export default function ReportsPage() {
       })
       .filter((row) => row.balance > 0)
       .sort((a, b) => b.balance - a.balance);
-    const totalTenantBalance = arrearsRows.reduce((sum, row) => sum + row.balance, 0);
+    const totalTenantBalance = arrearsRows
+      .filter((row) => row.statusLabel === "active")
+      .reduce((sum, row) => sum + row.balance, 0);
+    const inactiveArrearsRows: InactiveArrearsRow[] = tenants
+      .map((tenant) => {
+        const inactiveDate = getTenantEffectiveEndDate(tenant, range.end);
+        if (!isTenantInactiveAtDate(tenant, range.end)) {
+          return null;
+        }
+        const inactiveDateKey = dateKey(inactiveDate);
+        if (inactiveDateKey < rangeStartKey || inactiveDateKey > rangeEndKey) {
+          return null;
+        }
+
+        const houseId =
+          typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
+        const house = houseLookup.get(houseId);
+        const tenantPayments = payments.filter((payment) => {
+          const tenantId =
+            typeof payment.tenant === "string"
+              ? payment.tenant
+              : payment.tenant?.$id ?? "";
+          return tenantId === tenant.$id;
+        });
+        const monthsAtExit = buildTenantMonthSeries(tenant, inactiveDate);
+        const paidByMonth = buildPaidByMonth(tenantPayments);
+        const rentByMonth = buildRentByMonth({
+          months: monthsAtExit,
+          tenantHistoryJson: tenant.rentHistoryJson ?? null,
+          houseHistoryJson: house?.rentHistoryJson ?? null,
+          fallbackRent: tenant.rentOverride ?? house?.monthlyRent ?? 0,
+        });
+        const expectedAtExit = monthsAtExit.reduce(
+          (sum, month) => sum + (rentByMonth[month] ?? 0),
+          0
+        );
+        const paidAtExit = monthsAtExit.reduce(
+          (sum, month) => sum + (paidByMonth[month] ?? 0),
+          0
+        );
+        const balanceLeft = Math.max(expectedAtExit - paidAtExit, 0);
+        if (balanceLeft <= 0) {
+          return null;
+        }
+
+        return {
+          tenantId: tenant.$id,
+          tenantName: tenant.fullName,
+          houseLabel: house?.code ?? "--",
+          moveInDate: formatDisplayDate(tenant.moveInDate),
+          moveOutDate: formatDisplayDate(tenant.moveOutDate ?? inactiveDate.toISOString()),
+          totalPaid: paidAtExit,
+          balanceLeft,
+        };
+      })
+      .filter((row): row is InactiveArrearsRow => Boolean(row))
+      .sort((a, b) => b.balanceLeft - a.balanceLeft);
+    const inactiveArrearsTotal = inactiveArrearsRows.reduce(
+      (sum, row) => sum + row.balanceLeft,
+      0
+    );
 
     const reportMonthKey = rangeEndMonth;
     const reportMonthDate = parseISO(`${reportMonthKey}-01`);
@@ -538,9 +634,16 @@ export default function ReportsPage() {
             ? formatDisplayDate(tenant.moveOutDate)
             : null;
 
+        const houseName = house?.name?.trim() ?? "";
+        const houseCode = house?.code?.trim() ?? "";
+        const unitNo =
+          houseCode && houseName
+            ? `${houseCode}\n${houseName}`
+            : houseCode || houseName || "--";
+
         return {
           tenantId: tenant.$id,
-          unitNo: house?.code ?? "--",
+          unitNo,
           tenantName: tenant.fullName,
           contact: tenant.phone?.trim() || "N/A",
           rate,
@@ -559,35 +662,52 @@ export default function ReportsPage() {
         return a.tenantName.localeCompare(b.tenantName);
       });
 
-    const rentExpectedThisMonth = monthlyTenancyRows.reduce(
-      (sum, row) => sum + row.rate,
-      0
-    );
-    const amountPaidThisMonth = roundMoney(
-      payments.reduce((sum, payment) => {
-        const paymentMonthTotal = getPaymentMonthAmounts(payment).reduce(
-          (monthSum, entry) =>
-            entry.month === reportMonthKey ? monthSum + entry.amount : monthSum,
-          0
-        );
-        return sum + paymentMonthTotal;
-      }, 0)
-    );
+    const rentExpectedThisMonth = isMonthRange
+      ? monthlyTenancyRows.reduce((sum, row) => sum + row.rate, 0)
+      : tenants.reduce((sum, tenant) => {
+          const houseId =
+            typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
+          const house = houseLookup.get(houseId);
+          const months = buildTenantMonthSeries(tenant, range.end).filter(
+            (month) => month >= rangeStartMonth && month <= rangeEndMonth
+          );
+          if (months.length === 0) return sum;
+          const rentByMonth = buildRentByMonth({
+            months,
+            tenantHistoryJson: tenant.rentHistoryJson ?? null,
+            houseHistoryJson: house?.rentHistoryJson ?? null,
+            fallbackRent: tenant.rentOverride ?? house?.monthlyRent ?? 0,
+          });
+          return sum + months.reduce((monthSum, month) => monthSum + (rentByMonth[month] ?? 0), 0);
+        }, 0);
+    const amountPaidThisMonth = roundMoney(paidInRange);
     const unpaidRentThisMonth = Math.max(rentExpectedThisMonth - amountPaidThisMonth, 0);
-    const rentExpectedNextMonth = monthlyTenancyRows.reduce(
-      (sum, row) => sum + row.nextRate,
-      0
-    );
-    const tenantsWithArrearsCount = monthlyTenancyRows.filter(
-      (row) => row.balance > 0
+    const nextMonthEnd = endOfMonth(nextMonthDate);
+    const rentExpectedNextMonth = tenants.reduce((sum, tenant) => {
+      const moveIn = parseISO(tenant.moveInDate);
+      if (moveIn > nextMonthEnd) return sum;
+      if (isTenantInactiveAtDate(tenant, nextMonthEnd)) return sum;
+      const houseId =
+        typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
+      const house = houseLookup.get(houseId);
+      const rentByMonth = buildRentByMonth({
+        months: [nextMonthKey],
+        tenantHistoryJson: tenant.rentHistoryJson ?? null,
+        houseHistoryJson: house?.rentHistoryJson ?? null,
+        fallbackRent: tenant.rentOverride ?? house?.monthlyRent ?? 0,
+      });
+      return sum + (rentByMonth[nextMonthKey] ?? 0);
+    }, 0);
+    const tenantsWithArrearsCount = arrearsRows.filter(
+      (row) => row.statusLabel === "active" && row.balance > 0
     ).length;
     const hasMoveOutInSelectedRange = monthlyTenancyRows.some(
       (row) => Boolean(row.moveOutDate)
     );
 
-    const expensesForReportMonth = expenses.filter(
-      (expense) => expense.expenseDate?.slice(0, 7) === reportMonthKey
-    );
+    const expensesForReportMonth = isMonthRange
+      ? expenses.filter((expense) => expense.expenseDate?.slice(0, 7) === reportMonthKey)
+      : expensesInRange;
     const rentCashExpensesForReportMonth = expensesForReportMonth.filter(
       (expense) => expense.source === "rent_cash"
     );
@@ -615,6 +735,9 @@ export default function ReportsPage() {
     );
     const totalCashToLandlord = amountPaidThisMonth - totalRentCashDisbursements;
     const totalExpectedNextMonth = rentExpectedNextMonth + totalTenantBalance;
+    const reportPeriodLabel = isMonthRange
+      ? reportMonthLabel
+      : `${rangeStartDisplay} to ${rangeEndDisplay}`;
 
     const selectedTenant = selectedTenantId
       ? tenantLookup.get(selectedTenantId) ?? null
@@ -712,9 +835,13 @@ export default function ReportsPage() {
       arrearsRows,
       expenseCategoryRows,
       totalTenantBalance,
+      inactiveArrearsRows,
+      inactiveArrearsTotal,
       currentDateKey,
       reportMonthKey,
       reportMonthLabel,
+      reportPeriodLabel,
+      isMonthRange,
       nextMonthLabel,
       monthlyTenancyRows,
       hasMoveOutInSelectedRange,
@@ -831,6 +958,32 @@ export default function ReportsPage() {
             "Notes"
           );
         }
+      } else if (reportType === "inactiveArrears") {
+        XLSX.utils.book_append_sheet(
+          workbook,
+          XLSX.utils.json_to_sheet(
+            summary.inactiveArrearsRows.map((row) => ({
+              Tenant: row.tenantName,
+              House: row.houseLabel,
+              MoveInDate: row.moveInDate,
+              MoveOutDate: row.moveOutDate,
+              TotalPaid: row.totalPaid,
+              BalanceLeft: row.balanceLeft,
+            }))
+          ),
+          "InactiveArrears"
+        );
+
+        XLSX.utils.book_append_sheet(
+          workbook,
+          XLSX.utils.json_to_sheet([
+            { Note: "Range", Value: summary.reportPeriodLabel },
+            { Note: "Inactive tenants with arrears", Value: summary.inactiveArrearsRows.length },
+            { Note: "Inactive tenant arrears total", Value: summary.inactiveArrearsTotal },
+            ...personalNoteRows,
+          ]),
+          "Notes"
+        );
       } else if (reportType === "byHouse") {
         XLSX.utils.book_append_sheet(
           workbook,
@@ -891,11 +1044,33 @@ export default function ReportsPage() {
         XLSX.utils.book_append_sheet(
           workbook,
           XLSX.utils.json_to_sheet([
-            { Note: `Report Month`, Value: summary.reportMonthLabel },
-            { Note: "Rent expected this Month", Value: summary.rentExpectedThisMonth },
-            { Note: "Amount of rent collected", Value: summary.amountPaidThisMonth },
-            { Note: "Unpaid rent", Value: summary.unpaidRentThisMonth },
-            { Note: "Total expected next month", Value: summary.totalExpectedNextMonth },
+            { Note: `Report Period`, Value: summary.reportPeriodLabel },
+            {
+              Note: summary.isMonthRange
+                ? "Rent expected this month"
+                : "Rent expected in selected range",
+              Value: summary.rentExpectedThisMonth,
+            },
+            {
+              Note: summary.isMonthRange
+                ? "Amount of rent collected this month"
+                : "Amount of rent collected in selected range",
+              Value: summary.amountPaidThisMonth,
+            },
+            {
+              Note: summary.isMonthRange
+                ? "Unpaid rent this month"
+                : "Unpaid rent in selected range",
+              Value: summary.unpaidRentThisMonth,
+            },
+            {
+              Note: summary.isMonthRange
+                ? "Total expected next month"
+                : "Total expenses in selected range",
+              Value: summary.isMonthRange
+                ? summary.totalExpectedNextMonth
+                : summary.totalDisbursements,
+            },
             { Note: "Outstanding total balance", Value: summary.totalTenantBalance },
             {
               Note: "Tenants with arrears",
@@ -975,6 +1150,8 @@ export default function ReportsPage() {
       const fileSuffix =
         reportType === "tenantDetail" && summary.selectedTenant
           ? `_${summary.selectedTenant.fullName.replace(/\s+/g, "_")}`
+          : reportType === "inactiveArrears"
+          ? "_Inactive_Tenant_Arrears"
           : "";
       const startFileKey =
         reportType === "tenantDetail"
@@ -1008,18 +1185,31 @@ export default function ReportsPage() {
       }
 
       const doc = new jsPDF({
-        orientation: reportType === "summary" ? "landscape" : "portrait",
+        orientation:
+          reportType === "summary" || reportType === "inactiveArrears"
+            ? "landscape"
+            : "portrait",
       });
       doc.setFontSize(16);
       const title =
         reportType === "summary"
-          ? `MONTHLY TENANCY REPORT FOR ${summary.reportMonthLabel.toUpperCase()}`
+          ? summary.isMonthRange
+            ? `MONTHLY TENANCY REPORT FOR ${summary.reportMonthLabel.toUpperCase()}`
+            : "TENANCY SUMMARY REPORT"
+          : reportType === "inactiveArrears"
+          ? "INACTIVE TENANT ARREARS REPORT"
           : reportType === "byHouse"
           ? "RCMS Collections by House"
           : "RCMS Tenant Collection";
       doc.text(title, 14, 18);
       doc.setFontSize(11);
       let y = 28;
+      if (reportType === "summary" && !summary.isMonthRange) {
+        doc.setFontSize(10);
+        doc.text(`Range: ${summary.reportPeriodLabel}`, 14, y);
+        y += 6;
+        doc.setFontSize(11);
+      }
       const pageWidth = doc.internal.pageSize.getWidth();
       const pageHeight = doc.internal.pageSize.getHeight();
       const left = 14;
@@ -1034,30 +1224,157 @@ export default function ReportsPage() {
         }
       };
 
-      const drawTable = (headers: string[], rows: string[][]) => {
+      const drawTable = (
+        headers: string[],
+        rows: string[][],
+        options?: { columnWidths?: number[]; wrapColumnIndexes?: number[] }
+      ) => {
         const tableWidth = right - left;
-        const colWidth = tableWidth / headers.length;
-        const rowHeight = 7;
-        ensureSpace(rowHeight * (rows.length + 2));
+        const baseWidth = tableWidth / headers.length;
+        const requestedWidths =
+          options?.columnWidths?.length === headers.length
+            ? options.columnWidths
+            : new Array(headers.length).fill(baseWidth);
+        const wrapColumns = new Set(options?.wrapColumnIndexes ?? []);
+        const requestedTotal = requestedWidths.reduce((sum, width) => sum + width, 0);
+        const scale = requestedTotal > 0 ? tableWidth / requestedTotal : 1;
+        const columnWidths = requestedWidths.map((width) => width * scale);
+        const computedLineHeight =
+          (doc.getFontSize() / doc.internal.scaleFactor) *
+          doc.getLineHeightFactor();
+        const lineHeight = Math.max(computedLineHeight, 4);
+        const minRowHeight = lineHeight + 4;
+        const cellPaddingX = 2;
+        const textOffsetY = lineHeight;
+
+        const fitLineToWidth = (value: string, width: number) => {
+          const maxTextWidth = Math.max(width - cellPaddingX * 2, 6);
+          const source = String(value ?? "");
+          if (!source) return "";
+          if (doc.getTextWidth(source) <= maxTextWidth) return source;
+          const ellipsis = "...";
+          if (doc.getTextWidth(ellipsis) >= maxTextWidth) return "";
+          let end = source.length;
+          while (end > 0) {
+            const candidate = `${source.slice(0, end)}${ellipsis}`;
+            if (doc.getTextWidth(candidate) <= maxTextWidth) {
+              return candidate;
+            }
+            end -= 1;
+          }
+          return "";
+        };
+
+        const splitHeaderCell = (value: string, width: number) => {
+          const text = String(value ?? "");
+          const maxTextWidth = Math.max(width - cellPaddingX * 2, 6);
+          return doc.splitTextToSize(text, maxTextWidth) as string[];
+        };
+
+        const splitBodyCell = (value: string, width: number, columnIndex: number) => {
+          const text = String(value ?? "");
+          if (!text) return [""];
+          const explicitLines = text.split(/\r?\n/);
+          if (wrapColumns.has(columnIndex)) {
+            const maxTextWidth = Math.max(width - cellPaddingX * 2, 6);
+            return explicitLines.flatMap((line) => {
+              const wrapped = doc.splitTextToSize(line, maxTextWidth) as string[];
+              return wrapped.length > 0 ? wrapped : [""];
+            });
+          }
+          return explicitLines.map((line) => fitLineToWidth(line, width));
+        };
+
+        const drawHeader = () => {
+          const headerLines = headers.map((header, index) =>
+            splitHeaderCell(header, columnWidths[index])
+          );
+          const headerLineCount = Math.max(
+            ...headerLines.map((lines) => Math.max(lines.length, 1))
+          );
+          const headerHeight = Math.max(minRowHeight, headerLineCount * lineHeight + 4);
+          ensureSpace(headerHeight);
+
+          doc.setDrawColor(229, 231, 235);
+          doc.setTextColor(17, 24, 39);
+          let x = left;
+          headers.forEach((_, index) => {
+            const width = columnWidths[index];
+            doc.rect(x, y, width, headerHeight, "S");
+            doc.text(headerLines[index], x + cellPaddingX, y + textOffsetY);
+            x += width;
+          });
+          y += headerHeight;
+        };
+
+        drawHeader();
 
         doc.setDrawColor(229, 231, 235);
-        doc.setFillColor(249, 250, 251);
-        doc.rect(left, y, tableWidth, rowHeight, "F");
-        headers.forEach((header, index) => {
-          doc.text(header, left + colWidth * index + 2, y + 5);
-        });
-        y += rowHeight;
-
+        doc.setTextColor(17, 24, 39);
         rows.forEach((row) => {
-          doc.rect(left, y, tableWidth, rowHeight);
-          row.forEach((cell, index) => {
-            doc.text(cell, left + colWidth * index + 2, y + 5);
+          const rowLines = headers.map((_, index) =>
+            splitBodyCell(row[index] ?? "", columnWidths[index], index)
+          );
+          const lineCount = Math.max(...rowLines.map((lines) => Math.max(lines.length, 1)));
+          const rowHeight = Math.max(minRowHeight, lineCount * lineHeight + 4);
+          if (y + rowHeight > bottom) {
+            doc.addPage();
+            y = 20;
+            drawHeader();
+          }
+
+          let x = left;
+          headers.forEach((_, index) => {
+            const width = columnWidths[index];
+            doc.rect(x, y, width, rowHeight);
+            doc.text(rowLines[index], x + cellPaddingX, y + textOffsetY);
+            x += width;
           });
           y += rowHeight;
         });
 
+        doc.setTextColor(0, 0, 0);
+        doc.setDrawColor(0, 0, 0);
+        doc.setFillColor(255, 255, 255);
         y += 6;
       };
+
+      const summaryTableHeaders = [
+        "Unit No.",
+        "Tenant Name",
+        "Contact",
+        "Rate",
+        "Rent Paid",
+        "Balance",
+        "Date Paid",
+        ...(summary.hasMoveOutInSelectedRange ? ["Move-out Date"] : []),
+        "Status",
+      ];
+      const summaryColumnWidths = summary.hasMoveOutInSelectedRange
+        ? [18, 22, 22, 14, 16, 16, 14, 14, 46]
+        : [20, 24, 22, 14, 16, 16, 14, 56];
+
+      const summaryTableRows = summary.monthlyTenancyRows.map((row) => [
+        row.unitNo,
+        row.tenantName,
+        row.contact,
+        row.rate > 0 ? ush(row.rate) : "NIL",
+        row.rentPaid > 0 ? ush(row.rentPaid) : "NIL",
+        row.balance > 0 ? ush(row.balance) : "NIL",
+        row.datePaid,
+        ...(summary.hasMoveOutInSelectedRange ? [row.moveOutDate ?? "--"] : []),
+        row.status,
+      ]);
+
+      const byHouseHeaders = ["House", "Collected", "Owed", "Occupancy"];
+      const byHouseRows = summary.byHouseRangeRows.map((row) => [
+        row.houseCode,
+        currency(row.collected),
+        currency(row.owed),
+        row.occupancyStatus,
+      ]);
+      const byHouseColumnWidths = [40, 42, 40, 60];
+
 
       const drawPersonalNote = () => {
         if (!trimmedPersonalNote) return;
@@ -1082,14 +1399,30 @@ export default function ReportsPage() {
       }
 
       if (reportType === "byHouse") {
+        drawTable(byHouseHeaders, byHouseRows, { columnWidths: byHouseColumnWidths });
+      }
+      if (reportType === "inactiveArrears") {
+        doc.setFontSize(10);
+        doc.text(`Range: ${summary.reportPeriodLabel}`, left, y);
+        y += 6;
+        doc.text(
+          `Inactive tenant arrears total: ${ush(summary.inactiveArrearsTotal)} (${summary.inactiveArrearsRows.length} tenant(s))`,
+          left,
+          y
+        );
+        y += 6;
+        doc.setFontSize(11);
         drawTable(
-          ["House", "Collected", "Owed", "Occupancy"],
-          summary.byHouseRangeRows.map((row) => [
-            row.houseCode,
-            currency(row.collected),
-            currency(row.owed),
-            row.occupancyStatus,
-          ])
+          ["Tenant", "House", "Move-in", "Move-out", "Total Paid", "Balance Left"],
+          summary.inactiveArrearsRows.map((row) => [
+            row.tenantName,
+            row.houseLabel,
+            row.moveInDate,
+            row.moveOutDate,
+            ush(row.totalPaid),
+            ush(row.balanceLeft),
+          ]),
+          { columnWidths: [34, 20, 17, 17, 16, 16] }
         );
       }
       if (reportType === "summary") {
@@ -1100,30 +1433,10 @@ export default function ReportsPage() {
         y += 4;
         doc.setFontSize(11);
 
-        drawTable(
-          [
-            "Unit No.",
-            "Tenant Name",
-            "Contact",
-            "Rate",
-            "Rent Paid",
-            "Balance",
-            "Date Paid",
-            ...(summary.hasMoveOutInSelectedRange ? ["Move-out Date"] : []),
-            "Status",
-          ],
-          summary.monthlyTenancyRows.map((row) => [
-            row.unitNo,
-            row.tenantName,
-            row.contact,
-            row.rate > 0 ? ush(row.rate) : "NIL",
-            row.rentPaid > 0 ? ush(row.rentPaid) : "NIL",
-            row.balance > 0 ? ush(row.balance) : "NIL",
-            row.datePaid,
-            ...(summary.hasMoveOutInSelectedRange ? [row.moveOutDate ?? "--"] : []),
-            row.status,
-          ])
-        );
+        drawTable(summaryTableHeaders, summaryTableRows, {
+          columnWidths: summaryColumnWidths,
+          wrapColumnIndexes: [summaryTableHeaders.length - 1],
+        });
 
         drawTable(
           ["Summary of Disbursements", "Amount"],
@@ -1143,13 +1456,37 @@ export default function ReportsPage() {
         y += 5;
         doc.text("2. Breakdown of totals:", left + 4, y);
         y += 5;
-        doc.text(`a) Rent expected this month: ${ush(summary.rentExpectedThisMonth)}`, left + 8, y);
+        doc.text(
+          summary.isMonthRange
+            ? `a) Rent expected this month: ${ush(summary.rentExpectedThisMonth)}`
+            : `a) Rent expected in selected range: ${ush(summary.rentExpectedThisMonth)}`,
+          left + 8,
+          y
+        );
         y += 5;
-        doc.text(`b) Amount of rent collected: ${ush(summary.amountPaidThisMonth)}`, left + 8, y);
+        doc.text(
+          summary.isMonthRange
+            ? `b) Amount of rent collected this month: ${ush(summary.amountPaidThisMonth)}`
+            : `b) Amount of rent collected in selected range: ${ush(summary.amountPaidThisMonth)}`,
+          left + 8,
+          y
+        );
         y += 5;
-        doc.text(`c) Unpaid rent: ${ush(summary.unpaidRentThisMonth)}`, left + 8, y);
+        doc.text(
+          summary.isMonthRange
+            ? `c) Unpaid rent this month: ${ush(summary.unpaidRentThisMonth)}`
+            : `c) Unpaid rent in selected range: ${ush(summary.unpaidRentThisMonth)}`,
+          left + 8,
+          y
+        );
         y += 5;
-        doc.text(`d) Total expected next month: ${ush(summary.totalExpectedNextMonth)}`, left + 8, y);
+        doc.text(
+          summary.isMonthRange
+            ? `d) Total expected next month: ${ush(summary.totalExpectedNextMonth)}`
+            : `d) Total expenses in selected range: ${ush(summary.totalDisbursements)}`,
+          left + 8,
+          y
+        );
         y += 5;
         doc.text(`e) Outstanding total balance: ${ush(summary.totalTenantBalance)}`, left + 8, y);
         y += 5;
@@ -1213,6 +1550,8 @@ export default function ReportsPage() {
       const fileSuffix =
         reportType === "tenantDetail" && summary.selectedTenant
           ? `_${summary.selectedTenant.fullName.replace(/\s+/g, "_")}`
+          : reportType === "inactiveArrears"
+          ? "_Inactive_Tenant_Arrears"
           : "";
       const startFileKey =
         reportType === "tenantDetail"
@@ -1268,6 +1607,7 @@ export default function ReportsPage() {
             <option value="summary">Summary</option>
             <option value="byHouse">By House</option>
             <option value="tenantDetail">By Tenant</option>
+            <option value="inactiveArrears">Inactive Arrears</option>
           </select>
         </label>
         {reportType === "tenantDetail" && (
@@ -1411,7 +1751,9 @@ export default function ReportsPage() {
             style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
           >
             <div className="text-center text-sm font-semibold uppercase tracking-[0.15em] text-slate-200">
-              Monthly Tenancy Report For {summary.reportMonthLabel}
+              {summary.isMonthRange
+                ? `Monthly Tenancy Report For ${summary.reportMonthLabel}`
+                : `Tenancy Summary Report (${summary.reportPeriodLabel})`}
             </div>
             <div className="mt-2 text-center text-xs text-slate-500">
               Date: {summary.currentDateKey}
@@ -1433,7 +1775,7 @@ export default function ReportsPage() {
                     {summary.hasMoveOutInSelectedRange && (
                       <th className="px-4 py-3">Move-out Date</th>
                     )}
-                    <th className="px-4 py-3">Status</th>
+                    <th className="w-[22rem] px-4 py-3">Status</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1443,7 +1785,9 @@ export default function ReportsPage() {
                       className="border-t odd:bg-slate-950/30"
                       style={{ borderColor: "var(--border)" }}
                     >
-                      <td className="px-4 py-3 text-slate-200">{row.unitNo}</td>
+                      <td className="px-4 py-3 text-slate-200 whitespace-pre-line break-words">
+                        {row.unitNo}
+                      </td>
                       <td className="px-4 py-3 text-slate-100">{row.tenantName}</td>
                       <td className="px-4 py-3 text-slate-400">{row.contact}</td>
                       <td className="amount px-4 py-3">{row.rate > 0 ? ush(row.rate) : "NIL"}</td>
@@ -1457,7 +1801,9 @@ export default function ReportsPage() {
                       {summary.hasMoveOutInSelectedRange && (
                         <td className="px-4 py-3 text-slate-400">{row.moveOutDate ?? "--"}</td>
                       )}
-                      <td className="px-4 py-3 text-slate-300">{row.status}</td>
+                      <td className="px-4 py-3 text-slate-300 whitespace-normal break-words">
+                        <div className="max-w-[22rem]">{row.status}</div>
+                      </td>
                     </tr>
                   ))}
                   {summary.monthlyTenancyRows.length === 0 && (
@@ -1483,7 +1829,7 @@ export default function ReportsPage() {
               Summary Of Disbursements
             </div>
             <div className="mt-1 text-xs text-slate-500">
-              Expenses in {summary.reportMonthLabel} (Rent Cash and External)
+              Expenses in {summary.reportPeriodLabel} (Rent Cash and External)
             </div>
             <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-800">
               <table className="min-w-[480px] w-full text-left text-sm text-slate-300">
@@ -1532,14 +1878,104 @@ export default function ReportsPage() {
               <div className="font-semibold text-slate-100">Notes</div>
               <div>1. This is a summary of payments as of {summary.currentDateKey}.</div>
               <div>2. Breakdown of totals:</div>
-              <div className="pl-4">a. Rent expected this Month: {ush(summary.rentExpectedThisMonth)}</div>
-              <div className="pl-4">b. Amount of rent collected: {ush(summary.amountPaidThisMonth)}</div>
-              <div className="pl-4">c. Unpaid rent: {ush(summary.unpaidRentThisMonth)}</div>
-              <div className="pl-4">d. Total Expected next month: {ush(summary.totalExpectedNextMonth)}</div>
+              <div className="pl-4">
+                {summary.isMonthRange
+                  ? `a. Rent expected this month: ${ush(summary.rentExpectedThisMonth)}`
+                  : `a. Rent expected in selected range: ${ush(summary.rentExpectedThisMonth)}`}
+              </div>
+              <div className="pl-4">
+                {summary.isMonthRange
+                  ? `b. Amount of rent collected this month: ${ush(summary.amountPaidThisMonth)}`
+                  : `b. Amount of rent collected in selected range: ${ush(summary.amountPaidThisMonth)}`}
+              </div>
+              <div className="pl-4">
+                {summary.isMonthRange
+                  ? `c. Unpaid rent this month: ${ush(summary.unpaidRentThisMonth)}`
+                  : `c. Unpaid rent in selected range: ${ush(summary.unpaidRentThisMonth)}`}
+              </div>
+              <div className="pl-4">
+                {summary.isMonthRange
+                  ? `d. Total Expected next month: ${ush(summary.totalExpectedNextMonth)}`
+                  : `d. Total expenses in selected range: ${ush(summary.totalDisbursements)}`}
+              </div>
               <div className="pl-4">e. Outstanding total balance: {ush(summary.totalTenantBalance)}</div>
               <div>
                 3. {summary.tenantsWithArrearsCount} tenant(s) remained with arrears. This is to be collected in {summary.nextMonthLabel}.
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {reportType === "inactiveArrears" && (
+        <div className="space-y-6">
+          <div
+            className="rounded-2xl border p-6"
+            style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
+          >
+            <div className="text-center text-sm font-semibold uppercase tracking-[0.15em] text-slate-200">
+              Inactive Tenant Arrears Report
+            </div>
+            <div className="mt-2 text-center text-xs text-slate-500">
+              Range: {summary.reportPeriodLabel}
+            </div>
+            <div className="mt-4 grid gap-4 md:grid-cols-2">
+              <div className="rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3">
+                <div className="text-xs uppercase tracking-[0.1em] text-slate-500">
+                  Inactive Tenants With Arrears
+                </div>
+                <div className="mt-2 text-lg font-semibold text-slate-100">
+                  {summary.inactiveArrearsRows.length}
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3">
+                <div className="text-xs uppercase tracking-[0.1em] text-slate-500">
+                  Cumulative Balance Left
+                </div>
+                <div className="amount mt-2 text-lg font-semibold text-rose-200">
+                  {ush(summary.inactiveArrearsTotal)}
+                </div>
+              </div>
+            </div>
+            <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-800">
+              <table className="min-w-[900px] w-full text-left text-sm text-slate-300">
+                <thead
+                  className="text-xs text-slate-500"
+                  style={{ backgroundColor: "var(--surface-strong)" }}
+                >
+                  <tr>
+                    <th className="px-4 py-3">Tenant</th>
+                    <th className="px-4 py-3">House</th>
+                    <th className="px-4 py-3">Move-in Date</th>
+                    <th className="px-4 py-3">Move-out Date</th>
+                    <th className="px-4 py-3">Total Paid</th>
+                    <th className="px-4 py-3">Balance Left</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {summary.inactiveArrearsRows.map((row) => (
+                    <tr
+                      key={row.tenantId}
+                      className="border-t odd:bg-slate-950/30"
+                      style={{ borderColor: "var(--border)" }}
+                    >
+                      <td className="px-4 py-3 text-slate-100">{row.tenantName}</td>
+                      <td className="px-4 py-3 text-slate-400">{row.houseLabel}</td>
+                      <td className="px-4 py-3 text-slate-400">{row.moveInDate}</td>
+                      <td className="px-4 py-3 text-slate-400">{row.moveOutDate}</td>
+                      <td className="amount px-4 py-3 text-slate-200">{ush(row.totalPaid)}</td>
+                      <td className="amount px-4 py-3 text-rose-200">{ush(row.balanceLeft)}</td>
+                    </tr>
+                  ))}
+                  {summary.inactiveArrearsRows.length === 0 && (
+                    <tr>
+                      <td className="px-4 py-4 text-slate-500" colSpan={6}>
+                        No inactive tenants with arrears in selected range.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
         </div>

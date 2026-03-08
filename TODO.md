@@ -124,3 +124,50 @@ Use this list in order. Complete and verify each item before moving to the next.
 - Scenario C: legacy payment without allocation metadata.
 - Scenario D: reversal in same report month.
 
+## Phase 9: Reporting, Receipts, and Inactive-Arrears Split (New)
+
+27. [x] Update Summary Report `Unit No.` format
+- Display as `House Name-HouseCode` in summary report rows.
+- Ensure this applies consistently in on-screen report, PDF export, and XLSX export.
+
+28. [x] Remove `USh` currency prefix from reports
+- Remove `USh` text from summary report tables/notes and exported PDF.
+- Keep numeric formatting readable (thousands separators, no forced trailing `.00` unless needed).
+
+29. [x] Enable auto-wrap for long report cell text
+- Ensure long status notes and long tenant notes wrap in report tables (screen + PDF).
+- Prevent clipped/overflowed text in exported summary report layout.
+
+30. [x] Allow receipt replacement when editing payments
+- In payment edit flow, support replacing/removing current receipt.
+- Update stored receipt metadata and clean up old file when replaced.
+
+31. [x] Allow receipt replacement when editing expenses
+- In expense edit flow, support replacing/removing current receipt.
+- Update stored receipt metadata and clean up old file when replaced.
+
+32. [x] Exclude inactive-tenant balances from active monthly obligations
+- For moved-out/inactive tenants with remaining balances, exclude from:
+- `Rent expected this month`
+- `Unpaid rent this month`
+- `Total expected next month`
+- `Outstanding total balance` in summary reports
+- `Outstanding Arrears` on dashboard
+
+33. [x] Introduce `Inactive Tenant Arrears` aggregate
+- Compute and show cumulative arrears for tenants who moved out/inactive with unpaid balances.
+- Surface as a separate KPI/widget from active arrears.
+
+34. [x] Add dedicated `Inactive Tenant Arrears` report
+- Add report view/export that explains each tenant contribution:
+- Tenant, move-in date, move-out date, total paid, balance left.
+- Include cumulative total and date range context.
+
+35. [x] Add downloadable old-records import template
+- Provide template download in old records/migration area.
+- Include required columns and simple guidance.
+
+36. [x] End-to-end QA for Phase 9
+- Validate calculations and exports after inactive-arrears split.
+- Validate receipt edit/replacement and permissions by role.
+
