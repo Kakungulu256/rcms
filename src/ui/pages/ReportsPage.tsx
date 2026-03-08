@@ -13,7 +13,13 @@ import { jsPDF } from "jspdf";
 import * as XLSX from "xlsx";
 import { listAllDocuments, rcmsDatabaseId } from "../../lib/appwrite";
 import { COLLECTIONS } from "../../lib/schema";
-import type { Expense, House, Payment, Tenant } from "../../lib/schema";
+import type {
+  Expense,
+  House,
+  Payment,
+  SecurityDepositDeduction,
+  Tenant,
+} from "../../lib/schema";
 import { useToast } from "../ToastContext";
 import {
   buildPaidByMonth,
@@ -31,6 +37,7 @@ import {
   getLatestPaymentNoteForRange,
 } from "../../lib/paymentNotes";
 import { formatDisplayDate, formatShortMonth } from "../../lib/dateDisplay";
+import TypeaheadField, { type TypeaheadOption } from "../TypeaheadField";
 
 type ArrearsRow = {
   tenantId: string;
@@ -86,6 +93,30 @@ type InactiveArrearsRow = {
   moveOutDate: string;
   totalPaid: number;
   balanceLeft: number;
+};
+
+type DepositDeductionReportRow = {
+  deductionId: string;
+  tenantId: string;
+  tenantName: string;
+  houseLabel: string;
+  deductionDateKey: string;
+  deductionDate: string;
+  itemFixed: string;
+  amount: number;
+  deductionNote: string;
+  expenseReference: string;
+};
+
+type DepositBalanceRow = {
+  tenantId: string;
+  tenantName: string;
+  houseLabel: string;
+  depositPaid: number;
+  openingBalance: number;
+  deductedInRange: number;
+  closingBalance: number;
+  deductionsInRangeCount: number;
 };
 
 function currency(value: number) {
@@ -165,6 +196,9 @@ export default function ReportsPage() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [houses, setHouses] = useState<House[]>([]);
+  const [securityDepositDeductions, setSecurityDepositDeductions] = useState<
+    SecurityDepositDeduction[]
+  >([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [rangeMode, setRangeMode] = useState<"month" | "year" | "custom">("month");
@@ -173,7 +207,7 @@ export default function ReportsPage() {
   const [rangeStart, setRangeStart] = useState(() => format(new Date(), "yyyy-MM-dd"));
   const [rangeEnd, setRangeEnd] = useState(() => format(new Date(), "yyyy-MM-dd"));
   const [reportType, setReportType] = useState<
-    "summary" | "byHouse" | "tenantDetail" | "inactiveArrears"
+    "summary" | "byHouse" | "tenantDetail" | "inactiveArrears" | "depositDeductions"
   >("summary");
   const [selectedTenantId, setSelectedTenantId] = useState<string>("");
   const [noteEditorOpen, setNoteEditorOpen] = useState(false);
@@ -189,6 +223,27 @@ export default function ReportsPage() {
     () => new Map(houses.map((house) => [house.$id, house])),
     [houses]
   );
+  const tenantSelectionOptions = useMemo<TypeaheadOption[]>(
+    () =>
+      tenants.map((tenant) => {
+        const houseId =
+          typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
+        const house = houseLookup.get(houseId);
+        const houseCode = house?.code?.trim() ?? "";
+        const houseName = house?.name?.trim() ?? "";
+        const houseLabel =
+          houseCode && houseName ? `${houseCode} - ${houseName}` : houseCode || houseName;
+        const phone = tenant.phone?.trim() ?? "";
+        const description = [houseLabel, phone].filter(Boolean).join(" • ");
+        return {
+          id: tenant.$id,
+          label: tenant.fullName,
+          description: description || undefined,
+          keywords: [phone, houseCode, houseName].filter(Boolean).join(" "),
+        };
+      }),
+    [houseLookup, tenants]
+  );
   const yearOptions = useMemo(() => {
     const currentYear = new Date().getFullYear();
     return Array.from({ length: 50 }, (_, index) => String(currentYear - index));
@@ -198,7 +253,8 @@ export default function ReportsPage() {
     setLoading(true);
     setError(null);
     try {
-      const [paymentResult, expenseResult, tenantResult, houseResult] = await Promise.all([
+      const [paymentResult, expenseResult, tenantResult, houseResult, deductionResult] =
+        await Promise.all([
         listAllDocuments<Payment>({
           databaseId: rcmsDatabaseId,
           collectionId: COLLECTIONS.payments,
@@ -227,11 +283,17 @@ export default function ReportsPage() {
           Query.orderAsc("code"),
           ],
         }),
-      ]);
+        listAllDocuments<SecurityDepositDeduction>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.securityDepositDeductions,
+          queries: [Query.orderAsc("deductionDate")],
+        }).catch(() => []),
+        ]);
       setPayments(paymentResult);
       setExpenses(expenseResult);
       setTenants(tenantResult);
       setHouses(houseResult);
+      setSecurityDepositDeductions(deductionResult);
     } catch (err) {
       setError("Failed to load report data.");
     } finally {
@@ -270,6 +332,17 @@ export default function ReportsPage() {
     const rangeEndMonth = format(range.end, "yyyy-MM");
     const isCustomRange = rangeMode === "custom";
     const isMonthRange = rangeMode === "month";
+    const getOccupancyEndDateKey = (tenant: Tenant, referenceDate: Date) => {
+      if (tenant.moveOutDate?.trim()) {
+        return tenant.moveOutDate.slice(0, 10);
+      }
+      if (tenant.status === "inactive") {
+        return getTenantEffectiveEndDate(tenant, referenceDate)
+          .toISOString()
+          .slice(0, 10);
+      }
+      return null;
+    };
 
     const isPaymentDateWithinRange = (payment: Payment) => {
       const paymentDateKey = dateKey(payment.paymentDate);
@@ -439,6 +512,8 @@ export default function ReportsPage() {
             tenantHistoryJson: tenant.rentHistoryJson ?? null,
             houseHistoryJson: house.rentHistoryJson ?? null,
             fallbackRent: tenant.rentOverride ?? house.monthlyRent ?? 0,
+            occupancyStartDate: tenant.moveInDate,
+            occupancyEndDate: getOccupancyEndDateKey(tenant, range.end),
           });
           return sum + months.reduce((monthSum, month) => monthSum + (rentByMonth[month] ?? 0), 0);
         }, 0);
@@ -470,6 +545,8 @@ export default function ReportsPage() {
           tenantHistoryJson: tenant.rentHistoryJson ?? null,
           houseHistoryJson: house?.rentHistoryJson ?? null,
           fallbackRent: tenant.rentOverride ?? house?.monthlyRent ?? 0,
+          occupancyStartDate: tenant.moveInDate,
+          occupancyEndDate: getOccupancyEndDateKey(tenant, today),
         });
         const tenantPayments = payments.filter((payment) => {
           const tenantId =
@@ -531,6 +608,8 @@ export default function ReportsPage() {
           tenantHistoryJson: tenant.rentHistoryJson ?? null,
           houseHistoryJson: house?.rentHistoryJson ?? null,
           fallbackRent: tenant.rentOverride ?? house?.monthlyRent ?? 0,
+          occupancyStartDate: tenant.moveInDate,
+          occupancyEndDate: inactiveDate.toISOString().slice(0, 10),
         });
         const expectedAtExit = monthsAtExit.reduce(
           (sum, month) => sum + (rentByMonth[month] ?? 0),
@@ -561,6 +640,109 @@ export default function ReportsPage() {
       (sum, row) => sum + row.balanceLeft,
       0
     );
+
+    const depositDeductionRows: DepositDeductionReportRow[] = securityDepositDeductions
+      .filter((deduction) => {
+        const key = dateKey(deduction.deductionDate);
+        return key >= rangeStartKey && key <= rangeEndKey;
+      })
+      .map((deduction) => {
+        const tenant = tenantLookup.get(deduction.tenantId);
+        const deductionHouse = houseLookup.get(deduction.houseId);
+        const tenantHouseId = tenant
+          ? typeof tenant.house === "string"
+            ? tenant.house
+            : tenant.house?.$id ?? ""
+          : "";
+        const tenantHouse = houseLookup.get(tenantHouseId);
+        const house = deductionHouse ?? tenantHouse;
+        const houseCode = house?.code?.trim() ?? "";
+        const houseName = house?.name?.trim() ?? "";
+        return {
+          deductionId: deduction.$id,
+          tenantId: deduction.tenantId,
+          tenantName: tenant?.fullName ?? deduction.tenantId,
+          houseLabel:
+            houseCode && houseName
+              ? `${houseCode} - ${houseName}`
+              : houseCode || houseName || "--",
+          deductionDateKey: dateKey(deduction.deductionDate),
+          deductionDate: formatDisplayDate(deduction.deductionDate),
+          itemFixed: deduction.itemFixed?.trim() || "--",
+          amount: Number(deduction.amount) || 0,
+          deductionNote: deduction.deductionNote?.trim() || "--",
+          expenseReference: deduction.expenseReference?.trim() || "--",
+        };
+      })
+      .sort((a, b) => {
+        const tenantSort = a.tenantName.localeCompare(b.tenantName);
+        if (tenantSort !== 0) return tenantSort;
+        return a.deductionDateKey.localeCompare(b.deductionDateKey);
+      });
+
+    const tenantIdsWithDeductions = new Set(
+      depositDeductionRows.map((row) => row.tenantId)
+    );
+    const depositBalanceRows: DepositBalanceRow[] = Array.from(tenantIdsWithDeductions)
+      .map((tenantId) => {
+        const tenant = tenantLookup.get(tenantId);
+        const depositPaid = Math.max(Number(tenant?.securityDepositPaid) || 0, 0);
+        const deductionRowsForTenant = securityDepositDeductions.filter(
+          (entry) => entry.tenantId === tenantId
+        );
+        const deductionsBeforeRange = deductionRowsForTenant.reduce((sum, entry) => {
+          const key = dateKey(entry.deductionDate);
+          if (key >= rangeStartKey) return sum;
+          return sum + (Number(entry.amount) || 0);
+        }, 0);
+        const deductionsInRange = deductionRowsForTenant.reduce((sum, entry) => {
+          const key = dateKey(entry.deductionDate);
+          if (key < rangeStartKey || key > rangeEndKey) return sum;
+          return sum + (Number(entry.amount) || 0);
+        }, 0);
+        const openingBalance = depositPaid - deductionsBeforeRange;
+        const closingBalance = openingBalance - deductionsInRange;
+        const houseId = tenant
+          ? typeof tenant.house === "string"
+            ? tenant.house
+            : tenant.house?.$id ?? ""
+          : "";
+        const house = houseLookup.get(houseId);
+        const houseCode = house?.code?.trim() ?? "";
+        const houseName = house?.name?.trim() ?? "";
+        return {
+          tenantId,
+          tenantName: tenant?.fullName ?? tenantId,
+          houseLabel:
+            houseCode && houseName
+              ? `${houseCode} - ${houseName}`
+              : houseCode || houseName || "--",
+          depositPaid,
+          openingBalance,
+          deductedInRange: deductionsInRange,
+          closingBalance,
+          deductionsInRangeCount: deductionRowsForTenant.filter((entry) => {
+            const key = dateKey(entry.deductionDate);
+            return key >= rangeStartKey && key <= rangeEndKey;
+          }).length,
+        };
+      })
+      .sort((a, b) => a.tenantName.localeCompare(b.tenantName));
+
+    const depositDeductionsTotal = depositDeductionRows.reduce(
+      (sum, row) => sum + row.amount,
+      0
+    );
+    const openingDepositBalanceTotal = depositBalanceRows.reduce(
+      (sum, row) => sum + row.openingBalance,
+      0
+    );
+    const closingDepositBalanceTotal = depositBalanceRows.reduce(
+      (sum, row) => sum + row.closingBalance,
+      0
+    );
+    const depositTenantsAffectedCount = depositBalanceRows.length;
+    const depositDeductionsCount = depositDeductionRows.length;
 
     const reportMonthKey = rangeEndMonth;
     const reportMonthDate = parseISO(`${reportMonthKey}-01`);
@@ -601,6 +783,8 @@ export default function ReportsPage() {
           tenantHistoryJson: tenant.rentHistoryJson ?? null,
           houseHistoryJson: house?.rentHistoryJson ?? null,
           fallbackRent: tenant.rentOverride ?? house?.monthlyRent ?? 0,
+          occupancyStartDate: tenant.moveInDate,
+          occupancyEndDate: getOccupancyEndDateKey(tenant, reportMonthEnd),
         });
         const expectedUpToReport = monthsToReport.reduce(
           (sum, month) => sum + (rentByMonth[month] ?? 0),
@@ -696,6 +880,8 @@ export default function ReportsPage() {
             tenantHistoryJson: tenant.rentHistoryJson ?? null,
             houseHistoryJson: house?.rentHistoryJson ?? null,
             fallbackRent: tenant.rentOverride ?? house?.monthlyRent ?? 0,
+            occupancyStartDate: tenant.moveInDate,
+            occupancyEndDate: getOccupancyEndDateKey(tenant, range.end),
           });
           return sum + months.reduce((monthSum, month) => monthSum + (rentByMonth[month] ?? 0), 0);
         }, 0);
@@ -714,6 +900,8 @@ export default function ReportsPage() {
         tenantHistoryJson: tenant.rentHistoryJson ?? null,
         houseHistoryJson: house?.rentHistoryJson ?? null,
         fallbackRent: tenant.rentOverride ?? house?.monthlyRent ?? 0,
+        occupancyStartDate: tenant.moveInDate,
+        occupancyEndDate: getOccupancyEndDateKey(tenant, nextMonthEnd),
       });
       return sum + (rentByMonth[nextMonthKey] ?? 0);
     }, 0);
@@ -793,6 +981,8 @@ export default function ReportsPage() {
           houseHistoryJson: selectedHouse?.rentHistoryJson ?? null,
           fallbackRent:
             selectedTenant.rentOverride ?? selectedHouse?.monthlyRent ?? 0,
+          occupancyStartDate: selectedTenant.moveInDate,
+          occupancyEndDate: getOccupancyEndDateKey(selectedTenant, today),
         })
       : {};
     const tenantDetailRows = monthsInRange.map((month) => {
@@ -856,6 +1046,13 @@ export default function ReportsPage() {
       totalTenantBalance,
       inactiveArrearsRows,
       inactiveArrearsTotal,
+      depositDeductionRows,
+      depositBalanceRows,
+      depositDeductionsTotal,
+      openingDepositBalanceTotal,
+      closingDepositBalanceTotal,
+      depositTenantsAffectedCount,
+      depositDeductionsCount,
       currentDateKey,
       reportMonthKey,
       reportMonthLabel,
@@ -886,6 +1083,7 @@ export default function ReportsPage() {
     year,
     tenantLookup,
     houseLookup,
+    securityDepositDeductions,
     selectedTenantId,
   ]);
 
@@ -999,6 +1197,57 @@ export default function ReportsPage() {
             { Note: "Range", Value: summary.reportPeriodLabel },
             { Note: "Inactive tenants with arrears", Value: summary.inactiveArrearsRows.length },
             { Note: "Inactive tenant arrears total", Value: summary.inactiveArrearsTotal },
+            ...personalNoteRows,
+          ]),
+          "Notes"
+        );
+      } else if (reportType === "depositDeductions") {
+        XLSX.utils.book_append_sheet(
+          workbook,
+          XLSX.utils.json_to_sheet(
+            summary.depositDeductionRows.map((row) => ({
+              Date: row.deductionDate,
+              Tenant: row.tenantName,
+              House: row.houseLabel,
+              ItemFixed: row.itemFixed,
+              Amount: row.amount,
+              Note: row.deductionNote === "--" ? "" : row.deductionNote,
+            }))
+          ),
+          "DepositDeductions"
+        );
+
+        XLSX.utils.book_append_sheet(
+          workbook,
+          XLSX.utils.json_to_sheet(
+            summary.depositBalanceRows.map((row) => ({
+              Tenant: row.tenantName,
+              House: row.houseLabel,
+              DepositPaid: row.depositPaid,
+              OpeningBalance: row.openingBalance,
+              DeductionsInRange: row.deductedInRange,
+              ClosingBalance: row.closingBalance,
+              DeductionsCount: row.deductionsInRangeCount,
+            }))
+          ),
+          "TenantBalances"
+        );
+
+        XLSX.utils.book_append_sheet(
+          workbook,
+          XLSX.utils.json_to_sheet([
+            { Note: "Range", Value: summary.reportPeriodLabel },
+            { Note: "Deduction entries", Value: summary.depositDeductionsCount },
+            { Note: "Tenants affected", Value: summary.depositTenantsAffectedCount },
+            { Note: "Total deductions", Value: summary.depositDeductionsTotal },
+            {
+              Note: "Total opening balance (affected tenants)",
+              Value: summary.openingDepositBalanceTotal,
+            },
+            {
+              Note: "Total closing balance (affected tenants)",
+              Value: summary.closingDepositBalanceTotal,
+            },
             ...personalNoteRows,
           ]),
           "Notes"
@@ -1171,6 +1420,8 @@ export default function ReportsPage() {
           ? `_${summary.selectedTenant.fullName.replace(/\s+/g, "_")}`
           : reportType === "inactiveArrears"
           ? "_Inactive_Tenant_Arrears"
+          : reportType === "depositDeductions"
+          ? "_Deposit_Deductions"
           : "";
       const startFileKey =
         reportType === "tenantDetail"
@@ -1205,7 +1456,9 @@ export default function ReportsPage() {
 
       const doc = new jsPDF({
         orientation:
-          reportType === "summary" || reportType === "inactiveArrears"
+          reportType === "summary" ||
+          reportType === "inactiveArrears" ||
+          reportType === "depositDeductions"
             ? "landscape"
             : "portrait",
       });
@@ -1218,6 +1471,8 @@ export default function ReportsPage() {
             : "TENANCY SUMMARY REPORT"
           : reportType === "inactiveArrears"
           ? "INACTIVE TENANT ARREARS REPORT"
+          : reportType === "depositDeductions"
+          ? "SECURITY DEPOSIT DEDUCTIONS REPORT"
           : reportType === "byHouse"
           ? "RCMS Collections by House"
           : "RCMS Tenant Collection";
@@ -1461,6 +1716,69 @@ export default function ReportsPage() {
           { columnWidths: [34, 20, 17, 17, 16, 16] }
         );
       }
+      if (reportType === "depositDeductions") {
+        doc.setFontSize(10);
+        doc.setFont("helvetica", "bold");
+        doc.text(`Range: ${summary.reportPeriodLabel}`, left, y);
+        y += 6;
+        doc.text(`Date: ${summary.currentDateKey}`, left, y);
+        y += 6;
+        doc.setFont("helvetica", "normal");
+        doc.text(
+          `Deduction entries: ${summary.depositDeductionsCount} | Tenants affected: ${summary.depositTenantsAffectedCount} | Total deductions: ${ush(summary.depositDeductionsTotal)}`,
+          left,
+          y
+        );
+        y += 8;
+        drawTable(
+          ["Date", "Tenant", "House", "Item Fixed", "Amount", "Note"],
+          summary.depositDeductionRows.map((row) => [
+            row.deductionDate,
+            row.tenantName,
+            row.houseLabel,
+            row.itemFixed,
+            ush(row.amount),
+            row.deductionNote,
+          ]),
+          {
+            columnWidths: [14, 26, 22, 24, 14, 34],
+            wrapColumnIndexes: [1, 2, 3, 5],
+          }
+        );
+        drawTable(
+          [
+            "Tenant",
+            "House",
+            "Deposit Paid",
+            "Opening Balance",
+            "Deductions In Range",
+            "Closing Balance",
+          ],
+          summary.depositBalanceRows.map((row) => [
+            row.tenantName,
+            row.houseLabel,
+            ush(row.depositPaid),
+            ush(row.openingBalance),
+            ush(row.deductedInRange),
+            ush(row.closingBalance),
+          ]),
+          { columnWidths: [24, 22, 16, 16, 16, 16] }
+        );
+        ensureSpace(16);
+        doc.setFont("helvetica", "bold");
+        doc.text(
+          `Total opening balance (affected tenants): ${ush(summary.openingDepositBalanceTotal)}`,
+          left,
+          y
+        );
+        y += 6;
+        doc.text(
+          `Total closing balance (affected tenants): ${ush(summary.closingDepositBalanceTotal)}`,
+          left,
+          y
+        );
+        doc.setFont("helvetica", "normal");
+      }
       if (reportType === "summary") {
         doc.setFontSize(10);
         doc.setFont("helvetica", "bold");
@@ -1473,7 +1791,7 @@ export default function ReportsPage() {
 
         drawTable(summaryTableHeaders, summaryTableRows, {
           columnWidths: summaryColumnWidths,
-          wrapColumnIndexes: [summaryTableHeaders.length - 1],
+          wrapColumnIndexes: [1, summaryTableHeaders.length - 1],
         });
 
         drawTable(
@@ -1599,6 +1917,8 @@ export default function ReportsPage() {
           ? `_${summary.selectedTenant.fullName.replace(/\s+/g, "_")}`
           : reportType === "inactiveArrears"
           ? "_Inactive_Tenant_Arrears"
+          : reportType === "depositDeductions"
+          ? "_Deposit_Deductions"
           : "";
       const startFileKey =
         reportType === "tenantDetail"
@@ -1655,26 +1975,22 @@ export default function ReportsPage() {
             <option value="byHouse">By House</option>
             <option value="tenantDetail">By Tenant</option>
             <option value="inactiveArrears">Inactive Arrears</option>
+            <option value="depositDeductions">Deposit Deductions</option>
           </select>
         </label>
         {reportType === "tenantDetail" && (
-          <label className="text-sm text-slate-300">
-            Tenant
-            <select
-              className="input-base ml-3 min-w-[220px] rounded-md px-3 py-2 text-sm"
+          <div className="min-w-[260px] max-w-[460px] flex-1">
+            <TypeaheadField
+              label="Tenant"
+              placeholder="Type tenant name, phone, or house"
               value={selectedTenantId}
-              onChange={(event) => setSelectedTenantId(event.target.value)}
-            >
-              <option value="" disabled>
-                Select tenant
-              </option>
-              {tenants.map((tenant) => (
-                <option key={tenant.$id} value={tenant.$id}>
-                  {tenant.fullName}
-                </option>
-              ))}
-            </select>
-          </label>
+              options={tenantSelectionOptions}
+              maxResults={Math.max(8, tenants.length)}
+              onChange={setSelectedTenantId}
+              disabled={loading || tenants.length === 0}
+              emptyStateText="No tenant matches your search."
+            />
+          </div>
         )}
         {reportType !== "tenantDetail" && (
           <>
@@ -1813,7 +2129,7 @@ export default function ReportsPage() {
                 >
                   <tr>
                     <th className="px-4 py-3">Unit No.</th>
-                    <th className="px-4 py-3">Tenant Name</th>
+                    <th className="w-48 px-4 py-3">Tenant Name</th>
                     <th className="px-4 py-3">Contact</th>
                     <th className="px-4 py-3">Rate</th>
                     <th className="px-4 py-3">Rent Paid</th>
@@ -1835,7 +2151,9 @@ export default function ReportsPage() {
                       <td className="px-4 py-3 text-slate-200 whitespace-pre-line break-words">
                         {row.unitNo}
                       </td>
-                      <td className="px-4 py-3 text-slate-100">{row.tenantName}</td>
+                      <td className="px-4 py-3 text-slate-100 whitespace-normal break-words">
+                        <div className="max-w-[12rem]">{row.tenantName}</div>
+                      </td>
                       <td className="px-4 py-3 text-slate-400">{row.contact}</td>
                       <td className="amount px-4 py-3">{row.rate > 0 ? ush(row.rate) : "NIL"}</td>
                       <td className="amount px-4 py-3">
@@ -2028,6 +2346,165 @@ export default function ReportsPage() {
         </div>
       )}
 
+      {reportType === "depositDeductions" && (
+        <div className="space-y-6">
+          <div
+            className="rounded-2xl border p-6"
+            style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
+          >
+            <div className="text-center text-sm font-semibold uppercase tracking-[0.15em] text-slate-200">
+              Security Deposit Deductions Report
+            </div>
+            <div className="mt-2 text-center text-xs text-slate-500">
+              Range: {summary.reportPeriodLabel}
+            </div>
+            <div className="mt-4 grid gap-4 md:grid-cols-3">
+              <div className="rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3">
+                <div className="text-xs uppercase tracking-[0.1em] text-slate-500">
+                  Deduction Entries
+                </div>
+                <div className="mt-2 text-lg font-semibold text-slate-100">
+                  {summary.depositDeductionsCount}
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3">
+                <div className="text-xs uppercase tracking-[0.1em] text-slate-500">
+                  Tenants Affected
+                </div>
+                <div className="mt-2 text-lg font-semibold text-slate-100">
+                  {summary.depositTenantsAffectedCount}
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3">
+                <div className="text-xs uppercase tracking-[0.1em] text-slate-500">
+                  Total Deductions
+                </div>
+                <div className="amount mt-2 text-lg font-semibold text-rose-200">
+                  {ush(summary.depositDeductionsTotal)}
+                </div>
+              </div>
+            </div>
+            <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-800">
+              <table className="min-w-[1100px] w-full text-left text-sm text-slate-300">
+                <thead
+                  className="text-xs text-slate-500"
+                  style={{ backgroundColor: "var(--surface-strong)" }}
+                >
+                  <tr>
+                    <th className="px-4 py-3">Date</th>
+                    <th className="px-4 py-3">Tenant</th>
+                    <th className="px-4 py-3">House</th>
+                    <th className="px-4 py-3">Item Fixed</th>
+                    <th className="px-4 py-3">Amount</th>
+                    <th className="px-4 py-3">Note</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {summary.depositDeductionRows.map((row) => (
+                    <tr
+                      key={row.deductionId}
+                      className="border-t odd:bg-slate-950/30"
+                      style={{ borderColor: "var(--border)" }}
+                    >
+                      <td className="px-4 py-3 text-slate-400">{row.deductionDate}</td>
+                      <td className="px-4 py-3 text-slate-100">{row.tenantName}</td>
+                      <td className="px-4 py-3 text-slate-300">{row.houseLabel}</td>
+                      <td className="px-4 py-3 text-slate-200">{row.itemFixed}</td>
+                      <td className="amount px-4 py-3 text-rose-200">{ush(row.amount)}</td>
+                      <td className="px-4 py-3 text-slate-300 whitespace-normal break-words">
+                        <div className="max-w-[24rem]">{row.deductionNote}</div>
+                      </td>
+                    </tr>
+                  ))}
+                  {summary.depositDeductionRows.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-4 text-slate-500">
+                        No security deposit deductions found in selected range.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div
+            className="rounded-2xl border p-6"
+            style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
+          >
+            <div className="text-sm font-semibold uppercase tracking-[0.1em] text-slate-100">
+              Tenant Deposit Balances (Affected Tenants)
+            </div>
+            <div className="mt-1 text-xs text-slate-500">
+              Opening and closing balances are derived from deposit paid minus ledger deductions.
+            </div>
+            <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-800">
+              <table className="min-w-[980px] w-full text-left text-sm text-slate-300">
+                <thead
+                  className="text-xs text-slate-500"
+                  style={{ backgroundColor: "var(--surface-strong)" }}
+                >
+                  <tr>
+                    <th className="px-4 py-3">Tenant</th>
+                    <th className="px-4 py-3">House</th>
+                    <th className="px-4 py-3">Deposit Paid</th>
+                    <th className="px-4 py-3">Opening Balance</th>
+                    <th className="px-4 py-3">Deductions In Range</th>
+                    <th className="px-4 py-3">Closing Balance</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {summary.depositBalanceRows.map((row) => (
+                    <tr
+                      key={row.tenantId}
+                      className="border-t odd:bg-slate-950/30"
+                      style={{ borderColor: "var(--border)" }}
+                    >
+                      <td className="px-4 py-3 text-slate-100">{row.tenantName}</td>
+                      <td className="px-4 py-3 text-slate-300">{row.houseLabel}</td>
+                      <td className="amount px-4 py-3 text-slate-200">{ush(row.depositPaid)}</td>
+                      <td className="amount px-4 py-3 text-slate-200">{ush(row.openingBalance)}</td>
+                      <td className="amount px-4 py-3 text-rose-200">{ush(row.deductedInRange)}</td>
+                      <td
+                        className={[
+                          "amount px-4 py-3",
+                          row.closingBalance < 0 ? "text-rose-200" : "text-emerald-300",
+                        ].join(" ")}
+                      >
+                        {ush(row.closingBalance)}
+                      </td>
+                    </tr>
+                  ))}
+                  {summary.depositBalanceRows.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-4 text-slate-500">
+                        No affected tenant balances for selected range.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+                <tfoot>
+                  <tr className="border-t" style={{ borderColor: "var(--border)" }}>
+                    <td className="px-4 py-3 font-semibold text-slate-100" colSpan={3}>
+                      Totals
+                    </td>
+                    <td className="amount px-4 py-3 font-semibold text-slate-100">
+                      {ush(summary.openingDepositBalanceTotal)}
+                    </td>
+                    <td className="amount px-4 py-3 font-semibold text-rose-200">
+                      {ush(summary.depositDeductionsTotal)}
+                    </td>
+                    <td className="amount px-4 py-3 font-semibold text-emerald-300">
+                      {ush(summary.closingDepositBalanceTotal)}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
       {reportType === "byHouse" && (
         <div
           className="rounded-2xl border p-6"
@@ -2205,7 +2682,7 @@ export default function ReportsPage() {
         </div>
       )}
 
-      {reportType !== "tenantDetail" && (
+      {reportType !== "tenantDetail" && reportType !== "depositDeductions" && (
         <div
           className="rounded-2xl border p-6"
           style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}

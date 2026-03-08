@@ -37,4 +37,6 @@ These column headers are recommended for Excel imports. Dates should use `YYYY-M
 - `ExpenseDate` (required; `YYYY-MM-DD`)
 - `HouseCode` (required if Maintenance; optional otherwise)
 - `MaintenanceType` (optional)
+- `AffectsSecurityDeposit` (optional for Maintenance: `true` | `false`)
+- `SecurityDepositDeductionNote` (optional; used when `AffectsSecurityDeposit=true`)
 - `Notes` (optional)

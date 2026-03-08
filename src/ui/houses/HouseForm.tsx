@@ -1,5 +1,6 @@
 import { useForm } from "react-hook-form";
 import type { House, HouseForm as HouseFormValues } from "../../lib/schema";
+import { useToast } from "../ToastContext";
 
 type HouseFormWithEffectiveDate = HouseFormValues & {
   rentEffectiveDate?: string;
@@ -20,6 +21,7 @@ export default function HouseForm({
   disabled,
   loading,
 }: Props) {
+  const toast = useToast();
   const { register, handleSubmit, formState } = useForm<HouseFormWithEffectiveDate>({
     defaultValues: {
       code: initial?.code ?? "",
@@ -32,7 +34,12 @@ export default function HouseForm({
   });
 
   return (
-    <form className="space-y-4" onSubmit={handleSubmit(onSubmit)}>
+    <form
+      className="space-y-4"
+      onSubmit={handleSubmit(onSubmit, () => {
+        toast.push("warning", "Please fill in all required house fields correctly.");
+      })}
+    >
       <div className="grid gap-4 md:grid-cols-2">
         <label className="block text-sm text-slate-300">
           House Code

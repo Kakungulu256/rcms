@@ -66,6 +66,56 @@ function parseDateSafe(value) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+function parseDateOnlyUtc(value) {
+  if (!value) return null;
+  const normalized = String(value).slice(0, 10);
+  const parsed = new Date(`${normalized}T00:00:00.000Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function parseMonthStartUtc(month) {
+  const parsed = new Date(`${month}-01T00:00:00.000Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function endOfMonthUtc(date) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0));
+}
+
+function diffDaysInclusive(start, end) {
+  return Math.floor((end.getTime() - start.getTime()) / MS_PER_DAY) + 1;
+}
+
+function prorateMonthlyRent({
+  baseRent,
+  month,
+  occupancyStartDate,
+  occupancyEndDate,
+}) {
+  const normalizedRent = Number(baseRent) || 0;
+  if (normalizedRent <= 0) return 0;
+
+  const monthStart = parseMonthStartUtc(month);
+  if (!monthStart) return roundMoney(normalizedRent);
+  const monthEnd = endOfMonthUtc(monthStart);
+  const occupancyStart = parseDateOnlyUtc(occupancyStartDate);
+  const occupancyEnd = parseDateOnlyUtc(occupancyEndDate);
+
+  const effectiveStart =
+    occupancyStart && occupancyStart > monthStart ? occupancyStart : monthStart;
+  const effectiveEnd = occupancyEnd && occupancyEnd < monthEnd ? occupancyEnd : monthEnd;
+  if (effectiveEnd < effectiveStart) return 0;
+
+  const occupiedDays = diffDaysInclusive(effectiveStart, effectiveEnd);
+  const totalDaysInMonth = diffDaysInclusive(monthStart, monthEnd);
+  if (occupiedDays >= totalDaysInMonth) {
+    return roundMoney(normalizedRent);
+  }
+  return roundMoney((normalizedRent * occupiedDays) / totalDaysInMonth);
+}
+
 function getTenantUpdatedAt(tenant) {
   return parseDateSafe(tenant?.$updatedAt);
 }
@@ -240,7 +290,14 @@ function buildEffectiveHistory(tenantHistory, houseHistory) {
   });
 }
 
-function buildRentByMonth(months, tenantHistoryJson, houseHistoryJson, fallbackRent) {
+function buildRentByMonth(
+  months,
+  tenantHistoryJson,
+  houseHistoryJson,
+  fallbackRent,
+  occupancyStartDate = null,
+  occupancyEndDate = null
+) {
   const tenantHistory = parseHistory(tenantHistoryJson);
   const houseHistory = parseHistory(houseHistoryJson);
   const history = buildEffectiveHistory(tenantHistory, houseHistory);
@@ -248,7 +305,13 @@ function buildRentByMonth(months, tenantHistoryJson, houseHistoryJson, fallbackR
   months.forEach((month) => {
     const monthStart = `${month}-01`;
     const entry = history.filter((item) => item.effectiveDate <= monthStart).at(-1);
-    rentByMonth[month] = entry?.amount ?? fallbackRent;
+    const baseRent = entry?.amount ?? fallbackRent;
+    rentByMonth[month] = prorateMonthlyRent({
+      baseRent,
+      month,
+      occupancyStartDate,
+      occupancyEndDate,
+    });
   });
   return rentByMonth;
 }
@@ -550,11 +613,18 @@ export default async (context) => {
         400
       );
     }
+    const occupancyEndDate = tenant.moveOutDate
+      ? String(tenant.moveOutDate).slice(0, 10)
+      : tenant.status === "inactive"
+        ? effectiveEndDate.toISOString().slice(0, 10)
+        : null;
     const rentByMonth = buildRentByMonth(
       months,
       tenant.rentHistoryJson ?? null,
       house?.rentHistoryJson ?? null,
-      rent
+      rent,
+      tenant.moveInDate,
+      occupancyEndDate
     );
     const { allocation, remaining } = allocatePayment({
       amount: allocatableAmount,

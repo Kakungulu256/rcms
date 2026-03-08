@@ -3,6 +3,7 @@ import { ID, Query } from "appwrite";
 import ExpenseForm from "../expenses/ExpenseForm";
 import ExpenseList from "../expenses/ExpenseList";
 import Modal from "../Modal";
+import TypeaheadSearch from "../TypeaheadSearch";
 import {
   databases,
   listAllDocuments,
@@ -11,10 +12,17 @@ import {
   storage,
 } from "../../lib/appwrite";
 import { COLLECTIONS } from "../../lib/schema";
-import type { Expense, ExpenseForm as ExpenseFormValues, House } from "../../lib/schema";
+import type {
+  Expense,
+  ExpenseForm as ExpenseFormValues,
+  House,
+  SecurityDepositDeduction,
+  Tenant,
+} from "../../lib/schema";
 import { logAudit } from "../../lib/audit";
 import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../ToastContext";
+import { getTenantEffectiveEndDate } from "../../lib/tenancyDates";
 
 type UploadedReceipt = {
   fileId: string;
@@ -29,28 +37,79 @@ function resolveExpenseHouseId(expense: Expense) {
   return expense.house?.$id ?? "";
 }
 
+function resolveTenantHouseId(tenant: Tenant) {
+  if (typeof tenant.house === "string") return tenant.house;
+  return tenant.house?.$id ?? "";
+}
+
+function parseDateSafe(value?: string | null) {
+  if (!value) return null;
+  const parsed = new Date(`${String(value).slice(0, 10)}T00:00:00.000Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 export default function ExpensesPage() {
   const { user, permissions } = useAuth();
   const canRecordExpenses = permissions.canRecordExpenses;
   const toast = useToast();
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [houses, setHouses] = useState<House[]>([]);
+  const [tenants, setTenants] = useState<Tenant[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
+  const [expenseSearchQuery, setExpenseSearchQuery] = useState("");
 
   const sortedExpenses = useMemo(
     () =>
       [...expenses].sort((a, b) => (b.expenseDate ?? "").localeCompare(a.expenseDate ?? "")),
     [expenses]
   );
+  const houseLookup = useMemo(
+    () => new Map(houses.map((house) => [house.$id, house])),
+    [houses]
+  );
+  const filteredExpenses = useMemo(() => {
+    const query = expenseSearchQuery.trim().toLowerCase();
+    if (!query) return sortedExpenses;
+    return sortedExpenses.filter((expense) => {
+      const houseId = resolveExpenseHouseId(expense);
+      const houseCode = houseLookup.get(houseId)?.code?.toLowerCase() ?? "";
+      const category = expense.category?.toLowerCase() ?? "";
+      const description = expense.description?.toLowerCase() ?? "";
+      const source = expense.source?.toLowerCase() ?? "";
+      const date = expense.expenseDate?.slice(0, 10) ?? "";
+      const amount = String(expense.amount ?? "");
+      return (
+        category.includes(query) ||
+        description.includes(query) ||
+        source.includes(query) ||
+        houseCode.includes(query) ||
+        date.includes(query) ||
+        amount.includes(query)
+      );
+    });
+  }, [expenseSearchQuery, houseLookup, sortedExpenses]);
+  const expenseSearchSuggestions = useMemo(() => {
+    const values = new Set<string>();
+    sortedExpenses.forEach((expense) => {
+      if (expense.description?.trim()) values.add(expense.description.trim());
+      values.add(expense.category);
+      values.add(expense.source === "rent_cash" ? "rent cash" : "external");
+      if (expense.expenseDate) values.add(expense.expenseDate.slice(0, 10));
+      const houseId = resolveExpenseHouseId(expense);
+      const houseCode = houseLookup.get(houseId)?.code;
+      if (houseCode?.trim()) values.add(houseCode.trim());
+    });
+    return Array.from(values);
+  }, [houseLookup, sortedExpenses]);
 
   const loadData = async () => {
     setLoading(true);
     setError(null);
     try {
-      const [expenseResult, houseResult] = await Promise.all([
+      const [expenseResult, houseResult, tenantResult] = await Promise.all([
         listAllDocuments<Expense>({
           databaseId: rcmsDatabaseId,
           collectionId: COLLECTIONS.expenses,
@@ -61,9 +120,15 @@ export default function ExpensesPage() {
           collectionId: COLLECTIONS.houses,
           queries: [Query.orderAsc("code")],
         }),
+        listAllDocuments<Tenant>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.tenants,
+          queries: [Query.orderAsc("fullName")],
+        }),
       ]);
       setExpenses(expenseResult);
       setHouses(houseResult);
+      setTenants(tenantResult);
     } catch (err) {
       setError("Failed to load expenses.");
     } finally {
@@ -86,6 +151,12 @@ export default function ExpensesPage() {
       house: values.category === "maintenance" ? values.house || null : null,
       maintenanceType:
         values.category === "maintenance" ? values.maintenanceType || null : null,
+      affectsSecurityDeposit:
+        values.category === "maintenance" ? Boolean(values.affectsSecurityDeposit) : false,
+      securityDepositDeductionNote:
+        values.category === "maintenance" && values.affectsSecurityDeposit
+          ? values.securityDepositDeductionNote?.trim() || null
+          : null,
       notes: values.notes?.trim() ? values.notes.trim() : null,
     };
   };
@@ -99,6 +170,105 @@ export default function ExpensesPage() {
       mimeType: file.mimeType ?? receipt.type ?? "application/octet-stream",
       fileSize: Number(file.sizeOriginal ?? receipt.size ?? 0),
     };
+  };
+
+  const findOccupyingTenant = (houseId: string, expenseDate: string) => {
+    const expenseDateValue = parseDateSafe(expenseDate);
+    if (!expenseDateValue) return null;
+    return (
+      tenants.find((tenant) => {
+        const tenantHouseId = resolveTenantHouseId(tenant);
+        if (tenantHouseId !== houseId) return false;
+        const moveInDate = parseDateSafe(tenant.moveInDate);
+        if (!moveInDate || moveInDate.getTime() > expenseDateValue.getTime()) return false;
+        const effectiveEndDate = getTenantEffectiveEndDate(tenant, expenseDateValue);
+        return effectiveEndDate.getTime() >= expenseDateValue.getTime();
+      }) ?? null
+    );
+  };
+
+  const syncSecurityDepositDeductionForExpense = async (expense: Expense) => {
+    const existing = await listAllDocuments<SecurityDepositDeduction>({
+      databaseId: rcmsDatabaseId,
+      collectionId: COLLECTIONS.securityDepositDeductions,
+      queries: [Query.equal("expenseId", [expense.$id]), Query.limit(10)],
+    });
+    const existingRecord = existing[0] ?? null;
+
+    const shouldLinkDeduction =
+      expense.category === "maintenance" && Boolean(expense.affectsSecurityDeposit);
+    if (!shouldLinkDeduction) {
+      await Promise.all(
+        existing.map((record) =>
+          databases.deleteDocument(
+            rcmsDatabaseId,
+            COLLECTIONS.securityDepositDeductions,
+            record.$id
+          )
+        )
+      );
+      return;
+    }
+
+    const houseId = resolveExpenseHouseId(expense);
+    if (!houseId) {
+      throw new Error("Maintenance expense is missing house assignment.");
+    }
+    const occupyingTenant = findOccupyingTenant(houseId, expense.expenseDate);
+    if (!occupyingTenant) {
+      await Promise.all(
+        existing.map((record) =>
+          databases.deleteDocument(
+            rcmsDatabaseId,
+            COLLECTIONS.securityDepositDeductions,
+            record.$id
+          )
+        )
+      );
+      throw new Error(
+        "No occupying tenant found on the expense date. Deposit deduction ledger was not updated."
+      );
+    }
+
+    const deductionPayload = {
+      tenantId: occupyingTenant.$id,
+      expenseId: expense.$id,
+      houseId,
+      deductionDate: expense.expenseDate,
+      itemFixed: expense.description?.trim() || expense.maintenanceType?.trim() || "Maintenance",
+      amount: Number(expense.amount) || 0,
+      deductionNote:
+        expense.securityDepositDeductionNote?.trim() || expense.notes?.trim() || null,
+      expenseReference: expense.$id,
+    };
+
+    if (existingRecord) {
+      await databases.updateDocument(
+        rcmsDatabaseId,
+        COLLECTIONS.securityDepositDeductions,
+        existingRecord.$id,
+        deductionPayload
+      );
+      if (existing.length > 1) {
+        await Promise.all(
+          existing.slice(1).map((record) =>
+            databases.deleteDocument(
+              rcmsDatabaseId,
+              COLLECTIONS.securityDepositDeductions,
+              record.$id
+            )
+          )
+        );
+      }
+      return;
+    }
+
+    await databases.createDocument(
+      rcmsDatabaseId,
+      COLLECTIONS.securityDepositDeductions,
+      ID.unique(),
+      deductionPayload
+    );
   };
 
   const handleSave = async (values: ExpenseFormValues) => {
@@ -146,6 +316,7 @@ export default function ExpensesPage() {
         payload.receiptFileSize = null;
       }
 
+      let savedExpense: Expense | null = null;
       if (editingExpense) {
         const receiptAction: "unchanged" | "replaced" | "removed" = uploadedReceipt
           ? "replaced"
@@ -158,9 +329,10 @@ export default function ExpensesPage() {
           editingExpense.$id,
           payload
         );
+        savedExpense = updated as unknown as Expense;
         setExpenses((prev) =>
           prev.map((expense) =>
-            expense.$id === editingExpense.$id ? (updated as unknown as Expense) : expense
+            expense.$id === editingExpense.$id ? (savedExpense as Expense) : expense
           )
         );
         toast.push("success", "Expense updated.");
@@ -191,16 +363,28 @@ export default function ExpensesPage() {
           ID.unique(),
           payload
         );
-        setExpenses((prev) => [created as unknown as Expense, ...prev]);
+        savedExpense = created as unknown as Expense;
+        setExpenses((prev) => [savedExpense as Expense, ...prev]);
         toast.push("success", "Expense recorded.");
         if (user) {
           void logAudit({
             entityType: "expense",
-            entityId: (created as unknown as Expense).$id,
+            entityId: (savedExpense as Expense).$id,
             action: "create",
             actorId: user.id,
             details: payload,
           });
+        }
+      }
+      if (savedExpense) {
+        try {
+          await syncSecurityDepositDeductionForExpense(savedExpense);
+        } catch (deductionError) {
+          const message =
+            deductionError instanceof Error
+              ? deductionError.message
+              : "Failed to sync security deposit deduction ledger.";
+          toast.push("warning", message);
         }
       }
       saveSucceeded = true;
@@ -277,7 +461,9 @@ export default function ExpensesPage() {
                 Expense Log
               </div>
               <div className="text-xs text-slate-500">
-                {loading ? "Loading..." : `${expenses.length} expenses`}
+                {loading
+                  ? "Loading..."
+                  : `${filteredExpenses.length} of ${expenses.length} expenses`}
               </div>
             </div>
             <button
@@ -287,9 +473,16 @@ export default function ExpensesPage() {
               Refresh
             </button>
           </div>
+          <TypeaheadSearch
+            label="Find Expense"
+            placeholder="Search by description, category, house, date, or source"
+            query={expenseSearchQuery}
+            suggestions={expenseSearchSuggestions}
+            onQueryChange={setExpenseSearchQuery}
+          />
 
           <ExpenseList
-            expenses={sortedExpenses}
+            expenses={filteredExpenses}
             houses={houses}
             canEdit={canRecordExpenses}
             onEdit={openEditModal}
@@ -325,6 +518,9 @@ export default function ExpensesPage() {
                   expenseDate: editingExpense.expenseDate?.slice(0, 10),
                   house: resolveExpenseHouseId(editingExpense),
                   maintenanceType: editingExpense.maintenanceType ?? "",
+                  affectsSecurityDeposit: Boolean(editingExpense.affectsSecurityDeposit),
+                  securityDepositDeductionNote:
+                    editingExpense.securityDepositDeductionNote ?? "",
                   notes: editingExpense.notes ?? "",
                 }
               : null

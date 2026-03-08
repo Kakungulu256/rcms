@@ -234,6 +234,10 @@ export default function DashboardPage() {
         tenantHistoryJson: tenant.rentHistoryJson ?? null,
         houseHistoryJson: house?.rentHistoryJson ?? null,
         fallbackRent: tenant.rentOverride ?? house?.monthlyRent ?? 0,
+        occupancyStartDate: tenant.moveInDate,
+        occupancyEndDate: getTenantEffectiveEndDate(tenant, effectiveEnd)
+          .toISOString()
+          .slice(0, 10),
       });
       return total + months.reduce((sum, month) => sum + (rentByMonth[month] ?? 0), 0);
     }, 0);
@@ -273,6 +277,10 @@ export default function DashboardPage() {
         tenantHistoryJson: tenant.rentHistoryJson ?? null,
         houseHistoryJson: house?.rentHistoryJson ?? null,
         fallbackRent: tenant.rentOverride ?? house?.monthlyRent ?? 0,
+        occupancyStartDate: tenant.moveInDate,
+        occupancyEndDate: getTenantEffectiveEndDate(tenant, effectiveEnd)
+          .toISOString()
+          .slice(0, 10),
       });
       const expected = months.reduce((acc, month) => acc + (rentByMonth[month] ?? 0), 0);
       const paid = months.reduce((acc, month) => acc + (paidByMonth[month] ?? 0), 0);

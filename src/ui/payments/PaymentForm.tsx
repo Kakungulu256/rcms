@@ -3,6 +3,7 @@ import { useForm } from "react-hook-form";
 import { PAYMENT_METHODS } from "../../lib/schema";
 import { formatAmount } from "../../lib/numberFormat";
 import TypeaheadField, { type TypeaheadOption } from "../TypeaheadField";
+import { useToast } from "../ToastContext";
 import type { Payment, PaymentForm as PaymentFormValues, Tenant } from "../../lib/schema";
 
 type Props = {
@@ -43,6 +44,7 @@ export default function PaymentForm({
   disabled,
   loading,
 }: Props) {
+  const toast = useToast();
   const { register, handleSubmit, formState, watch, setValue } = useForm<PaymentFormValues>({
     defaultValues: {
       tenant: "",
@@ -108,7 +110,12 @@ export default function PaymentForm({
   }, [isFirstPaymentDepositEligible, setValue]);
 
   return (
-    <form className="space-y-4" onSubmit={handleSubmit(onSubmit)}>
+    <form
+      className="space-y-4"
+      onSubmit={handleSubmit(onSubmit, () => {
+        toast.push("warning", "Please fill in all required payment fields correctly.");
+      })}
+    >
       <TypeaheadField
         label="Tenant"
         placeholder="Type tenant name or phone"

@@ -5,6 +5,8 @@ import TenantDetail from "../tenants/TenantDetail";
 import TenantForm from "../tenants/TenantForm";
 import TenantList from "../tenants/TenantList";
 import Modal from "../Modal";
+import PaginationControls from "../PaginationControls";
+import TypeaheadSearch from "../TypeaheadSearch";
 import { databases, listAllDocuments, rcmsDatabaseId } from "../../lib/appwrite";
 import { COLLECTIONS } from "../../lib/schema";
 import type {
@@ -41,6 +43,9 @@ export default function TenantsPage() {
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all");
   const [arrearsFilter, setArrearsFilter] = useState<"all" | "with" | "without">("all");
   const [moveOutFilter, setMoveOutFilter] = useState<"all" | "moved" | "current">("all");
+  const [tenantSearchQuery, setTenantSearchQuery] = useState("");
+  const [tenantPage, setTenantPage] = useState(1);
+  const [tenantPageSize, setTenantPageSize] = useState(20);
 
   const sortedTenants = useMemo(() => {
     const houseLookup = new Map(houses.map((house) => [house.$id, house]));
@@ -71,6 +76,8 @@ export default function TenantsPage() {
             tenantHistoryJson: tenant.rentHistoryJson ?? null,
             houseHistoryJson: house?.rentHistoryJson ?? null,
             fallbackRent: tenant.rentOverride ?? house?.monthlyRent ?? 0,
+            occupancyStartDate: tenant.moveInDate,
+            occupancyEndDate: arrearsCutoffDate.toISOString().slice(0, 10),
           });
           const expected = months.reduce(
             (sum, month) => sum + (rentByMonth[month] ?? 0),
@@ -85,6 +92,53 @@ export default function TenantsPage() {
       })
       .sort((a, b) => a.fullName.localeCompare(b.fullName));
   }, [arrearsFilter, houses, payments, statusFilter, tenants, moveOutFilter]);
+  const houseLookup = useMemo(
+    () => new Map(houses.map((house) => [house.$id, house])),
+    [houses]
+  );
+  const filteredTenants = useMemo(() => {
+    const query = tenantSearchQuery.trim().toLowerCase();
+    if (!query) return sortedTenants;
+    return sortedTenants.filter((tenant) => {
+      const houseId =
+        typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
+      const houseCode =
+        houseLookup.get(houseId)?.code?.toLowerCase() ??
+        (typeof tenant.house === "object" ? tenant.house?.code?.toLowerCase() ?? "" : "");
+      const name = tenant.fullName?.toLowerCase() ?? "";
+      const phone = tenant.phone?.toLowerCase() ?? "";
+      const moveInDate = tenant.moveInDate?.slice(0, 10) ?? "";
+      const moveOutDate = tenant.moveOutDate?.slice(0, 10) ?? "";
+      const status = tenant.status?.toLowerCase() ?? "";
+      return (
+        name.includes(query) ||
+        phone.includes(query) ||
+        houseCode.includes(query) ||
+        moveInDate.includes(query) ||
+        moveOutDate.includes(query) ||
+        status.includes(query)
+      );
+    });
+  }, [houseLookup, sortedTenants, tenantSearchQuery]);
+  const paginatedTenants = useMemo(() => {
+    const start = (tenantPage - 1) * tenantPageSize;
+    return filteredTenants.slice(start, start + tenantPageSize);
+  }, [filteredTenants, tenantPage, tenantPageSize]);
+  const tenantSearchSuggestions = useMemo(() => {
+    const values = new Set<string>();
+    sortedTenants.forEach((tenant) => {
+      values.add(tenant.fullName);
+      if (tenant.phone?.trim()) values.add(tenant.phone.trim());
+      const houseId =
+        typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
+      const houseCode =
+        houseLookup.get(houseId)?.code ??
+        (typeof tenant.house === "object" ? tenant.house?.code : "");
+      if (houseCode?.trim()) values.add(houseCode.trim());
+      if (tenant.moveInDate) values.add(tenant.moveInDate.slice(0, 10));
+    });
+    return Array.from(values);
+  }, [houseLookup, sortedTenants]);
 
   const loadData = async () => {
     setLoading(true);
@@ -144,6 +198,29 @@ export default function TenantsPage() {
     };
   };
 
+  const ensureAssignableHouse = (
+    houseId: string,
+    existingTenant?: Tenant | null
+  ): { ok: true; house: House } | { ok: false; message: string } => {
+    const house = houses.find((item) => item.$id === houseId);
+    if (!house) {
+      return { ok: false, message: "Selected house was not found. Refresh and try again." };
+    }
+    const existingHouseId =
+      existingTenant && existingTenant.house
+        ? typeof existingTenant.house === "string"
+          ? existingTenant.house
+          : existingTenant.house?.$id ?? ""
+        : "";
+    if (existingHouseId && houseId === existingHouseId) {
+      return { ok: true, house };
+    }
+    if (house.status !== "vacant") {
+      return { ok: false, message: "Only vacant houses can be assigned to a tenant." };
+    }
+    return { ok: true, house };
+  };
+
   const syncHouseOccupancy = async (
     houseId: string,
     options?: { preferredTenantId?: string }
@@ -197,6 +274,17 @@ export default function TenantsPage() {
     loadData();
   }, []);
 
+  useEffect(() => {
+    setTenantPage(1);
+  }, [tenantSearchQuery, statusFilter, arrearsFilter, moveOutFilter]);
+
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(filteredTenants.length / tenantPageSize));
+    if (tenantPage > totalPages) {
+      setTenantPage(totalPages);
+    }
+  }, [filteredTenants.length, tenantPage, tenantPageSize]);
+
   const handleSelect = (tenant: Tenant) => {
     setSelected(tenant);
     setMode("list");
@@ -219,7 +307,14 @@ export default function TenantsPage() {
       const { rentEffectiveDate, ...rest } = values;
       const normalized = normalizeTenantPayload(rest);
       const houseId = normalized.house;
-      const house = houses.find((item) => item.$id === houseId);
+      const assignable = ensureAssignableHouse(houseId);
+      if (!assignable.ok) {
+        setError(assignable.message);
+        toast.push("warning", assignable.message);
+        setLoading(false);
+        return;
+      }
+      const house = assignable.house;
       const rent = normalized.rentOverride ?? house?.monthlyRent ?? 0;
       const effectiveDate = rentEffectiveDate?.trim() || normalized.moveInDate;
       const securityDepositAmount = normalized.tenantType === "new" ? rent : 0;
@@ -292,7 +387,14 @@ export default function TenantsPage() {
       const { rentEffectiveDate, ...rest } = values;
       const normalized = normalizeTenantPayload(rest);
       const houseId = normalized.house;
-      const house = houses.find((item) => item.$id === houseId);
+      const assignable = ensureAssignableHouse(houseId, selected);
+      if (!assignable.ok) {
+        setError(assignable.message);
+        toast.push("warning", assignable.message);
+        setLoading(false);
+        return;
+      }
+      const house = assignable.house;
       const selectedHouseId =
         typeof selected.house === "string" ? selected.house : selected.house?.$id ?? "";
       const previousHouse = houses.find((item) => item.$id === selectedHouseId);
@@ -330,6 +432,7 @@ export default function TenantsPage() {
         rentEffectiveDate?.trim() || new Date().toISOString().slice(0, 10);
       if (rentChanged && !hasRentEffectiveDate) {
         setError("Provide a rent effective date for the new rate.");
+        toast.push("warning", "Provide a rent effective date for the new rate.");
         setLoading(false);
         return;
       }
@@ -422,7 +525,9 @@ export default function TenantsPage() {
             <div>
               <div className="text-sm font-semibold text-slate-100">Tenant List</div>
               <div className="text-xs text-slate-500">
-                {loading ? "Loading..." : `${tenants.length} tenants`}
+                {loading
+                  ? "Loading..."
+                  : `${filteredTenants.length} of ${tenants.length} tenants`}
               </div>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -493,6 +598,13 @@ export default function TenantsPage() {
               </select>
             </label>
           </div>
+          <TypeaheadSearch
+            label="Find Tenant"
+            placeholder="Search by name, phone, house code, date, or status"
+            query={tenantSearchQuery}
+            suggestions={tenantSearchSuggestions}
+            onQueryChange={setTenantSearchQuery}
+          />
 
           {error && (
             <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
@@ -501,7 +613,7 @@ export default function TenantsPage() {
           )}
 
           <TenantList
-            tenants={sortedTenants}
+            tenants={paginatedTenants}
             houses={houses}
             selectedId={selected?.$id}
             onSelect={handleSelect}
@@ -516,6 +628,16 @@ export default function TenantsPage() {
             }
             onView={handleView}
             canManage={canManageTenants}
+          />
+          <PaginationControls
+            page={tenantPage}
+            pageSize={tenantPageSize}
+            totalItems={filteredTenants.length}
+            onPageChange={setTenantPage}
+            onPageSizeChange={(size) => {
+              setTenantPageSize(size);
+              setTenantPage(1);
+            }}
           />
         </div>
 

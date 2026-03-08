@@ -21,6 +21,8 @@ import AllocationPreviewPanel from "../payments/AllocationPreview";
 import ConfirmModal from "../payments/ConfirmModal";
 import PaymentForm from "../payments/PaymentForm";
 import Modal from "../Modal";
+import PaginationControls from "../PaginationControls";
+import TypeaheadSearch from "../TypeaheadSearch";
 import {
   buildMonthSeries,
   buildPaidByMonth,
@@ -148,6 +150,9 @@ export default function PaymentsPage() {
   const [editSaving, setEditSaving] = useState(false);
   const [confirmLoading, setConfirmLoading] = useState(false);
   const [reverseLoadingId, setReverseLoadingId] = useState<string | null>(null);
+  const [paymentSearchQuery, setPaymentSearchQuery] = useState("");
+  const [paymentPage, setPaymentPage] = useState(1);
+  const [paymentPageSize, setPaymentPageSize] = useState(20);
   const allocateFunctionId = import.meta.env.VITE_ALLOCATE_RENT_PAYMENT_FUNCTION_ID as
     | string
     | undefined;
@@ -218,8 +223,67 @@ export default function PaymentsPage() {
   const visiblePayments = useMemo(() => {
     return payments.filter((payment) => !payment.isReversal);
   }, [payments]);
-  const getPaymentTenantId = (payment: Payment) =>
-    typeof payment.tenant === "string" ? payment.tenant : payment.tenant?.$id ?? "";
+  const filteredPayments = useMemo(() => {
+    const query = paymentSearchQuery.trim().toLowerCase();
+    if (!query) return visiblePayments;
+    return visiblePayments.filter((payment) => {
+      const tenantId = getPaymentTenantId(payment);
+      const tenantName =
+        tenantLookup.get(tenantId)?.fullName?.toLowerCase() ??
+        (typeof payment.tenant === "object"
+          ? payment.tenant?.fullName?.toLowerCase() ?? ""
+          : "");
+      const dateKey = payment.paymentDate?.slice(0, 10) ?? "";
+      const displayDate = formatDisplayDate(payment.paymentDate).toLowerCase();
+      const method = payment.method?.toLowerCase() ?? "";
+      const amount = String(payment.amount ?? "");
+      return (
+        tenantName.includes(query) ||
+        dateKey.includes(query) ||
+        displayDate.includes(query) ||
+        method.includes(query) ||
+        amount.includes(query)
+      );
+    });
+  }, [paymentSearchQuery, tenantLookup, visiblePayments]);
+  const displayedPayments = useMemo(() => {
+    const start = (paymentPage - 1) * paymentPageSize;
+    return filteredPayments.slice(start, start + paymentPageSize);
+  }, [filteredPayments, paymentPage, paymentPageSize]);
+  const paymentStartIndex =
+    filteredPayments.length === 0 ? 0 : (paymentPage - 1) * paymentPageSize + 1;
+  const paymentEndIndex =
+    filteredPayments.length === 0
+      ? 0
+      : Math.min(paymentPage * paymentPageSize, filteredPayments.length);
+  const paymentSearchSuggestions = useMemo(() => {
+    const values = new Set<string>();
+    visiblePayments.forEach((payment) => {
+      const tenantId = getPaymentTenantId(payment);
+      const tenantName =
+        tenantLookup.get(tenantId)?.fullName ??
+        (typeof payment.tenant === "object" ? payment.tenant?.fullName : "");
+      if (tenantName?.trim()) values.add(tenantName.trim());
+      if (payment.paymentDate) values.add(payment.paymentDate.slice(0, 10));
+      values.add(formatDisplayDate(payment.paymentDate));
+    });
+    return Array.from(values);
+  }, [tenantLookup, visiblePayments]);
+
+  useEffect(() => {
+    setPaymentPage(1);
+  }, [paymentSearchQuery]);
+
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(filteredPayments.length / paymentPageSize));
+    if (paymentPage > totalPages) {
+      setPaymentPage(totalPages);
+    }
+  }, [filteredPayments.length, paymentPage, paymentPageSize]);
+
+  function getPaymentTenantId(payment: Payment) {
+    return typeof payment.tenant === "string" ? payment.tenant : payment.tenant?.$id ?? "";
+  }
 
   const hasPriorValidPaymentForTenant = (tenantId: string) =>
     payments.some((payment) => {
@@ -276,14 +340,21 @@ export default function PaymentsPage() {
       toast.push("warning", "You do not have permission to record payments.");
       return;
     }
+    if (!Number.isFinite(Number(values.amount)) || Number(values.amount) <= 0) {
+      setError("Amount must be greater than zero.");
+      toast.push("warning", "Amount must be greater than zero.");
+      return;
+    }
     const tenant = tenantLookup.get(values.tenant);
     if (!tenant) {
       setError("Select a tenant to preview allocation.");
+      toast.push("warning", "Select a tenant to preview allocation.");
       return;
     }
     const normalizedNote = normalizePaymentNote(values.notes);
     if (!normalizedNote) {
       setError("Payment status note is required.");
+      toast.push("warning", "Payment status note is required.");
       return;
     }
     const depositHandling = getDepositHandling(tenant, values.amount);
@@ -299,6 +370,13 @@ export default function PaymentsPage() {
       typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
     const house = houseLookup.get(houseId);
     const rent = tenant.rentOverride ?? house?.monthlyRent ?? 0;
+    const previewDate = parseDateInput(normalizedValues.paymentDate);
+    const effectiveOccupancyEndDate = getTenantEffectiveEndDate(tenant, previewDate);
+    const occupancyEndDate =
+      tenant.moveOutDate ??
+      (tenant.status === "inactive"
+        ? effectiveOccupancyEndDate.toISOString().slice(0, 10)
+        : null);
     const tenantPayments = payments.filter((payment) => {
       const paymentTenantId =
         typeof payment.tenant === "string" ? payment.tenant : payment.tenant?.$id;
@@ -317,6 +395,8 @@ export default function PaymentsPage() {
       tenantHistoryJson: tenant.rentHistoryJson ?? null,
       houseHistoryJson: house?.rentHistoryJson ?? null,
       fallbackRent: rent,
+      occupancyStartDate: tenant.moveInDate,
+      occupancyEndDate,
     });
     const allocation = previewAllocation({
       amount: allocatableAmount,
@@ -566,6 +646,10 @@ export default function PaymentsPage() {
       toast.push("warning", "Amount must be greater than zero.");
       return;
     }
+    if (!editValues.paymentDate?.trim()) {
+      toast.push("warning", "Payment date is required.");
+      return;
+    }
     const normalizedNote = normalizePaymentNote(editValues.notes);
     if (!normalizedNote) {
       toast.push("warning", "Payment status note is required.");
@@ -601,6 +685,16 @@ export default function PaymentsPage() {
         typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
       const house = houseLookup.get(houseId);
       const rent = tenant.rentOverride ?? house?.monthlyRent ?? 0;
+      const editPaymentDate = parseDateInput(editValues.paymentDate);
+      const effectiveOccupancyEndDate = getTenantEffectiveEndDate(
+        tenant,
+        editPaymentDate
+      );
+      const occupancyEndDate =
+        tenant.moveOutDate ??
+        (tenant.status === "inactive"
+          ? effectiveOccupancyEndDate.toISOString().slice(0, 10)
+          : null);
       const tenantPayments = payments.filter((payment) => {
         const paymentTenantId = getPaymentTenantId(payment);
         return paymentTenantId === tenant.$id && payment.$id !== editingPayment.$id;
@@ -617,6 +711,8 @@ export default function PaymentsPage() {
         tenantHistoryJson: tenant.rentHistoryJson ?? null,
         houseHistoryJson: house?.rentHistoryJson ?? null,
         fallbackRent: rent,
+        occupancyStartDate: tenant.moveInDate,
+        occupancyEndDate,
       });
       const allocation = previewAllocation({
         amount: normalizedAmount,
@@ -763,8 +859,22 @@ export default function PaymentsPage() {
             <div className="text-sm font-semibold text-slate-100">
               Payment History
             </div>
+            <div className="mt-1 text-xs text-slate-500">
+              {loading
+                ? "Loading..."
+                : `Showing ${paymentStartIndex}-${paymentEndIndex} of ${filteredPayments.length} payment(s)`}
+            </div>
+            <div className="mt-3">
+              <TypeaheadSearch
+                label="Find Payment"
+                placeholder="Search by tenant name or payment date"
+                query={paymentSearchQuery}
+                suggestions={paymentSearchSuggestions}
+                onQueryChange={setPaymentSearchQuery}
+              />
+            </div>
             <div className="mt-3 space-y-3 text-sm text-slate-300">
-              {visiblePayments.slice(0, 20).map((payment) => {
+              {displayedPayments.map((payment) => {
                 const tenantLabel =
                   typeof payment.tenant === "string"
                     ? tenantLookup.get(payment.tenant)?.fullName ?? payment.tenant
@@ -933,12 +1043,22 @@ export default function PaymentsPage() {
                   </div>
                 </div>
               )})}
-              {visiblePayments.length === 0 && (
+              {displayedPayments.length === 0 && (
                 <div className="text-sm text-slate-500">
-                  No payments recorded yet.
+                  No payments found.
                 </div>
               )}
             </div>
+            <PaginationControls
+              page={paymentPage}
+              pageSize={paymentPageSize}
+              totalItems={filteredPayments.length}
+              onPageChange={setPaymentPage}
+              onPageSizeChange={(size) => {
+                setPaymentPageSize(size);
+                setPaymentPage(1);
+              }}
+            />
           </div>
 
           <AllocationPreviewPanel

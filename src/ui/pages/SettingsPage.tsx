@@ -101,17 +101,20 @@ export default function SettingsPage() {
 
     if (!manageUsersFunctionId) {
       setError("Manage users function ID is missing.");
+      toast.push("warning", "Manage users function ID is missing.");
       return;
     }
 
     const normalizedEmail = email.trim().toLowerCase();
     if (!normalizedEmail) {
       setError("Email is required.");
+      toast.push("warning", "Email is required.");
       return;
     }
 
     if (password.trim().length > 0 && password.trim().length < 8) {
       setError("Password must be at least 8 characters.");
+      toast.push("warning", "Password must be at least 8 characters.");
       return;
     }
 

@@ -13,6 +13,7 @@ export default function AppShell() {
     { to: "/houses", label: "Houses", visible: permissions.canManageHouses },
     { to: "/tenants", label: "Tenants", visible: permissions.canViewTenants },
     { to: "/payments", label: "Payments", visible: permissions.canViewPayments },
+    { to: "/security-deposits", label: "Security Deposits", visible: permissions.canViewReports },
     { to: "/expenses", label: "Expenses", visible: permissions.canRecordExpenses },
     { to: "/migration", label: "Old Records", visible: permissions.canUseMigration },
     { to: "/reports", label: "Reports", visible: permissions.canViewReports },

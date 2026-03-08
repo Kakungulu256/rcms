@@ -2,6 +2,7 @@ import { useEffect, useMemo } from "react";
 import { useForm } from "react-hook-form";
 import { TENANT_STATUS, TENANT_TYPES } from "../../lib/schema";
 import TypeaheadField, { type TypeaheadOption } from "../TypeaheadField";
+import { useToast } from "../ToastContext";
 import type { House, Tenant, TenantForm as TenantFormValues } from "../../lib/schema";
 
 type TenantFormWithEffectiveDate = TenantFormValues & {
@@ -30,6 +31,7 @@ export default function TenantForm({
   disabled,
   loading,
 }: Props) {
+  const toast = useToast();
   const { register, handleSubmit, formState, setValue, watch } =
     useForm<TenantFormWithEffectiveDate>({
     defaultValues: {
@@ -50,17 +52,45 @@ export default function TenantForm({
   const moveOutDate = watch("moveOutDate");
   const status = watch("status");
   const selectedHouseId = watch("house");
+  const currentHouseId = useMemo(
+    () =>
+      typeof initial?.house === "string"
+        ? initial.house
+        : initial?.house?.$id ?? "",
+    [initial]
+  );
+  const assignableHouses = useMemo(
+    () =>
+      houses.filter(
+        (house) => house.status === "vacant" || (currentHouseId && house.$id === currentHouseId)
+      ),
+    [currentHouseId, houses]
+  );
+  const hasVacantHouses = useMemo(
+    () => houses.some((house) => house.status === "vacant"),
+    [houses]
+  );
   const houseOptions = useMemo<TypeaheadOption[]>(
     () =>
-      houses.map((house) => ({
+      assignableHouses.map((house) => ({
         id: house.$id,
         label: house.code,
         description: house.name?.trim() || undefined,
         keywords: `${house.code} ${house.name ?? ""}`,
       })),
-    [houses]
+    [assignableHouses]
   );
-  const houseField = register("house", { required: true });
+  const selectableHouseIds = useMemo(
+    () => new Set(assignableHouses.map((house) => house.$id)),
+    [assignableHouses]
+  );
+  const houseField = register("house", {
+    required: "House assignment is required.",
+    validate: (value) =>
+      selectableHouseIds.has(value)
+        ? true
+        : "Only vacant houses can be assigned.",
+  });
 
   useEffect(() => {
     if (!moveOutDate?.trim()) return;
@@ -77,7 +107,12 @@ export default function TenantForm({
   }, [moveOutDate, setValue, status]);
 
   return (
-    <form className="space-y-4" onSubmit={handleSubmit(onSubmit)}>
+    <form
+      className="space-y-4"
+      onSubmit={handleSubmit(onSubmit, () => {
+        toast.push("warning", "Please fill in all required tenant fields correctly.");
+      })}
+    >
       <label className="block text-sm text-slate-300">
         Full Name
         <input
@@ -102,8 +137,12 @@ export default function TenantForm({
             placeholder="Type house code or name"
             value={selectedHouseId}
             options={houseOptions}
-            disabled={disabled}
-            emptyStateText="No house matches your search."
+            disabled={disabled || houseOptions.length === 0}
+            emptyStateText={
+              houseOptions.length === 0
+                ? "No vacant houses available for assignment."
+                : "No house matches your search."
+            }
             onChange={(houseId) =>
               setValue("house", houseId, {
                 shouldDirty: true,
@@ -113,6 +152,16 @@ export default function TenantForm({
             }
           />
           <input type="hidden" {...houseField} />
+          {!initial && !hasVacantHouses && (
+            <p className="mt-2 text-xs text-amber-300">
+              No vacant houses are available. Add or free up a vacant house first.
+            </p>
+          )}
+          {initial && houseOptions.length === 0 && (
+            <p className="mt-2 text-xs text-amber-300">
+              No assignable house is available for this tenant right now.
+            </p>
+          )}
         </div>
       </div>
 
@@ -236,7 +285,9 @@ export default function TenantForm({
         <p className="text-sm text-rose-300">Tenant name is required.</p>
       )}
       {formState.errors.house && (
-        <p className="text-sm text-rose-300">House assignment is required.</p>
+        <p className="text-sm text-rose-300">
+          {String(formState.errors.house.message ?? "House assignment is required.")}
+        </p>
       )}
       {formState.errors.moveInDate && (
         <p className="text-sm text-rose-300">Move-in date is required.</p>

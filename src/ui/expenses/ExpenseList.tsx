@@ -56,6 +56,21 @@ export default function ExpenseList({ expenses, houses, canEdit, onEdit }: Props
                 <div className="text-xs text-slate-500">
                   {expense.source === "rent_cash" ? "Rent Cash" : "External"}
                 </div>
+                {expense.category === "maintenance" && expense.affectsSecurityDeposit && (
+                  <div className="mt-1">
+                    <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-200">
+                      Affects Deposit
+                    </span>
+                    {expense.securityDepositDeductionNote?.trim() && (
+                      <div
+                        className="mt-1 max-w-[320px] truncate text-xs text-slate-400"
+                        title={expense.securityDepositDeductionNote}
+                      >
+                        {expense.securityDepositDeductionNote}
+                      </div>
+                    )}
+                  </div>
+                )}
                 {expense.receiptFileId && (
                   <div className="mt-1 text-xs text-slate-400">
                     Receipt:{" "}

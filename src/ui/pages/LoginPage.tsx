@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
+import { useToast } from "../ToastContext";
 
 type LoginForm = {
   email: string;
@@ -10,6 +11,7 @@ type LoginForm = {
 
 export default function LoginPage() {
   const { signIn, loading, error } = useAuth();
+  const toast = useToast();
   const [showPassword, setShowPassword] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
@@ -45,7 +47,12 @@ export default function LoginPage() {
               Use your Appwrite credentials.
             </p> */}
 
-            <form className="mt-6 space-y-4" onSubmit={handleSubmit(onSubmit)}>
+            <form
+              className="mt-6 space-y-4"
+              onSubmit={handleSubmit(onSubmit, () => {
+                toast.push("warning", "Enter both email and password to continue.");
+              })}
+            >
               <label className="block text-sm text-slate-300">
                 Email
                 <input

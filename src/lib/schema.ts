@@ -3,6 +3,7 @@ export const COLLECTIONS = {
   tenants: "tenants",
   payments: "payments",
   expenses: "expenses",
+  securityDepositDeductions: "security_deposit_deductions",
   auditLogs: "audit_logs",
 } as const;
 
@@ -116,6 +117,8 @@ export type Expense = {
   expenseDate: string;
   house?: string | { $id?: string; code?: string; name?: string };
   maintenanceType?: string;
+  affectsSecurityDeposit?: boolean;
+  securityDepositDeductionNote?: string;
   isMigrated?: boolean;
   notes?: string;
   receiptFileId?: string;
@@ -133,9 +136,23 @@ export type ExpenseForm = {
   expenseDate: string;
   house?: string;
   maintenanceType?: string;
+  affectsSecurityDeposit?: boolean;
+  securityDepositDeductionNote?: string;
   notes?: string;
   receiptFile?: FileList;
   removeReceipt?: boolean;
+};
+
+export type SecurityDepositDeduction = {
+  $id: string;
+  tenantId: string;
+  expenseId: string;
+  houseId: string;
+  deductionDate: string;
+  itemFixed: string;
+  amount: number;
+  deductionNote?: string;
+  expenseReference?: string;
 };
 
 export type AuditLog = {

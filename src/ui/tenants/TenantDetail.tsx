@@ -1,10 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
+import { Query } from "appwrite";
 import {
   buildMonthSeries,
   buildPaidByMonth,
   buildPaymentSummaryByMonth,
 } from "../payments/allocation";
-import type { House, Payment, Tenant } from "../../lib/schema";
+import {
+  listAllDocuments,
+  rcmsDatabaseId,
+} from "../../lib/appwrite";
+import { COLLECTIONS } from "../../lib/schema";
+import type {
+  House,
+  Payment,
+  SecurityDepositDeduction,
+  Tenant,
+} from "../../lib/schema";
 import { buildRentByMonth } from "../../lib/rentHistory";
 import { getTenantEffectiveEndDate } from "../../lib/tenancyDates";
 import { formatDisplayDate, formatShortMonth } from "../../lib/dateDisplay";
@@ -39,6 +50,9 @@ export default function TenantDetail({
   const endDate = tenant ? getTenantEffectiveEndDate(tenant, new Date()) : new Date();
   const months = moveInDate ? buildMonthSeries(moveInDate, endDate) : [];
   const [yearFilter, setYearFilter] = useState(() => new Date().getFullYear());
+  const [deductions, setDeductions] = useState<SecurityDepositDeduction[]>([]);
+  const [deductionsLoading, setDeductionsLoading] = useState(false);
+  const [deductionsError, setDeductionsError] = useState<string | null>(null);
 
   const houseId =
     typeof tenant?.house === "string" ? tenant.house : tenant?.house?.$id ?? "";
@@ -58,6 +72,8 @@ export default function TenantDetail({
     tenantHistoryJson: tenant?.rentHistoryJson ?? null,
     houseHistoryJson: house?.rentHistoryJson ?? null,
     fallbackRent: rent,
+    occupancyStartDate: tenant?.moveInDate,
+    occupancyEndDate: tenant?.moveOutDate ?? endDate.toISOString().slice(0, 10),
   });
 
   const years = useMemo(() => {
@@ -65,6 +81,47 @@ export default function TenantDetail({
     return Array.from(set).sort((a, b) => b - a);
   }, [months]);
   const filteredMonths = months.filter((month) => Number(month.slice(0, 4)) === yearFilter);
+
+  useEffect(() => {
+    const tenantId = tenant?.$id ?? "";
+    if (!tenantId) {
+      setDeductions([]);
+      setDeductionsError(null);
+      return;
+    }
+
+    let cancelled = false;
+    const loadDeductions = async () => {
+      setDeductionsLoading(true);
+      setDeductionsError(null);
+      try {
+        const result = await listAllDocuments<SecurityDepositDeduction>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.securityDepositDeductions,
+          queries: [Query.equal("tenantId", [tenantId]), Query.orderAsc("deductionDate")],
+        });
+        if (!cancelled) {
+          setDeductions(result);
+        }
+      } catch {
+        if (!cancelled) {
+          setDeductions([]);
+          setDeductionsError(
+            "Failed to load deposit deductions. Ensure the deductions ledger collection exists."
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setDeductionsLoading(false);
+        }
+      }
+    };
+
+    void loadDeductions();
+    return () => {
+      cancelled = true;
+    };
+  }, [tenant?.$id]);
 
   useEffect(() => {
     if (!statusOpen) return;
@@ -82,6 +139,24 @@ export default function TenantDetail({
       setYearFilter(years[0]);
     }
   }, [yearFilter, years]);
+
+  const depositPaid = Math.max(Number(tenant?.securityDepositPaid) || 0, 0);
+  const totalDeductions = deductions.reduce(
+    (sum, entry) => sum + (Number(entry.amount) || 0),
+    0
+  );
+  const refundableBalance = depositPaid - totalDeductions;
+  const runningDeductionRows = useMemo(() => {
+    let runningBalance = depositPaid;
+    return deductions.map((entry) => {
+      const amount = Number(entry.amount) || 0;
+      runningBalance -= amount;
+      return {
+        entry,
+        runningBalance,
+      };
+    });
+  }, [deductions, depositPaid]);
 
   if (!tenant) {
     return (
@@ -148,6 +223,97 @@ export default function TenantDetail({
         >
           View Payment Status
         </button>
+      </div>
+
+      <div className="mt-6 rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h5 className="text-sm font-semibold text-slate-100">Deposit Deductions</h5>
+            <p className="mt-1 text-xs text-slate-500">
+              History of maintenance deductions tied to this tenant.
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-3 text-sm md:grid-cols-3">
+          <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+            <div className="text-xs text-slate-500">Deposit Paid</div>
+            <div className="amount mt-1 font-semibold text-slate-100">{formatAmount(depositPaid)}</div>
+          </div>
+          <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+            <div className="text-xs text-slate-500">Total Deductions</div>
+            <div className="amount mt-1 font-semibold text-slate-100">
+              {formatAmount(totalDeductions)}
+            </div>
+          </div>
+          <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+            <div className="text-xs text-slate-500">Current Refundable Balance</div>
+            <div
+              className={[
+                "amount mt-1 font-semibold",
+                refundableBalance < 0 ? "text-rose-300" : "text-slate-100",
+              ].join(" ")}
+            >
+              {formatAmount(refundableBalance)}
+            </div>
+          </div>
+        </div>
+
+        {deductionsError && (
+          <div className="mt-4 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+            {deductionsError}
+          </div>
+        )}
+
+        <div className="mt-4 overflow-x-auto rounded-lg border border-slate-800">
+          <table className="min-w-[760px] w-full text-left text-sm">
+            <thead className="text-xs text-slate-500" style={{ backgroundColor: "var(--surface-strong)" }}>
+              <tr>
+                <th className="px-3 py-2">Date</th>
+                <th className="px-3 py-2">Item Fixed</th>
+                <th className="px-3 py-2">Amount</th>
+                <th className="px-3 py-2">Note</th>
+                <th className="px-3 py-2">Expense Ref</th>
+                <th className="px-3 py-2">Running Balance</th>
+              </tr>
+            </thead>
+            <tbody>
+              {runningDeductionRows.map(({ entry, runningBalance }) => (
+                <tr key={entry.$id} className="border-t border-slate-800">
+                  <td className="px-3 py-2 text-slate-300">
+                    {formatDisplayDate(entry.deductionDate)}
+                  </td>
+                  <td className="px-3 py-2 text-slate-200">{entry.itemFixed || "--"}</td>
+                  <td className="amount px-3 py-2 text-slate-200">{formatAmount(entry.amount)}</td>
+                  <td className="px-3 py-2 text-slate-400">{entry.deductionNote || "--"}</td>
+                  <td className="px-3 py-2 text-slate-500">{entry.expenseReference || "--"}</td>
+                  <td
+                    className={[
+                      "amount px-3 py-2 font-medium",
+                      runningBalance < 0 ? "text-rose-300" : "text-slate-200",
+                    ].join(" ")}
+                  >
+                    {formatAmount(runningBalance)}
+                  </td>
+                </tr>
+              ))}
+              {!deductionsLoading && runningDeductionRows.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-3 py-4 text-sm text-slate-500">
+                    No deposit deductions recorded for this tenant yet.
+                  </td>
+                </tr>
+              )}
+              {deductionsLoading && (
+                <tr>
+                  <td colSpan={6} className="px-3 py-4 text-sm text-slate-500">
+                    Loading deposit deductions...
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {statusOpen && (

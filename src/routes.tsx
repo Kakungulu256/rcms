@@ -7,6 +7,7 @@ import LoginPage from "./ui/pages/LoginPage";
 import MigrationPage from "./ui/pages/MigrationPage";
 import PaymentsPage from "./ui/pages/PaymentsPage";
 import ReportsPage from "./ui/pages/ReportsPage";
+import SecurityDepositsPage from "./ui/pages/SecurityDepositsPage";
 import SettingsPage from "./ui/pages/SettingsPage";
 import TenantsPage from "./ui/pages/TenantsPage";
 import RequireAuth from "./auth/RequireAuth";
@@ -64,6 +65,14 @@ export const router = createBrowserRouter([
         ),
       },
       { path: "reports", element: <ReportsPage /> },
+      {
+        path: "security-deposits",
+        element: (
+          <RequireRole allow={["admin", "clerk", "viewer"]}>
+            <SecurityDepositsPage />
+          </RequireRole>
+        ),
+      },
       {
         path: "settings",
         element: (

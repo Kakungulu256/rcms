@@ -21,7 +21,7 @@ body {
   --surface-soft: #eef3fb;
   --border: #dbe2ec;
   --text: #0f172a;
-  --muted: #64748b;
+  --muted: #334155;
   --accent: #3b82f6;
   --accent-strong: #4f46e5;
   --accent-soft: rgba(59, 130, 246, 0.12);
@@ -47,13 +47,37 @@ body {
   color: #1e293b !important;
 }
 .text-slate-300 {
-  color: #334155 !important;
+  color: #1e293b !important;
 }
 .text-slate-400 {
-  color: #475569 !important;
+  color: #334155 !important;
 }
 .text-slate-500 {
-  color: var(--muted) !important;
+  color: #334155 !important;
+}
+.text-blue-200 {
+  color: #1d4ed8 !important;
+}
+.text-amber-200 {
+  color: #92400e !important;
+}
+.text-amber-300 {
+  color: #b45309 !important;
+}
+.text-emerald-200 {
+  color: #047857 !important;
+}
+.text-emerald-300 {
+  color: #047857 !important;
+}
+.text-rose-200 {
+  color: #be123c !important;
+}
+.text-rose-300 {
+  color: #9f1239 !important;
+}
+.text-sky-300 {
+  color: #0369a1 !important;
 }
 
 .text-slate-950 {
@@ -133,6 +157,11 @@ body {
   border-radius: 8px;
   padding: 12px 16px;
   min-height: 44px;
+}
+
+.input-base::placeholder {
+  color: #64748b;
+  opacity: 1;
 }
 
 .input-base:focus {

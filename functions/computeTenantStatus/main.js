@@ -23,6 +23,77 @@ function roundMoney(value) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 }
 
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+function parseDateSafe(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function getTenantUpdatedAt(tenant) {
+  return parseDateSafe(tenant?.$updatedAt);
+}
+
+function getTenantEffectiveEndDate(tenant, referenceDate) {
+  const moveOut = parseDateSafe(tenant?.moveOutDate);
+  const deactivatedAt =
+    tenant?.status === "inactive" && !moveOut ? getTenantUpdatedAt(tenant) : null;
+  const candidates = [referenceDate, moveOut, deactivatedAt].filter(Boolean);
+  if (candidates.length === 0) return referenceDate;
+  return candidates.reduce((earliest, current) =>
+    current.getTime() < earliest.getTime() ? current : earliest
+  );
+}
+
+function parseDateOnlyUtc(value) {
+  if (!value) return null;
+  const normalized = String(value).slice(0, 10);
+  const parsed = new Date(`${normalized}T00:00:00.000Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function parseMonthStartUtc(month) {
+  const parsed = new Date(`${month}-01T00:00:00.000Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function endOfMonthUtc(date) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0));
+}
+
+function diffDaysInclusive(start, end) {
+  return Math.floor((end.getTime() - start.getTime()) / MS_PER_DAY) + 1;
+}
+
+function prorateMonthlyRent({
+  baseRent,
+  month,
+  occupancyStartDate,
+  occupancyEndDate,
+}) {
+  const normalizedRent = Number(baseRent) || 0;
+  if (normalizedRent <= 0) return 0;
+
+  const monthStart = parseMonthStartUtc(month);
+  if (!monthStart) return roundMoney(normalizedRent);
+  const monthEnd = endOfMonthUtc(monthStart);
+  const occupancyStart = parseDateOnlyUtc(occupancyStartDate);
+  const occupancyEnd = parseDateOnlyUtc(occupancyEndDate);
+
+  const effectiveStart =
+    occupancyStart && occupancyStart > monthStart ? occupancyStart : monthStart;
+  const effectiveEnd = occupancyEnd && occupancyEnd < monthEnd ? occupancyEnd : monthEnd;
+  if (effectiveEnd < effectiveStart) return 0;
+
+  const occupiedDays = diffDaysInclusive(effectiveStart, effectiveEnd);
+  const totalDaysInMonth = diffDaysInclusive(monthStart, monthEnd);
+  if (occupiedDays >= totalDaysInMonth) {
+    return roundMoney(normalizedRent);
+  }
+  return roundMoney((normalizedRent * occupiedDays) / totalDaysInMonth);
+}
+
 function buildPaidByMonth(payments) {
   const totals = {};
   const seenReversalTargets = new Set();
@@ -86,13 +157,26 @@ function buildEffectiveHistory(tenantHistory, houseHistory) {
   });
 }
 
-function resolveRentForMonth(monthKey, tenantHistoryJson, houseHistoryJson, fallbackRent) {
+function resolveRentForMonth(
+  month,
+  tenantHistoryJson,
+  houseHistoryJson,
+  fallbackRent,
+  occupancyStartDate = null,
+  occupancyEndDate = null
+) {
   const tenantHistory = parseHistory(tenantHistoryJson);
   const houseHistory = parseHistory(houseHistoryJson);
   const history = buildEffectiveHistory(tenantHistory, houseHistory);
-  const monthStart = `${monthKey}-01`;
+  const monthStart = `${month}-01`;
   const entry = history.filter((item) => item.effectiveDate <= monthStart).at(-1);
-  return entry?.amount ?? fallbackRent;
+  const baseRent = entry?.amount ?? fallbackRent;
+  return prorateMonthlyRent({
+    baseRent,
+    month,
+    occupancyStartDate,
+    occupancyEndDate,
+  });
 }
 
 async function listAllTenantPayments(databases, databaseId, tenantId) {
@@ -167,11 +251,20 @@ export default async (context) => {
     const paymentList = await listAllTenantPayments(databases, databaseId, body.tenantId);
     const paidByMonth = buildPaidByMonth(paymentList);
     const currentMonth = monthKey(new Date());
+    const today = new Date();
+    const effectiveEndDate = getTenantEffectiveEndDate(tenant, today);
+    const occupancyEndDate = tenant.moveOutDate
+      ? String(tenant.moveOutDate).slice(0, 10)
+      : tenant.status === "inactive"
+        ? effectiveEndDate.toISOString().slice(0, 10)
+        : null;
     const rentForMonth = resolveRentForMonth(
       currentMonth,
       tenant.rentHistoryJson ?? null,
       house?.rentHistoryJson ?? null,
-      rent
+      rent,
+      tenant.moveInDate,
+      occupancyEndDate
     );
     const paidThisMonth = paidByMonth[currentMonth] ?? 0;
 

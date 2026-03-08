@@ -171,3 +171,174 @@ Use this list in order. Complete and verify each item before moving to the next.
 - Validate calculations and exports after inactive-arrears split.
 - Validate receipt edit/replacement and permissions by role.
 
+## Phase 10: SaaS Onboarding, Billing, and Plan-Based Access (Next)
+
+37. [ ] Introduce platform tenancy model (workspace/account per customer)
+- Add a top-level `workspace` model so each signup gets isolated data.
+- Scope all houses, tenants, payments, expenses, reports, and users to `workspaceId`.
+- Prevent cross-workspace access by query filters + backend checks.
+
+38. [ ] Add public landing page and marketing site flow
+- New public route for product overview, pricing, FAQs, and CTA buttons.
+- Keep app routes protected behind authentication.
+- Add clear `Start free trial` and `Login` entry points.
+
+39. [ ] Build self-service signup + workspace bootstrap
+- On signup, create:
+- Appwrite user
+- Workspace record
+- Default team membership as `admin` for that workspace owner.
+- Set initial subscription state to `trialing` with start/end dates.
+
+40. [ ] Add subscription domain models
+- Add collections/tables for:
+- `plans`
+- `subscriptions`
+- `subscription_events`
+- `invoices`
+- `payments_billing`
+- `feature_entitlements` (or plan JSON entitlements)
+- Track trial, active, past_due, canceled, expired states.
+
+41. [ ] Implement billing integration + webhook processing
+- Integrate payment provider (Stripe recommended; Flutterwave/Pesapal optional).
+- Create checkout session for plan purchase/upgrade.
+- Process provider webhooks to activate/suspend subscriptions.
+- Make webhook handler idempotent and audit-logged.
+
+42. [ ] Implement trial period and lifecycle rules
+- Configure trial duration (for example 14 days).
+- During trial, selected features are enabled.
+- After trial expiry without payment, lock premium features and show upgrade prompts.
+- Add grace period and retry/dunning behavior for failed renewals.
+
+43. [ ] Build feature gating and entitlement enforcement layer
+- Centralize checks like `canAccessFeature(user, workspace, featureKey)`.
+- Gate both frontend UI and backend function actions.
+- Return clear messages when a feature is locked by plan.
+
+44. [ ] Refactor RBAC to workspace-aware memberships
+- Keep roles (`admin`, `clerk`, `viewer`) but make them workspace-scoped.
+- Allow an admin to invite/manage users only inside their workspace.
+- Ensure role checks always include workspace context.
+
+45. [ ] Enforce plan limits (quota controls)
+- Add limits by plan (examples: max houses, max active tenants, max team members, exports/month).
+- Block create actions at limit with upgrade CTA.
+- Add usage counters and a usage dashboard card.
+
+46. [ ] Add locked-state UX and upgrade/paywall screens
+- Show locked badges and disabled buttons for unavailable features.
+- Add upgrade modal/page with current plan, limits, and comparison table.
+- Add billing status banner (trial days left, subscription expiry, past due).
+
+47. [ ] Add billing/settings management for workspace admin
+- Billing tab in Settings:
+- current plan
+- renewal date
+- invoice history
+- payment method management
+- upgrade/downgrade/cancel/reactivate actions.
+
+48. [ ] Add team invitations and acceptance flow
+- Admin sends invite by email with target role.
+- Invite acceptance creates membership in the correct workspace and role.
+- Prevent duplicate conflicting memberships.
+
+49. [ ] Security and audit hardening for monetized flows
+- Audit-log plan changes, renewals, cancellations, and failed billing actions.
+- Protect billing endpoints/functions with signature verification and strict auth.
+- Add anti-abuse checks (rate limiting for signup/invites/checkout initiation).
+
+50. [ ] Data migration strategy from current single-tenant app
+- Backfill existing records with a default `workspaceId`.
+- Create owner workspace/team from current admin account.
+- Migrate existing users into workspace memberships.
+
+51. [ ] QA, UAT, and release readiness for SaaS transition
+- Test matrix:
+- trial -> paid
+- paid -> expired/past_due
+- plan upgrades/downgrades
+- role + plan combined permissions
+- workspace data isolation.
+- Add rollback plan and billing reconciliation checks.
+
+### Suggested Subscription Plans (Initial Proposal)
+
+P1. [ ] Trial Plan (14 days)
+- Full access with light caps for evaluation.
+- Example caps: 10 houses, 50 tenants, 2 team members.
+
+P2. [ ] Starter (Small landlord)
+- Suggested price: USD 19/month (or UGX equivalent).
+- Limits: up to 50 houses, 300 tenants, 3 team members.
+- Includes: payments, expenses, basic reports, exports.
+
+P3. [ ] Growth (Property manager)
+- Suggested price: USD 49/month.
+- Limits: up to 200 houses, 1,500 tenants, 10 team members.
+- Includes: all reports, receipt uploads, migration tools, advanced exports.
+
+P4. [ ] Business (Agency scale)
+- Suggested price: USD 99/month.
+- Limits: up to 1,000 houses, 10,000 tenants, 30 team members.
+- Includes: priority support, audit enhancements, extended retention.
+
+P5. [ ] Enterprise (Custom)
+- Custom pricing and SLAs.
+- Unlimited/custom limits, dedicated onboarding, custom integrations.
+
+## Phase 11: Core Rental Policy and Deposit Enhancements (Immediate Next)
+
+> Priority note: Execute this phase before starting Phase 10 SaaS changes.
+
+52. [x] Implement prorated rent for partial occupancy months
+- Add policy-driven rent proration when tenant move-in/move-out is mid-month.
+- Recommended default: `Actual-day prorate` (`monthlyRent * occupiedDays / daysInMonth`).
+- Define rounding rules and whether move-in/move-out day is billable.
+- Apply proration to first and last occupancy month in allocation, arrears, dashboard, and reports.
+
+53. [x] Add occupied/vacant filter on Houses list
+- Add house status quick filters (`All`, `Occupied`, `Vacant`, `Inactive`) on Houses page.
+- Ensure counts and list update consistently with filter state.
+
+54. [x] Restrict Tenant house assignment to vacant houses only
+- In tenant create/edit form, show only `vacant` houses in House Assignment selection.
+- Keep currently assigned house visible when editing an existing tenant record.
+- Show clear validation/error if no vacant houses are available.
+
+55. [x] Add Security Deposits tab/page
+- Create a dedicated tab/page to list tenant security deposit records.
+- Include: required deposit, paid amount, balance, refund status, and related deductions.
+- Add filters and totals (e.g., total held, total deducted, total refundable).
+
+56. [x] Add maintenance expense checkbox: "Affects security deposit"
+- Under Expenses when category is `maintenance`, add a checkbox field:
+- `Affects tenant security deposit`.
+- Store this flag on the expense record with optional deduction note.
+
+57. [x] Link maintenance deductions to tenant deposit ledger
+- When maintenance expense is marked as affecting deposit, associate it to:
+- the occupying tenant of that house at the expense date.
+- Record deduction details in tenant deposit ledger:
+- date, item fixed, amount, notes, expense reference.
+
+58. [x] Add tenant-facing "Deposit Deductions" history tab
+- In tenant detail, add a tab/section showing all deposit deductions tied to that tenant.
+- Include clear running balance after each deduction entry.
+
+59. [x] Add Security Deposit Deductions report
+- Add report/export showing deduction history by tenant/house/date range.
+- Include totals and opening/closing deposit balances per tenant.
+
+60. [x] Add type-ahead house selector in maintenance expense form
+- When category is `maintenance`, replace plain house dropdown with type-ahead/autosuggest.
+- Search by house code and house name to reduce scrolling.
+
+61. [x] QA and policy validation for Phase 11
+- Test proration edge cases (end/start month dates, February, leap years).
+- Test house availability rules during tenant create/edit.
+- Test deposit deduction flow from expenses -> tenant ledger -> reports.
+- Validate RBAC visibility/actions for new deposit tabs/reports.
+

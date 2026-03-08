@@ -74,6 +74,56 @@ function roundMoney(value) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 }
 
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+function parseDateOnlyUtc(value) {
+  if (!value) return null;
+  const normalized = String(value).slice(0, 10);
+  const parsed = new Date(`${normalized}T00:00:00.000Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function parseMonthStartUtc(month) {
+  const parsed = new Date(`${month}-01T00:00:00.000Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function endOfMonthUtc(date) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0));
+}
+
+function diffDaysInclusive(start, end) {
+  return Math.floor((end.getTime() - start.getTime()) / MS_PER_DAY) + 1;
+}
+
+function prorateMonthlyRent({
+  baseRent,
+  month,
+  occupancyStartDate,
+  occupancyEndDate,
+}) {
+  const normalizedRent = Number(baseRent) || 0;
+  if (normalizedRent <= 0) return 0;
+
+  const monthStart = parseMonthStartUtc(month);
+  if (!monthStart) return roundMoney(normalizedRent);
+  const monthEnd = endOfMonthUtc(monthStart);
+  const occupancyStart = parseDateOnlyUtc(occupancyStartDate);
+  const occupancyEnd = parseDateOnlyUtc(occupancyEndDate);
+
+  const effectiveStart =
+    occupancyStart && occupancyStart > monthStart ? occupancyStart : monthStart;
+  const effectiveEnd = occupancyEnd && occupancyEnd < monthEnd ? occupancyEnd : monthEnd;
+  if (effectiveEnd < effectiveStart) return 0;
+
+  const occupiedDays = diffDaysInclusive(effectiveStart, effectiveEnd);
+  const totalDaysInMonth = diffDaysInclusive(monthStart, monthEnd);
+  if (occupiedDays >= totalDaysInMonth) {
+    return roundMoney(normalizedRent);
+  }
+  return roundMoney((normalizedRent * occupiedDays) / totalDaysInMonth);
+}
+
 function buildPaidByMonth(payments) {
   const totals = {};
   const seenReversalTargets = new Set();
@@ -144,7 +194,14 @@ function buildEffectiveHistory(tenantHistory, houseHistory) {
   });
 }
 
-function buildRentByMonth({ months, tenantHistoryJson, houseHistoryJson, fallbackRent }) {
+function buildRentByMonth({
+  months,
+  tenantHistoryJson,
+  houseHistoryJson,
+  fallbackRent,
+  occupancyStartDate = null,
+  occupancyEndDate = null,
+}) {
   const tenantHistory = parseHistory(tenantHistoryJson);
   const houseHistory = parseHistory(houseHistoryJson);
   const history = buildEffectiveHistory(tenantHistory, houseHistory);
@@ -152,7 +209,13 @@ function buildRentByMonth({ months, tenantHistoryJson, houseHistoryJson, fallbac
   months.forEach((month) => {
     const monthStart = `${month}-01`;
     const entry = history.filter((item) => item.effectiveDate <= monthStart).at(-1);
-    rentByMonth[month] = entry?.amount ?? fallbackRent;
+    const baseRent = entry?.amount ?? fallbackRent;
+    rentByMonth[month] = prorateMonthlyRent({
+      baseRent,
+      month,
+      occupancyStartDate,
+      occupancyEndDate,
+    });
   });
   return rentByMonth;
 }
@@ -199,6 +262,47 @@ function normalizeMethod(value) {
 function normalizeStatus(value, fallback) {
   const normalized = normalize(value).toLowerCase();
   return normalized || fallback;
+}
+
+function parseBooleanLike(value) {
+  const normalized = normalize(value).toLowerCase();
+  return ["true", "yes", "y", "1"].includes(normalized);
+}
+
+function resolveTenantHouseId(tenant) {
+  if (!tenant) return "";
+  if (typeof tenant.house === "string") return tenant.house;
+  return tenant.house?.$id ?? "";
+}
+
+function getTenantUpdatedAt(tenant) {
+  return parseDateSafe(tenant?.$updatedAt);
+}
+
+function getTenantEffectiveEndDate(tenant, referenceDate) {
+  const moveOut = parseDateSafe(tenant?.moveOutDate);
+  const deactivatedAt =
+    tenant?.status === "inactive" && !moveOut ? getTenantUpdatedAt(tenant) : null;
+  const candidates = [referenceDate, moveOut, deactivatedAt].filter(Boolean);
+  if (candidates.length === 0) return referenceDate;
+  return candidates.reduce((earliest, current) =>
+    current.getTime() < earliest.getTime() ? current : earliest
+  );
+}
+
+function findOccupyingTenantForHouse(tenants, houseId, expenseDate) {
+  const expenseDateValue = parseDateSafe(expenseDate);
+  if (!expenseDateValue) return null;
+  return (
+    tenants.find((tenant) => {
+      const tenantHouseId = resolveTenantHouseId(tenant);
+      if (tenantHouseId !== houseId) return false;
+      const moveInDate = parseDateSafe(tenant?.moveInDate);
+      if (!moveInDate || moveInDate.getTime() > expenseDateValue.getTime()) return false;
+      const effectiveEndDate = getTenantEffectiveEndDate(tenant, expenseDateValue);
+      return effectiveEndDate.getTime() >= expenseDateValue.getTime();
+    }) ?? null
+  );
 }
 
 async function listAllDocuments(databases, databaseId, collectionId, baseQueries = []) {
@@ -325,6 +429,7 @@ export default async (context) => {
       tenantsCreated: 0,
       paymentsCreated: 0,
       expensesCreated: 0,
+      depositDeductionsUpserted: 0,
       housesUpdated: 0,
     };
 
@@ -471,6 +576,8 @@ export default async (context) => {
         tenantHistoryJson: tenant.rentHistoryJson ?? null,
         houseHistoryJson: house?.rentHistoryJson ?? null,
         fallbackRent: rent,
+        occupancyStartDate: tenant.moveInDate,
+        occupancyEndDate: tenant.moveOutDate ?? null,
       });
       const allocation = previewAllocation({
         amount: parseNumber(row.Amount),
@@ -513,7 +620,9 @@ export default async (context) => {
         warnings.push("HouseCode is required for maintenance expenses.");
         continue;
       }
-      await databases.createDocument(databaseId, "expenses", ID.unique(), {
+      const affectsSecurityDeposit =
+        category === "maintenance" && parseBooleanLike(row.AffectsSecurityDeposit);
+      const createdExpense = await databases.createDocument(databaseId, "expenses", ID.unique(), {
         category,
         description: normalize(row.Description),
         amount: parseNumber(row.Amount),
@@ -521,8 +630,46 @@ export default async (context) => {
         expenseDate: normalize(row.ExpenseDate),
         house: houseId,
         maintenanceType: normalize(row.MaintenanceType) || null,
+        affectsSecurityDeposit,
+        securityDepositDeductionNote: affectsSecurityDeposit
+          ? normalize(row.SecurityDepositDeductionNote) || null
+          : null,
         notes: normalize(row.Notes) || null,
       });
+      if (affectsSecurityDeposit && houseId) {
+        const occupyingTenant = findOccupyingTenantForHouse(
+          Array.from(tenantByKey.values()),
+          houseId,
+          normalize(row.ExpenseDate)
+        );
+        if (!occupyingTenant) {
+          warnings.push(
+            `No occupying tenant found for security deposit deduction: ${normalize(
+              row.Description
+            ) || "Maintenance"} (${normalize(row.ExpenseDate)})`
+          );
+        } else {
+          await databases.createDocument(
+            databaseId,
+            "security_deposit_deductions",
+            ID.unique(),
+            {
+              tenantId: occupyingTenant.$id,
+              expenseId: createdExpense.$id,
+              houseId,
+              deductionDate: normalize(row.ExpenseDate),
+              itemFixed: normalize(row.Description) || normalize(row.MaintenanceType) || "Maintenance",
+              amount: parseNumber(row.Amount),
+              deductionNote:
+                normalize(row.SecurityDepositDeductionNote) ||
+                normalize(row.Notes) ||
+                null,
+              expenseReference: createdExpense.$id,
+            }
+          );
+          counters.depositDeductionsUpserted += 1;
+        }
+      }
       counters.expensesCreated += 1;
     }
 

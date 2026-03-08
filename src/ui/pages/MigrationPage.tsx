@@ -58,6 +58,8 @@ type ExpenseRow = {
   ExpenseDate?: string;
   HouseCode?: string;
   MaintenanceType?: string;
+  AffectsSecurityDeposit?: string | number;
+  SecurityDepositDeductionNote?: string;
   Notes?: string;
 };
 
@@ -112,6 +114,7 @@ function downloadMigrationTemplate() {
     ["   Payments.Method -> cash | bank"],
     ["   Expenses.Category -> general | maintenance"],
     ["   Expenses.Source -> rent_cash | external"],
+    ["   Expenses.AffectsSecurityDeposit -> true | false (maintenance only)"],
   ]);
   XLSX.utils.book_append_sheet(workbook, guide, "Guide");
 
@@ -180,6 +183,8 @@ function downloadMigrationTemplate() {
       "ExpenseDate",
       "HouseCode",
       "MaintenanceType",
+      "AffectsSecurityDeposit",
+      "SecurityDepositDeductionNote",
       "Notes",
     ],
     [
@@ -189,6 +194,8 @@ function downloadMigrationTemplate() {
       "rent_cash",
       "2026-02-02",
       "",
+      "",
+      "false",
       "",
       "Optional note",
     ]
@@ -208,6 +215,54 @@ function parseNumber(value?: string | number) {
   if (!value) return 0;
   const parsed = Number(value);
   return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function parseBooleanLike(value?: string | number) {
+  const normalized = normalize(value).toLowerCase();
+  return ["true", "yes", "y", "1"].includes(normalized);
+}
+
+function parseDateSafe(value?: string | null) {
+  if (!value) return null;
+  const parsed = new Date(`${String(value).slice(0, 10)}T00:00:00.000Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function resolveTenantHouseId(tenant: Tenant) {
+  if (typeof tenant.house === "string") return tenant.house;
+  return tenant.house?.$id ?? "";
+}
+
+function getTenantEffectiveEndDate(tenant: Tenant, referenceDate: Date) {
+  const moveOutDate = parseDateSafe(tenant.moveOutDate);
+  const deactivatedAt = tenant.status === "inactive" && !moveOutDate
+    ? parseDateSafe((tenant as Tenant & { $updatedAt?: string }).$updatedAt)
+    : null;
+  const candidates = [referenceDate, moveOutDate, deactivatedAt].filter(
+    (value): value is Date => Boolean(value)
+  );
+  return candidates.reduce((earliest, current) =>
+    current.getTime() < earliest.getTime() ? current : earliest
+  );
+}
+
+function findOccupyingTenantForHouse(
+  tenants: Tenant[],
+  houseId: string,
+  expenseDate: string
+) {
+  const expenseDateValue = parseDateSafe(expenseDate);
+  if (!expenseDateValue) return null;
+  return (
+    tenants.find((tenant) => {
+      const tenantHouseId = resolveTenantHouseId(tenant);
+      if (tenantHouseId !== houseId) return false;
+      const moveInDate = parseDateSafe(tenant.moveInDate);
+      if (!moveInDate || moveInDate.getTime() > expenseDateValue.getTime()) return false;
+      const effectiveEndDate = getTenantEffectiveEndDate(tenant, expenseDateValue);
+      return effectiveEndDate.getTime() >= expenseDateValue.getTime();
+    }) ?? null
+  );
 }
 
 function parseSheet<T>(workbook: XLSX.WorkBook, name: string): T[] {
@@ -536,6 +591,8 @@ export default function MigrationPage() {
           tenantHistoryJson: tenant.rentHistoryJson ?? null,
           houseHistoryJson: house?.rentHistoryJson ?? null,
           fallbackRent: rent,
+          occupancyStartDate: tenant.moveInDate,
+          occupancyEndDate: tenant.moveOutDate ?? null,
         });
         const allocation = previewAllocation({
           amount: parseNumber(row.Amount),
@@ -572,6 +629,7 @@ export default function MigrationPage() {
         );
       }
 
+      const knownTenants = Array.from(tenantByKey.values());
       for (const row of parsed.expenses) {
         const category = normalize(row.Category).toLowerCase();
         if (!category) {
@@ -586,6 +644,8 @@ export default function MigrationPage() {
           newErrors.push("HouseCode is required for maintenance expenses.");
           continue;
         }
+        const affectsSecurityDeposit =
+          category === "maintenance" && parseBooleanLike(row.AffectsSecurityDeposit);
         const created = await databases.createDocument(
           rcmsDatabaseId,
           COLLECTIONS.expenses,
@@ -598,9 +658,47 @@ export default function MigrationPage() {
             expenseDate: normalize(row.ExpenseDate),
             house: houseId,
             maintenanceType: normalize(row.MaintenanceType) || null,
+            affectsSecurityDeposit,
+            securityDepositDeductionNote: affectsSecurityDeposit
+              ? normalize(row.SecurityDepositDeductionNote) || null
+              : null,
             notes: normalize(row.Notes) || null,
           }
         );
+        if (affectsSecurityDeposit && houseId) {
+          const occupyingTenant = findOccupyingTenantForHouse(
+            knownTenants,
+            houseId,
+            normalize(row.ExpenseDate)
+          );
+          if (!occupyingTenant) {
+            newErrors.push(
+              `No occupying tenant found for security deposit deduction: ${normalize(
+                row.Description
+              ) || "Maintenance"} (${normalize(row.ExpenseDate)})`
+            );
+          } else {
+            await databases.createDocument(
+              rcmsDatabaseId,
+              COLLECTIONS.securityDepositDeductions,
+              ID.unique(),
+              {
+                tenantId: occupyingTenant.$id,
+                expenseId: (created as { $id: string }).$id,
+                houseId,
+                deductionDate: normalize(row.ExpenseDate),
+                itemFixed:
+                  normalize(row.Description) || normalize(row.MaintenanceType) || "Maintenance",
+                amount: parseNumber(row.Amount),
+                deductionNote:
+                  normalize(row.SecurityDepositDeductionNote) ||
+                  normalize(row.Notes) ||
+                  null,
+                expenseReference: (created as { $id: string }).$id,
+              }
+            );
+          }
+        }
         if (!created) {
           newErrors.push("Failed to create expense.");
         }

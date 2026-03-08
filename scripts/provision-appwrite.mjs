@@ -585,6 +585,23 @@ async function setupExpenses() {
     )
   );
   await ensureAttribute(() =>
+    databases.createBooleanAttribute(
+      databaseId,
+      collectionId,
+      "affectsSecurityDeposit",
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(
+      databaseId,
+      collectionId,
+      "securityDepositDeductionNote",
+      512,
+      false
+    )
+  );
+  await ensureAttribute(() =>
     databases.createBooleanAttribute(databaseId, collectionId, "isMigrated", false)
   );
   await ensureAttribute(() =>
@@ -619,6 +636,52 @@ async function setupExpenses() {
     )
   );
   // Relationship attributes are already indexed by Appwrite.
+}
+
+async function setupSecurityDepositDeductions() {
+  const collectionId = "security_deposit_deductions";
+  await ensureCollection(collectionId, "Security Deposit Deductions");
+
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "tenantId", 64, true)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "expenseId", 64, true)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "houseId", 64, true)
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "deductionDate", true)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "itemFixed", 256, true)
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(databaseId, collectionId, "amount", true)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "deductionNote", 512, false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "expenseReference", 64, false)
+  );
+
+  await ensureIndex(() =>
+    databases.createIndex(databaseId, collectionId, "idx_tenant_id", "key", ["tenantId"])
+  );
+  await ensureIndex(() =>
+    databases.createIndex(databaseId, collectionId, "idx_expense_id", "key", ["expenseId"])
+  );
+  await ensureIndex(() =>
+    databases.createIndex(
+      databaseId,
+      collectionId,
+      "idx_deduction_date",
+      "key",
+      ["deductionDate"]
+    )
+  );
 }
 
 async function setupAuditLogs() {
@@ -674,6 +737,7 @@ async function main() {
   await setupTenants();
   await setupPayments();
   await setupExpenses();
+  await setupSecurityDepositDeductions();
   await setupAuditLogs();
   console.log("Appwrite provisioning complete.");
 }
