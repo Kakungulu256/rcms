@@ -8,6 +8,7 @@ import type { House, Payment, Tenant } from "../../lib/schema";
 import { buildRentByMonth } from "../../lib/rentHistory";
 import { getTenantEffectiveEndDate } from "../../lib/tenancyDates";
 import { formatDisplayDate, formatShortMonth } from "../../lib/dateDisplay";
+import { formatAmount } from "../../lib/numberFormat";
 
 type Props = {
   tenant?: Tenant | null;
@@ -92,7 +93,7 @@ export default function TenantDetail({
 
   return (
     <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6">
-      <div className="flex items-start justify-between">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="text-xs uppercase tracking-[0.3em] text-slate-500">
             Tenant Detail
@@ -105,7 +106,7 @@ export default function TenantDetail({
         </span>
       </div>
 
-      <div className="mt-6 grid gap-4 text-sm text-slate-300">
+      <div className="mt-6 grid gap-4 text-sm text-slate-300 md:grid-cols-2">
         <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
           <div className="text-xs uppercase tracking-[0.2em] text-slate-500">
             Assigned House
@@ -119,7 +120,7 @@ export default function TenantDetail({
             Rent Rate
           </div>
           <div className="amount mt-2 text-lg font-semibold text-slate-100">
-            {rent.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+            {formatAmount(rent)}
           </div>
         </div>
         <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
@@ -150,9 +151,9 @@ export default function TenantDetail({
       </div>
 
       {statusOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <div className="w-full max-w-3xl rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">
-            <div className="flex items-center justify-between">
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 px-3 py-4 sm:items-center sm:px-4">
+          <div className="w-full max-w-3xl rounded-2xl border border-slate-800 bg-slate-900 p-4 shadow-xl sm:p-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <h3 className="text-lg font-semibold text-white">
                 Payment Status by Month
               </h3>
@@ -163,7 +164,7 @@ export default function TenantDetail({
                 Close
               </button>
             </div>
-            <div className="mt-4 flex items-center gap-3 text-sm text-slate-300">
+            <div className="mt-4 flex flex-wrap items-center gap-3 text-sm text-slate-300">
               <span>Year</span>
               <select
                 className="input-base rounded-md px-3 py-2 text-sm"
@@ -179,7 +180,7 @@ export default function TenantDetail({
             </div>
             <div className="mt-4 max-h-[60vh] overflow-auto pr-2">
               <div className="overflow-x-auto rounded-xl border border-slate-800 bg-white">
-                <table className="tenant-status-table min-w-[760px] w-full text-left text-sm text-slate-300">
+                <table className="tenant-status-table min-w-[680px] w-full text-left text-sm text-slate-300">
                   <thead className="text-xs text-slate-500" style={{ backgroundColor: "#ffffff" }}>
                     <tr>
                       <th className="px-4 py-3">Month</th>
@@ -219,11 +220,9 @@ export default function TenantDetail({
                               {formatShortMonth(month)}
                             </td>
                             <td className="px-4 py-3 text-slate-500">N/A</td>
-                            <td className="amount px-4 py-3">0.00</td>
+                            <td className="amount px-4 py-3">{formatAmount(0)}</td>
                             <td className="amount px-4 py-3 text-slate-200">
-                              {remaining.toLocaleString(undefined, {
-                                minimumFractionDigits: 2,
-                              })}
+                              {formatAmount(remaining)}
                             </td>
                             <td className="px-4 py-3">
                               <span className={`rounded-full border px-3 py-1 text-xs ${statusClass}`}>
@@ -247,15 +246,11 @@ export default function TenantDetail({
                             {formatDisplayDate(entry.paymentDate, "N/A")}
                           </td>
                           <td className="amount px-4 py-3">
-                            {entry.amount.toLocaleString(undefined, {
-                              minimumFractionDigits: 2,
-                            })}
+                            {formatAmount(entry.amount)}
                           </td>
                           <td className="amount px-4 py-3 text-slate-200">
                             {index === 0
-                              ? remaining.toLocaleString(undefined, {
-                                  minimumFractionDigits: 2,
-                                })
+                              ? formatAmount(remaining)
                               : ""}
                           </td>
                           <td className="px-4 py-3">

@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { useForm } from "react-hook-form";
 import { PAYMENT_METHODS } from "../../lib/schema";
+import { formatAmount } from "../../lib/numberFormat";
 import type { Payment, PaymentForm as PaymentFormValues, Tenant } from "../../lib/schema";
 
 type Props = {
@@ -126,9 +127,7 @@ export default function PaymentForm({
           {isNewTenant && (
             <div className="mt-1 text-slate-400">
               Security Deposit Outstanding:{" "}
-              {depositBalance.toLocaleString(undefined, {
-                minimumFractionDigits: 2,
-              })}
+              {formatAmount(depositBalance)}
             </div>
           )}
           {isFirstPaymentDepositEligible ? (
@@ -145,9 +144,7 @@ export default function PaymentForm({
               {applySecurityDeposit && (
                 <div className="text-slate-400">
                   Deposit amount to apply from this payment:{" "}
-                  {suggestedDeposit.toLocaleString(undefined, {
-                    minimumFractionDigits: 2,
-                  })}
+                  {formatAmount(suggestedDeposit)}
                 </div>
               )}
             </div>

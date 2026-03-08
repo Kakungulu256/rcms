@@ -33,6 +33,7 @@ import { buildRentByMonth } from "../../lib/rentHistory";
 import { normalizePaymentNote } from "../../lib/paymentNotes";
 import { formatDisplayDate, formatShortMonth } from "../../lib/dateDisplay";
 import { getTenantEffectiveEndDate } from "../../lib/tenancyDates";
+import { formatAmount } from "../../lib/numberFormat";
 
 type PreviewState = {
   form: PaymentFormValues;
@@ -692,7 +693,7 @@ export default function PaymentsPage() {
         </div>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
+      <div className="grid gap-6 xl:grid-cols-[1.4fr_1fr]">
         <div className="space-y-6">
           <div
             className="rounded-2xl border p-5"
@@ -727,15 +728,13 @@ export default function PaymentsPage() {
                   className="rounded-xl border px-4 py-3"
                   style={{ backgroundColor: "var(--surface-strong)", borderColor: "var(--border)" }}
                 >
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <span className="font-semibold">
                       {tenantLabel}
                     </span>
                     <span>
                       <span className="amount">
-                        {payment.amount.toLocaleString(undefined, {
-                        minimumFractionDigits: 2,
-                      })}
+                        {formatAmount(payment.amount)}
                       </span>
                     </span>
                   </div>
@@ -755,9 +754,7 @@ export default function PaymentsPage() {
                       {isAlreadyReversed && reversal && (
                         <div className="text-amber-300">
                           Reversed on {formatDisplayDate(reversal.paymentDate)} (
-                          {Math.abs(Number(reversal.amount)).toLocaleString(undefined, {
-                            minimumFractionDigits: 2,
-                          })}
+                          {formatAmount(Math.abs(Number(reversal.amount)))}
                           )
                         </div>
                       )}
@@ -780,9 +777,7 @@ export default function PaymentsPage() {
                                   >
                                     <td className="px-3 py-2">{formatShortMonth(month)}</td>
                                     <td className="px-3 py-2">
-                                      {Number(amount).toLocaleString(undefined, {
-                                        minimumFractionDigits: 2,
-                                      })}
+                                      {formatAmount(Number(amount))}
                                     </td>
                                     <td className="px-3 py-2">
                                       {formatDisplayDate(payment.paymentDate)}
@@ -793,9 +788,7 @@ export default function PaymentsPage() {
                                   <tr className="border-t border-slate-200/10">
                                     <td className="px-3 py-2">Security Deposit</td>
                                     <td className="px-3 py-2">
-                                      {securityDepositApplied.toLocaleString(undefined, {
-                                        minimumFractionDigits: 2,
-                                      })}
+                                      {formatAmount(securityDepositApplied)}
                                     </td>
                                     <td className="px-3 py-2">
                                       {formatDisplayDate(payment.paymentDate)}
@@ -809,9 +802,7 @@ export default function PaymentsPage() {
                                   <tr className="border-t border-slate-200/10">
                                     <td className="px-3 py-2">Security Deposit</td>
                                     <td className="px-3 py-2">
-                                      {securityDepositApplied.toLocaleString(undefined, {
-                                        minimumFractionDigits: 2,
-                                      })}
+                                      {formatAmount(securityDepositApplied)}
                                     </td>
                                     <td className="px-3 py-2">
                                       {formatDisplayDate(payment.paymentDate)}
@@ -822,12 +813,7 @@ export default function PaymentsPage() {
                                   <tr className="border-t border-slate-200/10">
                                     <td className="px-3 py-2">Unspecified</td>
                                     <td className="px-3 py-2">
-                                      {(Number(payment.amount) - securityDepositApplied).toLocaleString(
-                                        undefined,
-                                        {
-                                          minimumFractionDigits: 2,
-                                        }
-                                      )}
+                                      {formatAmount(Number(payment.amount) - securityDepositApplied)}
                                     </td>
                                     <td className="px-3 py-2">
                                       {formatDisplayDate(payment.paymentDate)}
@@ -922,9 +908,8 @@ export default function PaymentsPage() {
         title="Confirm Payment"
         description={
           previewState && previewState.securityDepositApplied > 0
-            ? `This payment will first apply ${previewState.securityDepositApplied.toLocaleString(
-                undefined,
-                { minimumFractionDigits: 2 }
+            ? `This payment will first apply ${formatAmount(
+                previewState.securityDepositApplied
               )} to security deposit, then apply the rest to arrears. Continue?`
             : "This payment will be saved and applied to arrears first. Continue?"
         }

@@ -1,4 +1,5 @@
 import type { House } from "../../lib/schema";
+import { formatAmount } from "../../lib/numberFormat";
 
 type Props = {
   houses: House[];
@@ -20,13 +21,13 @@ export default function HouseList({
       className="overflow-x-auto rounded-2xl border"
       style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
     >
-      <table className="min-w-[680px] w-full text-left text-sm">
+      <table className="min-w-[620px] w-full text-left text-sm">
         <thead className="text-xs text-slate-500" style={{ backgroundColor: "var(--surface-strong)" }}>
           <tr>
-            <th className="px-5 py-4">House</th>
-            <th className="px-5 py-4">Rent</th>
-            <th className="px-5 py-4">Status</th>
-            <th className="px-5 py-4">Actions</th>
+            <th className="px-3 py-3 sm:px-5 sm:py-4">House</th>
+            <th className="px-3 py-3 sm:px-5 sm:py-4">Rent</th>
+            <th className="px-3 py-3 sm:px-5 sm:py-4">Status</th>
+            <th className="px-3 py-3 sm:px-5 sm:py-4">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -38,21 +39,19 @@ export default function HouseList({
                 className={isActive ? "bg-blue-500/10" : "border-t"}
                 style={!isActive ? { borderColor: "var(--border)" } : undefined}
               >
-                <td className="px-5 py-4">
+                <td className="px-3 py-3 sm:px-5 sm:py-4">
                   <div className="font-semibold text-slate-100">{house.code}</div>
                   <div className="text-xs text-slate-500">{house.name || "-"}</div>
                 </td>
-                <td className="amount px-5 py-4 text-slate-200">
-                  {house.monthlyRent.toLocaleString(undefined, {
-                    minimumFractionDigits: 2,
-                  })}
+                <td className="amount px-3 py-3 text-slate-200 sm:px-5 sm:py-4">
+                  {formatAmount(house.monthlyRent)}
                 </td>
-                <td className="px-5 py-4">
+                <td className="px-3 py-3 sm:px-5 sm:py-4">
                   <span className="rounded-full border px-3 py-1 text-xs text-slate-300" style={{ borderColor: "var(--border)" }}>
                     {house.status}
                   </span>
                 </td>
-                <td className="px-5 py-4">
+                <td className="px-3 py-3 sm:px-5 sm:py-4">
                   <div className="flex flex-wrap gap-2">
                     <button
                       onClick={() => onSelect(house)}
@@ -75,7 +74,7 @@ export default function HouseList({
           })}
           {houses.length === 0 && (
             <tr>
-              <td className="px-5 py-6 text-slate-500" colSpan={4}>
+              <td className="px-3 py-6 text-slate-500 sm:px-5" colSpan={4}>
                 No houses yet. Create the first house to get started.
               </td>
             </tr>

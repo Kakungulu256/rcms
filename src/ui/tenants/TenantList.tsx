@@ -33,14 +33,14 @@ export default function TenantList({
       className="overflow-x-auto rounded-2xl border"
       style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
     >
-      <table className="min-w-[760px] w-full text-left text-sm">
+      <table className="min-w-[680px] w-full text-left text-sm">
         <thead className="text-xs text-slate-500" style={{ backgroundColor: "var(--surface-strong)" }}>
           <tr>
-            <th className="px-5 py-4">Tenant</th>
-            <th className="px-5 py-4">House</th>
-            <th className="px-5 py-4">Move-in</th>
-            <th className="px-5 py-4">Status</th>
-            <th className="px-5 py-4">Actions</th>
+            <th className="px-3 py-3 sm:px-5 sm:py-4">Tenant</th>
+            <th className="px-3 py-3 sm:px-5 sm:py-4">House</th>
+            <th className="px-3 py-3 sm:px-5 sm:py-4">Move-in</th>
+            <th className="px-3 py-3 sm:px-5 sm:py-4">Status</th>
+            <th className="px-3 py-3 sm:px-5 sm:py-4">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -52,7 +52,7 @@ export default function TenantList({
                 className={isActive ? "bg-blue-500/10" : "border-t"}
                 style={!isActive ? { borderColor: "var(--border)" } : undefined}
               >
-                <td className="px-5 py-4">
+                <td className="px-3 py-3 sm:px-5 sm:py-4">
                   <button
                     onClick={() => onSelect(tenant)}
                     className="font-semibold text-slate-100 hover:underline"
@@ -61,18 +61,18 @@ export default function TenantList({
                   </button>
                   <div className="text-xs text-slate-500">{tenant.phone || "--"}</div>
                 </td>
-                <td className="px-5 py-4 text-slate-200">
+                <td className="px-3 py-3 sm:px-5 sm:py-4 text-slate-200">
                   {resolveHouseLabel(tenant, houses)}
                 </td>
-                <td className="px-5 py-4 text-slate-300">
+                <td className="px-3 py-3 sm:px-5 sm:py-4 text-slate-300">
                   {formatDisplayDate(tenant.moveInDate)}
                 </td>
-                <td className="px-5 py-4">
+                <td className="px-3 py-3 sm:px-5 sm:py-4">
                   <span className="rounded-full border px-3 py-1 text-xs text-slate-300" style={{ borderColor: "var(--border)" }}>
                     {tenant.status}
                   </span>
                 </td>
-                <td className="px-5 py-4">
+                <td className="px-3 py-3 sm:px-5 sm:py-4">
                   <div className="flex flex-wrap gap-2">
                     <button
                       onClick={() => onView(tenant)}
@@ -95,7 +95,7 @@ export default function TenantList({
           })}
           {tenants.length === 0 && (
             <tr>
-              <td className="px-5 py-6 text-slate-500" colSpan={5}>
+              <td className="px-3 py-6 text-slate-500 sm:px-5" colSpan={5}>
                 No tenants yet. Add a tenant to get started.
               </td>
             </tr>

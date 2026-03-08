@@ -198,7 +198,7 @@ export default function HousesPage() {
         </p>
       </header>
 
-      <div className="grid gap-6 lg:grid-cols-[2.2fr_1fr]">
+      <div className="grid gap-6 xl:grid-cols-[2.2fr_1fr]">
         <div className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -207,7 +207,7 @@ export default function HousesPage() {
                 {loading ? "Loading..." : `${houses.length} houses`}
               </div>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               {canManageHouses && (
                 <button
                   onClick={() => {

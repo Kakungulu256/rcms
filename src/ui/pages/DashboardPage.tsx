@@ -138,6 +138,45 @@ export default function DashboardPage() {
     loadData();
   }, []);
 
+  const yearOptions = useMemo(() => {
+    const years = new Set<number>();
+    const currentYear = new Date().getFullYear();
+    years.add(currentYear);
+
+    for (const tenant of tenants) {
+      const moveIn = parseISO(tenant.moveInDate);
+      if (isValid(moveIn)) {
+        years.add(moveIn.getFullYear());
+      }
+      if (tenant.moveOutDate) {
+        const moveOut = parseISO(tenant.moveOutDate);
+        if (isValid(moveOut)) {
+          years.add(moveOut.getFullYear());
+        }
+      }
+    }
+
+    for (const payment of payments) {
+      const paymentDate = parseISO(payment.paymentDate);
+      if (isValid(paymentDate)) {
+        years.add(paymentDate.getFullYear());
+      }
+    }
+
+    for (const expense of expenses) {
+      const expenseDate = parseISO(expense.expenseDate);
+      if (isValid(expenseDate)) {
+        years.add(expenseDate.getFullYear());
+      }
+    }
+
+    for (let year = currentYear - 5; year <= currentYear + 1; year += 1) {
+      years.add(year);
+    }
+
+    return Array.from(years).sort((a, b) => b - a).map((year) => String(year));
+  }, [expenses, payments, tenants]);
+
   const summary = useMemo(() => {
     const period = buildOverviewPeriod(overviewMode, selectedMonth, selectedYear);
     const today = new Date();
@@ -322,14 +361,17 @@ export default function DashboardPage() {
           ) : (
             <label className="text-sm" style={{ color: "var(--muted)" }}>
               Year
-              <input
-                type="number"
-                min={2000}
-                max={2100}
-                className="input-base ml-3 w-28 rounded-md px-3 py-2 text-sm"
+              <select
+                className="input-base ml-3 w-32 rounded-md px-3 py-2 text-sm"
                 value={selectedYear}
                 onChange={(event) => setSelectedYear(event.target.value)}
-              />
+              >
+                {yearOptions.map((year) => (
+                  <option key={year} value={year}>
+                    {year}
+                  </option>
+                ))}
+              </select>
             </label>
           )}
         </div>

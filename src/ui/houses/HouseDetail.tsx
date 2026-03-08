@@ -1,5 +1,6 @@
 import type { House } from "../../lib/schema";
 import { parseRentHistory } from "../../lib/rentHistory";
+import { formatAmount } from "../../lib/numberFormat";
 
 type Props = {
   house?: House | null;
@@ -18,7 +19,7 @@ export default function HouseDetail({ house }: Props) {
 
   return (
     <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6">
-      <div className="flex items-start justify-between">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="text-xs uppercase tracking-[0.3em] text-slate-500">
             House Detail
@@ -30,15 +31,13 @@ export default function HouseDetail({ house }: Props) {
           {house.status}
         </span>
       </div>
-      <div className="mt-6 grid gap-4 text-sm text-slate-300">
+      <div className="mt-6 grid gap-4 text-sm text-slate-300 md:grid-cols-2">
         <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
           <div className="text-xs uppercase tracking-[0.2em] text-slate-500">
             Monthly Rent
           </div>
           <div className="amount mt-2 text-lg font-semibold text-slate-100">
-            {house.monthlyRent.toLocaleString(undefined, {
-              minimumFractionDigits: 2,
-            })}
+            {formatAmount(house.monthlyRent)}
           </div>
         </div>
         <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
@@ -61,9 +60,7 @@ export default function HouseDetail({ house }: Props) {
                 .map((entry, index) => (
                   <div key={`${entry.effectiveDate}-${entry.amount}-${index}`}>
                     {entry.effectiveDate}:{" "}
-                    {entry.amount.toLocaleString(undefined, {
-                      minimumFractionDigits: 2,
-                    })}
+                    {formatAmount(entry.amount)}
                   </div>
                 ))
             ) : (

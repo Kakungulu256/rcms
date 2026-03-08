@@ -1,4 +1,5 @@
 import type { AllocationPreview } from "./allocation";
+import { formatAmount } from "../../lib/numberFormat";
 
 type Props = {
   preview: AllocationPreview | null;
@@ -33,9 +34,7 @@ export default function AllocationPreviewPanel({
       {securityDepositApplied > 0 && (
         <div className="mt-3 rounded-xl border px-4 py-3 text-xs text-slate-300" style={{ backgroundColor: "var(--surface-strong)", borderColor: "var(--border)" }}>
           Security deposit allocation:{" "}
-          {securityDepositApplied.toLocaleString(undefined, {
-            minimumFractionDigits: 2,
-          })}
+          {formatAmount(securityDepositApplied)}
         </div>
       )}
       <div className="mt-4 space-y-3">
@@ -49,25 +48,19 @@ export default function AllocationPreviewPanel({
               <span>{line.month}</span>
               <span>
                 Applied{" "}
-                {line.applied.toLocaleString(undefined, {
-                  minimumFractionDigits: 2,
-                })}
+                {formatAmount(line.applied)}
               </span>
             </div>
             <div className="mt-1 text-xs text-slate-500">
               Remaining:{" "}
-              {line.remaining.toLocaleString(undefined, {
-                minimumFractionDigits: 2,
-              })}
+              {formatAmount(line.remaining)}
             </div>
           </div>
         ))}
         {unallocated > 0 && (
           <div className="rounded-xl border px-4 py-3 text-xs text-slate-400" style={{ backgroundColor: "var(--surface-strong)", borderColor: "var(--border)" }}>
             Unallocated balance:{" "}
-            {unallocated.toLocaleString(undefined, {
-              minimumFractionDigits: 2,
-            })}
+            {formatAmount(unallocated)}
           </div>
         )}
       </div>

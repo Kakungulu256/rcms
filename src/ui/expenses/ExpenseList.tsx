@@ -1,6 +1,7 @@
 import type { Expense, House } from "../../lib/schema";
 import { formatDisplayDate } from "../../lib/dateDisplay";
 import { rcmsReceiptsBucketId, storage } from "../../lib/appwrite";
+import { formatAmount } from "../../lib/numberFormat";
 
 type Props = {
   expenses: Expense[];
@@ -33,22 +34,22 @@ export default function ExpenseList({ expenses, houses, canEdit, onEdit }: Props
       className="overflow-x-auto rounded-2xl border"
       style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
     >
-      <table className="min-w-[760px] w-full text-left text-sm">
+      <table className="min-w-[680px] w-full text-left text-sm">
         <thead className="text-xs text-slate-500" style={{ backgroundColor: "var(--surface-strong)" }}>
           <tr>
-            <th className="px-5 py-4">Category</th>
-            <th className="px-5 py-4">Description</th>
-            <th className="px-5 py-4">House</th>
-            <th className="px-5 py-4">Amount</th>
-            <th className="px-5 py-4">Date</th>
-            {canEdit && <th className="px-5 py-4 text-right">Actions</th>}
+            <th className="px-3 py-3 sm:px-5 sm:py-4">Category</th>
+            <th className="px-3 py-3 sm:px-5 sm:py-4">Description</th>
+            <th className="px-3 py-3 sm:px-5 sm:py-4">House</th>
+            <th className="px-3 py-3 sm:px-5 sm:py-4">Amount</th>
+            <th className="px-3 py-3 sm:px-5 sm:py-4">Date</th>
+            {canEdit && <th className="px-3 py-3 text-right sm:px-5 sm:py-4">Actions</th>}
           </tr>
         </thead>
         <tbody>
           {expenses.map((expense) => (
             <tr key={expense.$id} className="border-t" style={{ borderColor: "var(--border)" }}>
-              <td className="px-5 py-4 text-slate-200">{expense.category}</td>
-              <td className="px-5 py-4">
+              <td className="px-3 py-3 text-slate-200 sm:px-5 sm:py-4">{expense.category}</td>
+              <td className="px-3 py-3 sm:px-5 sm:py-4">
                 <div className="font-semibold text-slate-100">
                   {expense.description}
                 </div>
@@ -75,19 +76,17 @@ export default function ExpenseList({ expenses, houses, canEdit, onEdit }: Props
                   </div>
                 )}
               </td>
-              <td className="px-5 py-4 text-slate-300">
+              <td className="px-3 py-3 text-slate-300 sm:px-5 sm:py-4">
                 {resolveHouseLabel(expense, houses)}
               </td>
-              <td className="amount px-5 py-4 text-slate-200">
-                {expense.amount.toLocaleString(undefined, {
-                  minimumFractionDigits: 2,
-                })}
+              <td className="amount px-3 py-3 text-slate-200 sm:px-5 sm:py-4">
+                {formatAmount(expense.amount)}
               </td>
-              <td className="px-5 py-4 text-slate-400">
+              <td className="px-3 py-3 text-slate-400 sm:px-5 sm:py-4">
                 {formatDisplayDate(expense.expenseDate)}
               </td>
               {canEdit && (
-                <td className="px-5 py-4 text-right">
+                <td className="px-3 py-3 text-right sm:px-5 sm:py-4">
                   <button
                     type="button"
                     onClick={() => onEdit?.(expense)}
@@ -101,7 +100,7 @@ export default function ExpenseList({ expenses, houses, canEdit, onEdit }: Props
           ))}
           {expenses.length === 0 && (
             <tr>
-              <td className="px-5 py-6 text-slate-500" colSpan={columnCount}>
+              <td className="px-3 py-6 text-slate-500 sm:px-5" colSpan={columnCount}>
                 No expenses recorded yet.
               </td>
             </tr>

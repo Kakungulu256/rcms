@@ -172,6 +172,10 @@ export default function ReportsPage() {
     () => new Map(houses.map((house) => [house.$id, house])),
     [houses]
   );
+  const yearOptions = useMemo(() => {
+    const currentYear = new Date().getFullYear();
+    return Array.from({ length: 50 }, (_, index) => String(currentYear - index));
+  }, []);
 
   const loadData = async () => {
     setLoading(true);
@@ -588,13 +592,15 @@ export default function ReportsPage() {
       (expense) => expense.source === "rent_cash"
     );
     const disbursementMap = new Map<string, number>();
-    rentCashExpensesForReportMonth.forEach((expense) => {
+    expensesForReportMonth.forEach((expense) => {
       const label = expense.description?.trim()
         ? expense.description.trim()
         : expense.category === "maintenance"
           ? "Maintenance"
           : "General Expense";
-      disbursementMap.set(label, (disbursementMap.get(label) ?? 0) + expense.amount);
+      const sourceLabel = expense.source === "rent_cash" ? "Rent Cash" : "External";
+      const rowLabel = `${label} (${sourceLabel})`;
+      disbursementMap.set(rowLabel, (disbursementMap.get(rowLabel) ?? 0) + expense.amount);
     });
     const disbursementRows: DisbursementRow[] = Array.from(disbursementMap.entries()).map(
       ([label, amount]) => ({ label, amount })
@@ -603,7 +609,11 @@ export default function ReportsPage() {
       (sum, row) => sum + row.amount,
       0
     );
-    const totalCashToLandlord = amountPaidThisMonth - totalDisbursements;
+    const totalRentCashDisbursements = rentCashExpensesForReportMonth.reduce(
+      (sum, expense) => sum + expense.amount,
+      0
+    );
+    const totalCashToLandlord = amountPaidThisMonth - totalRentCashDisbursements;
     const totalExpectedNextMonth = rentExpectedNextMonth + totalTenantBalance;
 
     const selectedTenant = selectedTenantId
@@ -1309,14 +1319,17 @@ export default function ReportsPage() {
             {rangeMode === "year" && (
               <label className="text-sm text-slate-300">
                 Year
-                <input
-                  type="number"
-                  min="2000"
-                  max="2100"
-                  className="input-base ml-3 w-28 rounded-md px-3 py-2 text-sm"
+                <select
+                  className="input-base ml-3 w-32 rounded-md px-3 py-2 text-sm"
                   value={year}
                   onChange={(event) => setYear(event.target.value)}
-                />
+                >
+                  {yearOptions.map((yearOption) => (
+                    <option key={yearOption} value={yearOption}>
+                      {yearOption}
+                    </option>
+                  ))}
+                </select>
               </label>
             )}
 
@@ -1470,7 +1483,7 @@ export default function ReportsPage() {
               Summary Of Disbursements
             </div>
             <div className="mt-1 text-xs text-slate-500">
-              Expenses paid from rent cash in {summary.reportMonthLabel}
+              Expenses in {summary.reportMonthLabel} (Rent Cash and External)
             </div>
             <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-800">
               <table className="min-w-[480px] w-full text-left text-sm text-slate-300">
@@ -1507,7 +1520,7 @@ export default function ReportsPage() {
                   {summary.disbursementRows.length === 0 && (
                     <tr>
                       <td className="px-4 py-4 text-slate-500" colSpan={2}>
-                        No rent cash disbursement entries found.
+                        No disbursement entries found.
                       </td>
                     </tr>
                   )}
