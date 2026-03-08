@@ -169,6 +169,19 @@ export default function ExpenseForm({
         />
       </label>
 
+      <label className="block text-sm text-slate-300">
+        Receipt Upload (Optional)
+        <input
+          type="file"
+          accept=".pdf,image/*"
+          className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm file:mr-3 file:rounded file:border-0 file:bg-slate-700 file:px-3 file:py-1 file:text-xs file:text-slate-100"
+          {...register("receiptFile")}
+        />
+        <span className="mt-1 block text-xs text-slate-500">
+          Upload an expense receipt image or PDF.
+        </span>
+      </label>
+
       <button
         type="submit"
         disabled={disabled}

@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
-import { Query } from "appwrite";
-import { format, parseISO } from "date-fns";
+import { ID, Query } from "appwrite";
+import { format } from "date-fns";
 import {
   account,
   databases,
   functions,
   listAllDocuments,
   rcmsDatabaseId,
+  rcmsReceiptsBucketId,
+  storage,
 } from "../../lib/appwrite";
 import { COLLECTIONS, decodeJson, PAYMENT_METHODS } from "../../lib/schema";
 import type {
@@ -28,10 +30,15 @@ import { logAudit } from "../../lib/audit";
 import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../ToastContext";
 import { buildRentByMonth } from "../../lib/rentHistory";
+import { normalizePaymentNote } from "../../lib/paymentNotes";
+import { formatDisplayDate, formatShortMonth } from "../../lib/dateDisplay";
+import { getTenantEffectiveEndDate } from "../../lib/tenancyDates";
 
 type PreviewState = {
   form: PaymentFormValues;
   allocationJson: string;
+  securityDepositApplied: number;
+  totalAmount: number;
 };
 
 type PaymentEditValues = {
@@ -45,6 +52,63 @@ type PaymentEditValues = {
 type FunctionResult =
   | { ok: true; payment?: Payment; reversal?: Payment }
   | { ok: false; error?: string };
+
+type UploadedReceipt = {
+  fileId: string;
+  bucketId: string;
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+};
+
+function resolveDepositBalance(tenant: Tenant) {
+  const amount =
+    typeof tenant.securityDepositAmount === "number" &&
+    Number.isFinite(tenant.securityDepositAmount)
+      ? tenant.securityDepositAmount
+      : 0;
+  const paid =
+    typeof tenant.securityDepositPaid === "number" &&
+    Number.isFinite(tenant.securityDepositPaid)
+      ? tenant.securityDepositPaid
+      : 0;
+  const balance =
+    typeof tenant.securityDepositBalance === "number" &&
+    Number.isFinite(tenant.securityDepositBalance)
+      ? tenant.securityDepositBalance
+      : amount - paid;
+  return Math.max(balance, 0);
+}
+
+function formatFileSize(bytes?: number) {
+  const size = Number(bytes ?? 0);
+  if (!Number.isFinite(size) || size <= 0) return "--";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function parseDateInput(value?: string) {
+  const parsed = value ? new Date(`${value.slice(0, 10)}T00:00:00`) : new Date();
+  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+}
+
+function buildAllocationMonths(params: {
+  tenant: Tenant;
+  paymentDate: string;
+  allocatableAmount: number;
+  rent: number;
+}) {
+  const { tenant, paymentDate, allocatableAmount, rent } = params;
+  const paymentDateValue = parseDateInput(paymentDate);
+  const effectiveEndDate = getTenantEffectiveEndDate(tenant, paymentDateValue);
+  const canCarryForward = tenant.status === "active" && !tenant.moveOutDate;
+  const extraMonths =
+    canCarryForward && rent > 0 && allocatableAmount > 0
+      ? Math.max(24, Math.ceil(allocatableAmount / rent) + 12)
+      : 0;
+  return buildMonthSeries(tenant.moveInDate, effectiveEndDate, extraMonths);
+}
 
 export default function PaymentsPage() {
   const { user, permissions } = useAuth();
@@ -145,9 +209,32 @@ export default function PaymentsPage() {
   const getPaymentTenantId = (payment: Payment) =>
     typeof payment.tenant === "string" ? payment.tenant : payment.tenant?.$id ?? "";
 
+  const hasPriorValidPaymentForTenant = (tenantId: string) =>
+    payments.some((payment) => {
+      if (payment.isReversal) return false;
+      if (reversedPaymentIds.has(payment.$id)) return false;
+      return getPaymentTenantId(payment) === tenantId;
+    });
+
+  const getDepositHandling = (tenant: Tenant, amount: number) => {
+    const isNewTenant = (tenant.tenantType ?? "old") === "new";
+    const depositRequired = isNewTenant && (tenant.securityDepositRequired ?? true);
+    const depositBalance = resolveDepositBalance(tenant);
+    const eligible =
+      depositRequired &&
+      depositBalance > 0 &&
+      !hasPriorValidPaymentForTenant(tenant.$id);
+    const suggestedAmount = Math.min(Math.max(Number(amount) || 0, 0), depositBalance);
+    return {
+      eligible,
+      suggestedAmount,
+    };
+  };
+
   const canEditPaymentRow = (payment: Payment) => {
     if (!canRecordPayments) return false;
     if (payment.isReversal) return false;
+    if (Math.abs(Number(payment.securityDepositApplied) || 0) > 0) return false;
     if (reversedPaymentIds.has(payment.$id)) return false;
     if (payment.paymentDate?.slice(0, 7) !== currentMonthKey) return false;
     const tenantId = getPaymentTenantId(payment);
@@ -192,6 +279,20 @@ export default function PaymentsPage() {
       setError("Select a tenant to preview allocation.");
       return;
     }
+    const normalizedNote = normalizePaymentNote(values.notes);
+    if (!normalizedNote) {
+      setError("Payment status note is required.");
+      return;
+    }
+    const depositHandling = getDepositHandling(tenant, values.amount);
+    const securityDepositApplied = depositHandling.eligible
+      ? depositHandling.suggestedAmount
+      : 0;
+    const normalizedValues: PaymentFormValues = {
+      ...values,
+      notes: normalizedNote,
+      applySecurityDeposit: depositHandling.eligible,
+    };
     const houseId =
       typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
     const house = houseLookup.get(houseId);
@@ -202,7 +303,13 @@ export default function PaymentsPage() {
       return paymentTenantId === tenant.$id;
     });
     const paidByMonth = buildPaidByMonth(tenantPayments);
-    const months = buildMonthSeries(tenant.moveInDate, new Date());
+    const allocatableAmount = Math.max(normalizedValues.amount - securityDepositApplied, 0);
+    const months = buildAllocationMonths({
+      tenant,
+      paymentDate: normalizedValues.paymentDate,
+      allocatableAmount,
+      rent,
+    });
     const rentByMonth = buildRentByMonth({
       months,
       tenantHistoryJson: tenant.rentHistoryJson ?? null,
@@ -210,7 +317,7 @@ export default function PaymentsPage() {
       fallbackRent: rent,
     });
     const allocation = previewAllocation({
-      amount: values.amount,
+      amount: allocatableAmount,
       months,
       paidByMonth,
       rentByMonth,
@@ -223,7 +330,18 @@ export default function PaymentsPage() {
       )
     );
     setPreview(allocation);
-    setPreviewState({ form: values, allocationJson });
+      setPreviewState({
+      form: normalizedValues,
+      allocationJson,
+      securityDepositApplied,
+      totalAmount: Math.max(Number(normalizedValues.amount) || 0, 0),
+      });
+    if (allocation.totalApplied + 0.01 < allocatableAmount) {
+      toast.push(
+        "warning",
+        "Part of this payment stays unallocated. Tenant may be inactive or has no billable future months."
+      );
+    }
     setConfirmOpen(true);
   };
 
@@ -272,6 +390,17 @@ export default function PaymentsPage() {
     return { parsed, latest, body };
   };
 
+  const uploadReceipt = async (receipt: File): Promise<UploadedReceipt> => {
+    const file = await storage.createFile(rcmsReceiptsBucketId, ID.unique(), receipt);
+    return {
+      fileId: file.$id,
+      bucketId: rcmsReceiptsBucketId,
+      fileName: file.name ?? receipt.name,
+      mimeType: file.mimeType ?? receipt.type ?? "application/octet-stream",
+      fileSize: Number(file.sizeOriginal ?? receipt.size ?? 0),
+    };
+  };
+
   const handleConfirm = async () => {
     if (!previewState) return;
     if (!canRecordPayments) {
@@ -281,7 +410,16 @@ export default function PaymentsPage() {
     setConfirmLoading(true);
     setLoading(true);
     setError(null);
+    let uploadedReceipt: UploadedReceipt | null = null;
+    let paymentCreated = false;
     try {
+      const selectedReceipt = previewState.form.receiptFile?.item(0) ?? null;
+      if (selectedReceipt) {
+        if (selectedReceipt.size > 10 * 1024 * 1024) {
+          throw new Error("Receipt file must be 10MB or smaller.");
+        }
+        uploadedReceipt = await uploadReceipt(selectedReceipt);
+      }
       const jwt = await account.createJWT();
       const { parsed, latest, body } = await executeAllocationFunction({
         jwt: jwt.jwt,
@@ -289,8 +427,14 @@ export default function PaymentsPage() {
         amount: previewState.form.amount,
         method: previewState.form.method,
         paymentDate: previewState.form.paymentDate,
+        applySecurityDeposit: previewState.form.applySecurityDeposit ?? false,
         reference: previewState.form.reference,
         notes: previewState.form.notes,
+        receiptFileId: uploadedReceipt?.fileId ?? null,
+        receiptBucketId: uploadedReceipt?.bucketId ?? null,
+        receiptFileName: uploadedReceipt?.fileName ?? null,
+        receiptFileMimeType: uploadedReceipt?.mimeType ?? null,
+        receiptFileSize: uploadedReceipt?.fileSize ?? null,
       });
       if (!parsed || !parsed.ok || !parsed.payment) {
         console.error("Allocate function returned error:", {
@@ -306,6 +450,7 @@ export default function PaymentsPage() {
             "Allocation failed."
         );
       }
+      paymentCreated = true;
       setConfirmOpen(false);
       setModalOpen(false);
       await loadData();
@@ -316,10 +461,25 @@ export default function PaymentsPage() {
           entityId: (parsed.payment as Payment).$id,
           action: "create",
           actorId: user.id,
-          details: previewState.form,
+          details: {
+            tenant: previewState.form.tenant,
+            amount: previewState.form.amount,
+            method: previewState.form.method,
+            paymentDate: previewState.form.paymentDate,
+            reference: previewState.form.reference ?? null,
+            notes: previewState.form.notes ?? null,
+            receiptFileId: uploadedReceipt?.fileId ?? null,
+          },
         });
       }
     } catch (err) {
+      if (uploadedReceipt && !paymentCreated) {
+        try {
+          await storage.deleteFile(uploadedReceipt.bucketId, uploadedReceipt.fileId);
+        } catch (cleanupError) {
+          console.error("Failed to clean up uploaded receipt:", cleanupError);
+        }
+      }
       console.error("Payment recording failed:", err);
       const message =
         err instanceof Error && err.message
@@ -402,6 +562,11 @@ export default function PaymentsPage() {
       toast.push("warning", "You do not have permission to edit payments.");
       return;
     }
+    const normalizedNote = normalizePaymentNote(editValues.notes);
+    if (!normalizedNote) {
+      toast.push("warning", "Payment status note is required.");
+      return;
+    }
     const tenantId = getPaymentTenantId(editingPayment);
     const tenant = tenantLookup.get(tenantId);
     if (!tenant) {
@@ -431,7 +596,12 @@ export default function PaymentsPage() {
         return paymentTenantId === tenant.$id && payment.$id !== editingPayment.$id;
       });
       const paidByMonth = buildPaidByMonth(tenantPayments);
-      const months = buildMonthSeries(tenant.moveInDate, editValues.paymentDate, 24);
+      const months = buildAllocationMonths({
+        tenant,
+        paymentDate: editValues.paymentDate,
+        allocatableAmount: Math.max(editValues.amount, 0),
+        rent,
+      });
       const rentByMonth = buildRentByMonth({
         months,
         tenantHistoryJson: tenant.rentHistoryJson ?? null,
@@ -461,7 +631,7 @@ export default function PaymentsPage() {
           method: editValues.method,
           paymentDate: editValues.paymentDate,
           reference: editValues.reference?.trim() ? editValues.reference.trim() : null,
-          notes: editValues.notes?.trim() ? editValues.notes.trim() : null,
+          notes: normalizedNote,
           allocationJson,
         }
       );
@@ -542,9 +712,15 @@ export default function PaymentsPage() {
                 const allocationRows = Object.entries(allocation).sort(([a], [b]) =>
                   a.localeCompare(b)
                 );
+                const securityDepositApplied = Number(payment.securityDepositApplied) || 0;
                 const isExpanded = expandedPaymentId === payment.$id;
                 const isAlreadyReversed = reversedPaymentIds.has(payment.$id);
                 const reversal = reversalByOriginalId.get(payment.$id);
+                const receiptBucketId =
+                  payment.receiptBucketId?.trim() || rcmsReceiptsBucketId;
+                const receiptUrl = payment.receiptFileId
+                  ? storage.getFileView(receiptBucketId, payment.receiptFileId)
+                  : "";
                 return (
                 <div
                   key={payment.$id}
@@ -564,7 +740,7 @@ export default function PaymentsPage() {
                     </span>
                   </div>
                   <div className="mt-1 text-xs text-slate-500">
-                    {format(parseISO(payment.paymentDate), "yyyy-MM-dd")} - {payment.method}
+                    {formatDisplayDate(payment.paymentDate)} - {payment.method}
                   </div>
                   <button
                     onClick={() =>
@@ -578,7 +754,7 @@ export default function PaymentsPage() {
                     <div className="mt-3 space-y-2 text-xs text-slate-400">
                       {isAlreadyReversed && reversal && (
                         <div className="text-amber-300">
-                          Reversed on {reversal.paymentDate?.slice(0, 10)} (
+                          Reversed on {formatDisplayDate(reversal.paymentDate)} (
                           {Math.abs(Number(reversal.amount)).toLocaleString(undefined, {
                             minimumFractionDigits: 2,
                           })}
@@ -596,38 +772,92 @@ export default function PaymentsPage() {
                           </thead>
                           <tbody>
                             {allocationRows.length > 0 ? (
-                              allocationRows.map(([month, amount]) => (
-                                <tr
-                                  key={`${payment.$id}-${month}`}
-                                  className="border-t border-slate-200/10"
-                                >
-                                  <td className="px-3 py-2">{month}</td>
-                                  <td className="px-3 py-2">
-                                    {Number(amount).toLocaleString(undefined, {
-                                      minimumFractionDigits: 2,
-                                    })}
-                                  </td>
-                                  <td className="px-3 py-2">
-                                    {payment.paymentDate?.slice(0, 10)}
-                                  </td>
-                                </tr>
-                              ))
+                              <>
+                                {allocationRows.map(([month, amount]) => (
+                                  <tr
+                                    key={`${payment.$id}-${month}`}
+                                    className="border-t border-slate-200/10"
+                                  >
+                                    <td className="px-3 py-2">{formatShortMonth(month)}</td>
+                                    <td className="px-3 py-2">
+                                      {Number(amount).toLocaleString(undefined, {
+                                        minimumFractionDigits: 2,
+                                      })}
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      {formatDisplayDate(payment.paymentDate)}
+                                    </td>
+                                  </tr>
+                                ))}
+                                {Math.abs(securityDepositApplied) > 0 && (
+                                  <tr className="border-t border-slate-200/10">
+                                    <td className="px-3 py-2">Security Deposit</td>
+                                    <td className="px-3 py-2">
+                                      {securityDepositApplied.toLocaleString(undefined, {
+                                        minimumFractionDigits: 2,
+                                      })}
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      {formatDisplayDate(payment.paymentDate)}
+                                    </td>
+                                  </tr>
+                                )}
+                              </>
                             ) : (
-                              <tr className="border-t border-slate-200/10">
-                                <td className="px-3 py-2">Unspecified</td>
-                                <td className="px-3 py-2">
-                                  {Number(payment.amount).toLocaleString(undefined, {
-                                    minimumFractionDigits: 2,
-                                  })}
-                                </td>
-                                <td className="px-3 py-2">
-                                  {payment.paymentDate?.slice(0, 10)}
-                                </td>
-                              </tr>
+                              <>
+                                {Math.abs(securityDepositApplied) > 0 && (
+                                  <tr className="border-t border-slate-200/10">
+                                    <td className="px-3 py-2">Security Deposit</td>
+                                    <td className="px-3 py-2">
+                                      {securityDepositApplied.toLocaleString(undefined, {
+                                        minimumFractionDigits: 2,
+                                      })}
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      {formatDisplayDate(payment.paymentDate)}
+                                    </td>
+                                  </tr>
+                                )}
+                                {Math.abs(Number(payment.amount) - securityDepositApplied) > 0 && (
+                                  <tr className="border-t border-slate-200/10">
+                                    <td className="px-3 py-2">Unspecified</td>
+                                    <td className="px-3 py-2">
+                                      {(Number(payment.amount) - securityDepositApplied).toLocaleString(
+                                        undefined,
+                                        {
+                                          minimumFractionDigits: 2,
+                                        }
+                                      )}
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      {formatDisplayDate(payment.paymentDate)}
+                                    </td>
+                                  </tr>
+                                )}
+                              </>
                             )}
                           </tbody>
                         </table>
                       </div>
+                      <div>
+                        Status note: {payment.notes?.trim() ? payment.notes : "--"}
+                      </div>
+                      {receiptUrl && (
+                        <div>
+                          Receipt:{" "}
+                          <a
+                            href={receiptUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-sky-300 underline"
+                          >
+                            {payment.receiptFileName?.trim() || "View receipt"}
+                          </a>{" "}
+                          <span className="text-slate-500">
+                            ({formatFileSize(payment.receiptFileSize)})
+                          </span>
+                        </div>
+                      )}
                     </div>
                   )}
                   <div className="mt-3 flex justify-end">
@@ -664,7 +894,11 @@ export default function PaymentsPage() {
             </div>
           </div>
 
-          <AllocationPreviewPanel preview={preview} />
+          <AllocationPreviewPanel
+            preview={preview}
+            securityDepositApplied={previewState?.securityDepositApplied ?? 0}
+            totalAmount={previewState?.totalAmount ?? 0}
+          />
         </div>
       </div>
 
@@ -674,13 +908,26 @@ export default function PaymentsPage() {
         description="Preview allocation before confirming."
         onClose={() => setModalOpen(false)}
       >
-          <PaymentForm tenants={tenants} onSubmit={handlePreview} disabled={loading} loading={loading} />
+          <PaymentForm
+            tenants={tenants}
+            payments={payments}
+            onSubmit={handlePreview}
+            disabled={loading}
+            loading={loading}
+          />
         </Modal>
 
       <ConfirmModal
         open={canRecordPayments && confirmOpen}
         title="Confirm Payment"
-        description="This payment will be saved and applied to arrears first. Continue?"
+        description={
+          previewState && previewState.securityDepositApplied > 0
+            ? `This payment will first apply ${previewState.securityDepositApplied.toLocaleString(
+                undefined,
+                { minimumFractionDigits: 2 }
+              )} to security deposit, then apply the rest to arrears. Continue?`
+            : "This payment will be saved and applied to arrears first. Continue?"
+        }
         onCancel={() => setConfirmOpen(false)}
         onConfirm={handleConfirm}
         confirmLoading={confirmLoading}
@@ -776,7 +1023,7 @@ export default function PaymentsPage() {
               />
             </label>
             <label className="block text-sm text-slate-300">
-              Notes
+              Payment Status Note
               <textarea
                 rows={3}
                 className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"

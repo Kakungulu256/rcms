@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { Client, Databases, Permission, Role } from "node-appwrite";
+import { Client, Databases, Permission, Role, Storage } from "node-appwrite";
 
 const requiredEnv = [
   "APPWRITE_ENDPOINT",
@@ -24,8 +24,10 @@ const client = new Client()
   .setKey(process.env.APPWRITE_API_KEY);
 
 const databases = new Databases(client);
+const storage = new Storage(client);
 
 const databaseId = process.env.APPWRITE_DATABASE_ID;
+const receiptsBucketId = process.env.APPWRITE_RECEIPTS_BUCKET_ID || "rcms_receipts";
 const collections = [
   "houses",
   "tenants",
@@ -45,7 +47,7 @@ const adminPerms = [
   Permission.delete(adminTeam),
 ];
 
-const clerkPerms = [
+const clerkReadCreateUpdatePerms = [
   Permission.read(clerkTeam),
   Permission.create(clerkTeam),
   Permission.update(clerkTeam),
@@ -54,16 +56,11 @@ const clerkPerms = [
 const viewerPerms = [Permission.read(viewerTeam)];
 
 function permsForCollection(collectionId) {
-  if (collectionId === "payments") {
+  if (collectionId === "houses") {
     return [
-      Permission.read(adminTeam),
-      Permission.create(adminTeam),
-      Permission.update(adminTeam),
-      Permission.delete(adminTeam),
-      Permission.read(clerkTeam),
-      Permission.create(clerkTeam),
-      Permission.update(clerkTeam),
-      Permission.read(viewerTeam),
+      ...adminPerms,
+      ...clerkReadCreateUpdatePerms,
+      ...viewerPerms,
     ];
   }
 
@@ -71,32 +68,50 @@ function permsForCollection(collectionId) {
     return [
       Permission.read(adminTeam),
       Permission.create(adminTeam),
-      Permission.update(adminTeam),
-      Permission.delete(adminTeam),
       Permission.read(clerkTeam),
       Permission.create(clerkTeam),
-      Permission.read(viewerTeam),
     ];
   }
 
-  return [...adminPerms, ...clerkPerms, ...viewerPerms];
+  return [...adminPerms, ...clerkReadCreateUpdatePerms, ...viewerPerms];
+}
+
+function permsForReceiptsBucket() {
+  return [...adminPerms, ...clerkReadCreateUpdatePerms, ...viewerPerms];
 }
 
 async function applyPermissions(collectionId) {
-  await databases.updateCollection(
+  const existing = await databases.getCollection({
     databaseId,
     collectionId,
+  });
+  await databases.updateCollection({
+    databaseId,
     collectionId,
-    permsForCollection(collectionId)
-  );
+    name: existing.name ?? collectionId,
+    permissions: permsForCollection(collectionId),
+    documentSecurity: existing.documentSecurity,
+    enabled: existing.enabled,
+  });
   console.log(`Updated permissions for ${collectionId}`);
+}
+
+async function applyReceiptsBucketPermissions() {
+  const bucket = await storage.getBucket({ bucketId: receiptsBucketId });
+  await storage.updateBucket({
+    bucketId: receiptsBucketId,
+    name: bucket.name,
+    permissions: permsForReceiptsBucket(),
+  });
+  console.log(`Updated permissions for bucket ${receiptsBucketId}`);
 }
 
 async function main() {
   for (const collectionId of collections) {
     await applyPermissions(collectionId);
   }
-  console.log("Collection permissions updated.");
+  await applyReceiptsBucketPermissions();
+  console.log("Collection and bucket permissions updated.");
 }
 
 main().catch((error) => {

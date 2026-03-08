@@ -2,7 +2,9 @@ export type AppRole = "admin" | "clerk" | "viewer";
 
 export type RolePermissions = {
   canManageHouses: boolean;
+  canViewTenants: boolean;
   canManageTenants: boolean;
+  canViewPayments: boolean;
   canRecordPayments: boolean;
   canReversePayments: boolean;
   canRecordExpenses: boolean;
@@ -16,7 +18,9 @@ const ROLE_PRECEDENCE: AppRole[] = ["admin", "clerk", "viewer"];
 const PERMISSIONS: Record<AppRole, RolePermissions> = {
   admin: {
     canManageHouses: true,
+    canViewTenants: true,
     canManageTenants: true,
+    canViewPayments: true,
     canRecordPayments: true,
     canReversePayments: true,
     canRecordExpenses: true,
@@ -25,8 +29,10 @@ const PERMISSIONS: Record<AppRole, RolePermissions> = {
     canViewReports: true,
   },
   clerk: {
-    canManageHouses: false,
+    canManageHouses: true,
+    canViewTenants: true,
     canManageTenants: true,
+    canViewPayments: true,
     canRecordPayments: true,
     canReversePayments: false,
     canRecordExpenses: true,
@@ -36,7 +42,9 @@ const PERMISSIONS: Record<AppRole, RolePermissions> = {
   },
   viewer: {
     canManageHouses: false,
+    canViewTenants: true,
     canManageTenants: false,
+    canViewPayments: true,
     canRecordPayments: false,
     canReversePayments: false,
     canRecordExpenses: false,
@@ -95,4 +103,3 @@ export function resolveRoleFromTeams(
 export function getRolePermissions(role: AppRole | null | undefined): RolePermissions {
   return PERMISSIONS[role ?? "viewer"];
 }
-

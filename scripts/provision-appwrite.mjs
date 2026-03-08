@@ -2,11 +2,11 @@ import "dotenv/config";
 import {
   Client,
   Databases,
-  ID,
   Permission,
   Role,
   RelationshipType,
   RelationMutate,
+  Storage,
 } from "node-appwrite";
 
 const requiredEnv = [
@@ -28,9 +28,31 @@ const client = new Client()
   .setKey(process.env.APPWRITE_API_KEY);
 
 const databases = new Databases(client);
+const storage = new Storage(client);
 
 const databaseId = process.env.APPWRITE_DATABASE_ID || "rcms";
 const databaseName = process.env.APPWRITE_DATABASE_NAME || "RCMS";
+const receiptsBucketId = process.env.APPWRITE_RECEIPTS_BUCKET_ID || "rcms_receipts";
+const receiptsBucketName = process.env.APPWRITE_RECEIPTS_BUCKET_NAME || "RCMS Receipts";
+
+function normalizeEnv(value) {
+  const next = (value ?? "").trim();
+  return next.length > 0 ? next : null;
+}
+
+const teamIds = {
+  admin: normalizeEnv(process.env.APPWRITE_TEAM_ADMIN_ID),
+  clerk: normalizeEnv(process.env.APPWRITE_TEAM_CLERK_ID),
+  viewer: normalizeEnv(process.env.APPWRITE_TEAM_VIEWER_ID),
+};
+
+const hasTeamPermissions = Boolean(teamIds.admin && teamIds.clerk && teamIds.viewer);
+
+if (!hasTeamPermissions) {
+  console.warn(
+    "Team IDs not fully configured. Falling back to Role.users() permissions."
+  );
+}
 
 const defaultPermissions = [
   Permission.read(Role.users()),
@@ -38,6 +60,79 @@ const defaultPermissions = [
   Permission.update(Role.users()),
   Permission.delete(Role.users()),
 ];
+
+function buildRolePermissions() {
+  if (!hasTeamPermissions) {
+    return null;
+  }
+
+  const adminTeam = Role.team(teamIds.admin);
+  const clerkTeam = Role.team(teamIds.clerk);
+  const viewerTeam = Role.team(teamIds.viewer);
+
+  return {
+    adminCrud: [
+      Permission.read(adminTeam),
+      Permission.create(adminTeam),
+      Permission.update(adminTeam),
+      Permission.delete(adminTeam),
+    ],
+    clerkReadCreateUpdate: [
+      Permission.read(clerkTeam),
+      Permission.create(clerkTeam),
+      Permission.update(clerkTeam),
+    ],
+    viewerRead: [Permission.read(viewerTeam)],
+  };
+}
+
+const rolePermissions = buildRolePermissions();
+
+function getCollectionPermissions(collectionId) {
+  if (!rolePermissions) {
+    return defaultPermissions;
+  }
+
+  if (collectionId === "houses") {
+    return [
+      ...rolePermissions.adminCrud,
+      ...rolePermissions.clerkReadCreateUpdate,
+      ...rolePermissions.viewerRead,
+    ];
+  }
+
+  if (collectionId === "audit_logs") {
+    return [
+      Permission.read(Role.team(teamIds.admin)),
+      Permission.create(Role.team(teamIds.admin)),
+      Permission.read(Role.team(teamIds.clerk)),
+      Permission.create(Role.team(teamIds.clerk)),
+    ];
+  }
+
+  return [
+    ...rolePermissions.adminCrud,
+    ...rolePermissions.clerkReadCreateUpdate,
+    ...rolePermissions.viewerRead,
+  ];
+}
+
+function getReceiptsBucketPermissions() {
+  if (!rolePermissions) {
+    return defaultPermissions;
+  }
+
+  return [
+    ...rolePermissions.adminCrud,
+    ...rolePermissions.clerkReadCreateUpdate,
+    ...rolePermissions.viewerRead,
+  ];
+}
+
+function isNotFoundError(error) {
+  const message = String(error?.message || "").toLowerCase();
+  return error?.code === 404 || message.includes("not found");
+}
 
 async function ensureDatabase() {
   try {
@@ -49,13 +144,70 @@ async function ensureDatabase() {
   }
 }
 
-async function ensureCollection(collectionId, name, permissions = defaultPermissions) {
+async function ensureReceiptsBucket() {
+  const bucketPermissions = getReceiptsBucketPermissions();
+  const bucketConfig = {
+    name: receiptsBucketName,
+    permissions: bucketPermissions,
+    fileSecurity: false,
+    enabled: true,
+    maximumFileSize: 10 * 1024 * 1024,
+    allowedFileExtensions: ["jpg", "jpeg", "png", "webp", "pdf"],
+    compression: "none",
+    encryption: true,
+    antivirus: true,
+  };
+
   try {
-    await databases.getCollection(databaseId, collectionId);
-    console.log(`Collection exists: ${collectionId}`);
+    await storage.getBucket(receiptsBucketId);
+    console.log(`Bucket exists: ${receiptsBucketId}`);
+    await storage.updateBucket({
+      bucketId: receiptsBucketId,
+      ...bucketConfig,
+    });
+    console.log(`Updated bucket permissions: ${receiptsBucketId}`);
   } catch (error) {
+    if (!isNotFoundError(error)) {
+      throw error;
+    }
+
+    console.log(`Creating bucket: ${receiptsBucketId}`);
+    await storage.createBucket({
+      bucketId: receiptsBucketId,
+      ...bucketConfig,
+    });
+  }
+}
+
+async function ensureCollection(
+  collectionId,
+  name,
+  permissions = getCollectionPermissions(collectionId)
+) {
+  try {
+    const existing = await databases.getCollection(databaseId, collectionId);
+    console.log(`Collection exists: ${collectionId}`);
+    await databases.updateCollection({
+      databaseId,
+      collectionId,
+      name: existing.name ?? name,
+      permissions,
+      documentSecurity: existing.documentSecurity,
+      enabled: existing.enabled,
+    });
+    console.log(`Updated collection permissions: ${collectionId}`);
+  } catch (error) {
+    if (!isNotFoundError(error)) {
+      throw error;
+    }
+
     console.log(`Creating collection: ${collectionId}`);
-    await databases.createCollection(databaseId, collectionId, name, permissions);
+    await databases.createCollection({
+      databaseId,
+      collectionId,
+      name,
+      permissions,
+    });
   }
 }
 
@@ -182,6 +334,55 @@ async function setupTenants() {
     )
   );
   await ensureAttribute(() =>
+    databases.createEnumAttribute(
+      databaseId,
+      collectionId,
+      "tenantType",
+      ["new", "old"],
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createBooleanAttribute(
+      databaseId,
+      collectionId,
+      "securityDepositRequired",
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(
+      databaseId,
+      collectionId,
+      "securityDepositAmount",
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(
+      databaseId,
+      collectionId,
+      "securityDepositPaid",
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(
+      databaseId,
+      collectionId,
+      "securityDepositBalance",
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createBooleanAttribute(
+      databaseId,
+      collectionId,
+      "securityDepositRefunded",
+      false
+    )
+  );
+  await ensureAttribute(() =>
     databases.createFloatAttribute(databaseId, collectionId, "rentOverride", false)
   );
   await ensureAttribute(() =>
@@ -204,6 +405,15 @@ async function setupTenants() {
   await ensureIndex(() =>
     databases.createIndex(databaseId, collectionId, "idx_status", "key", ["status"])
   );
+  await ensureIndex(() =>
+    databases.createIndex(
+      databaseId,
+      collectionId,
+      "idx_tenant_type",
+      "key",
+      ["tenantType"]
+    )
+  );
 }
 
 async function setupPayments() {
@@ -224,6 +434,14 @@ async function setupPayments() {
   );
   await ensureAttribute(() =>
     databases.createFloatAttribute(databaseId, collectionId, "amount", true)
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(
+      databaseId,
+      collectionId,
+      "securityDepositApplied",
+      false
+    )
   );
   await ensureAttribute(() =>
     databases.createEnumAttribute(
@@ -269,6 +487,21 @@ async function setupPayments() {
       20000,
       false
     )
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "receiptFileId", 64, false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "receiptBucketId", 64, false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "receiptFileName", 256, false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "receiptFileMimeType", 128, false)
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(databaseId, collectionId, "receiptFileSize", false)
   );
 
   // Relationship attributes are already indexed by Appwrite.
@@ -341,6 +574,21 @@ async function setupExpenses() {
   await ensureAttribute(() =>
     databases.createStringAttribute(databaseId, collectionId, "notes", 512, false)
   );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "receiptFileId", 64, false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "receiptBucketId", 64, false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "receiptFileName", 256, false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "receiptFileMimeType", 128, false)
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(databaseId, collectionId, "receiptFileSize", false)
+  );
 
   await ensureIndex(() =>
     databases.createIndex(databaseId, collectionId, "idx_category", "key", ["category"])
@@ -405,6 +653,7 @@ async function setupAuditLogs() {
 
 async function main() {
   await ensureDatabase();
+  await ensureReceiptsBucket();
   await setupHouses();
   await setupTenants();
   await setupPayments();

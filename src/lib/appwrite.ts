@@ -1,8 +1,11 @@
-import { Account, Client, Databases, Functions, Query, Teams } from "appwrite";
+import { Account, Client, Databases, Functions, Query, Storage, Teams } from "appwrite";
 
 const endpoint = import.meta.env.VITE_APPWRITE_ENDPOINT as string | undefined;
 const projectId = import.meta.env.VITE_APPWRITE_PROJECT_ID as string | undefined;
 const databaseId = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
+const receiptsBucketId = import.meta.env.VITE_APPWRITE_RECEIPTS_BUCKET_ID as
+  | string
+  | undefined;
 
 if (!endpoint || !projectId) {
   console.warn(
@@ -16,9 +19,11 @@ export const appwriteClient = new Client()
 
 export const databases = new Databases(appwriteClient);
 export const functions = new Functions(appwriteClient);
+export const storage = new Storage(appwriteClient);
 export const account = new Account(appwriteClient);
 export const teams = new Teams(appwriteClient);
 export const rcmsDatabaseId = databaseId ?? "rcms";
+export const rcmsReceiptsBucketId = receiptsBucketId ?? "rcms_receipts";
 
 export async function listAllDocuments<T = unknown>(params: {
   databaseId: string;
@@ -53,5 +58,6 @@ if (import.meta.env.DEV) {
     teams,
     databases,
     functions,
+    storage,
   };
 }

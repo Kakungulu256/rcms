@@ -55,6 +55,12 @@ async function main() {
     house: houseA.$id,
     moveInDate: new Date().toISOString().slice(0, 10),
     status: "active",
+    tenantType: "old",
+    securityDepositRequired: false,
+    securityDepositAmount: 0,
+    securityDepositPaid: 0,
+    securityDepositBalance: 0,
+    securityDepositRefunded: false,
     notes: "Seeded tenant",
   });
 

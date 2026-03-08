@@ -1,5 +1,4 @@
 import { useForm } from "react-hook-form";
-import { HOUSE_STATUS } from "../../lib/schema";
 import type { House, HouseForm as HouseFormValues } from "../../lib/schema";
 
 type HouseFormWithEffectiveDate = HouseFormValues & {
@@ -26,7 +25,7 @@ export default function HouseForm({
       code: initial?.code ?? "",
       name: initial?.name ?? "",
       monthlyRent: initial?.monthlyRent ?? 0,
-      status: initial?.status ?? "vacant",
+      status: initial?.status === "inactive" ? "inactive" : "vacant",
       notes: initial?.notes ?? "",
       rentEffectiveDate: new Date().toISOString().slice(0, 10),
     },
@@ -72,17 +71,18 @@ export default function HouseForm({
           />
         </label>
         <label className="block text-sm text-slate-300">
-          Status
+          Manual Availability
           <select
             className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
             {...register("status", { required: true })}
           >
-            {HOUSE_STATUS.map((status) => (
-              <option key={status} value={status}>
-                {status}
-              </option>
-            ))}
+            <option value="vacant">vacant</option>
+            <option value="inactive">inactive</option>
           </select>
+          <p className="mt-2 text-xs text-slate-500">
+            Occupied or vacant is set automatically by tenant assignment.
+            Choose inactive only when this house should not be rented.
+          </p>
         </label>
       </div>
 

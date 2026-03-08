@@ -1,4 +1,5 @@
 import type { House, Tenant } from "../../lib/schema";
+import { formatDisplayDate } from "../../lib/dateDisplay";
 
 type Props = {
   tenants: Tenant[];
@@ -64,7 +65,7 @@ export default function TenantList({
                   {resolveHouseLabel(tenant, houses)}
                 </td>
                 <td className="px-5 py-4 text-slate-300">
-                  {tenant.moveInDate?.slice(0, 10)}
+                  {formatDisplayDate(tenant.moveInDate)}
                 </td>
                 <td className="px-5 py-4">
                   <span className="rounded-full border px-3 py-1 text-xs text-slate-300" style={{ borderColor: "var(--border)" }}>

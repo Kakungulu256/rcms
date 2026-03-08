@@ -3,12 +3,26 @@ import { ID, Query } from "appwrite";
 import ExpenseForm from "../expenses/ExpenseForm";
 import ExpenseList from "../expenses/ExpenseList";
 import Modal from "../Modal";
-import { databases, listAllDocuments, rcmsDatabaseId } from "../../lib/appwrite";
+import {
+  databases,
+  listAllDocuments,
+  rcmsDatabaseId,
+  rcmsReceiptsBucketId,
+  storage,
+} from "../../lib/appwrite";
 import { COLLECTIONS } from "../../lib/schema";
 import type { Expense, ExpenseForm as ExpenseFormValues, House } from "../../lib/schema";
 import { logAudit } from "../../lib/audit";
 import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../ToastContext";
+
+type UploadedReceipt = {
+  fileId: string;
+  bucketId: string;
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+};
 
 function resolveExpenseHouseId(expense: Expense) {
   if (typeof expense.house === "string") return expense.house;
@@ -61,13 +75,27 @@ export default function ExpensesPage() {
     loadData();
   }, []);
 
-  const normalizePayload = (values: ExpenseFormValues) => ({
-    ...values,
-    house: values.category === "maintenance" ? values.house || null : null,
-    maintenanceType:
-      values.category === "maintenance" ? values.maintenanceType || null : null,
-    notes: values.notes?.trim() ? values.notes.trim() : null,
-  });
+  const normalizePayload = (values: ExpenseFormValues) => {
+    const { receiptFile: _ignoredReceiptFile, ...baseValues } = values;
+    return {
+      ...baseValues,
+      house: values.category === "maintenance" ? values.house || null : null,
+      maintenanceType:
+        values.category === "maintenance" ? values.maintenanceType || null : null,
+      notes: values.notes?.trim() ? values.notes.trim() : null,
+    };
+  };
+
+  const uploadReceipt = async (receipt: File): Promise<UploadedReceipt> => {
+    const file = await storage.createFile(rcmsReceiptsBucketId, ID.unique(), receipt);
+    return {
+      fileId: file.$id,
+      bucketId: rcmsReceiptsBucketId,
+      fileName: file.name ?? receipt.name,
+      mimeType: file.mimeType ?? receipt.type ?? "application/octet-stream",
+      fileSize: Number(file.sizeOriginal ?? receipt.size ?? 0),
+    };
+  };
 
   const handleSave = async (values: ExpenseFormValues) => {
     if (!canRecordExpenses) {
@@ -76,9 +104,30 @@ export default function ExpensesPage() {
     }
     setLoading(true);
     setError(null);
+    let uploadedReceipt: UploadedReceipt | null = null;
+    let saveSucceeded = false;
     try {
-      const payload = normalizePayload(values);
+      const selectedReceipt = values.receiptFile?.item(0) ?? null;
+      if (selectedReceipt) {
+        if (selectedReceipt.size > 10 * 1024 * 1024) {
+          throw new Error("Receipt file must be 10MB or smaller.");
+        }
+        uploadedReceipt = await uploadReceipt(selectedReceipt);
+      }
+
+      const payload: Record<string, unknown> = normalizePayload(values);
+      if (uploadedReceipt) {
+        payload.receiptFileId = uploadedReceipt.fileId;
+        payload.receiptBucketId = uploadedReceipt.bucketId;
+        payload.receiptFileName = uploadedReceipt.fileName;
+        payload.receiptFileMimeType = uploadedReceipt.mimeType;
+        payload.receiptFileSize = uploadedReceipt.fileSize;
+      }
+
       if (editingExpense) {
+        const previousReceiptFileId = editingExpense.receiptFileId?.trim() || "";
+        const previousReceiptBucketId =
+          editingExpense.receiptBucketId?.trim() || rcmsReceiptsBucketId;
         const updated = await databases.updateDocument(
           rcmsDatabaseId,
           COLLECTIONS.expenses,
@@ -100,6 +149,17 @@ export default function ExpensesPage() {
             details: payload,
           });
         }
+        if (
+          uploadedReceipt &&
+          previousReceiptFileId &&
+          previousReceiptFileId !== uploadedReceipt.fileId
+        ) {
+          try {
+            await storage.deleteFile(previousReceiptBucketId, previousReceiptFileId);
+          } catch (cleanupError) {
+            console.error("Failed to clean up old expense receipt:", cleanupError);
+          }
+        }
       } else {
         const created = await databases.createDocument(
           rcmsDatabaseId,
@@ -119,13 +179,23 @@ export default function ExpensesPage() {
           });
         }
       }
+      saveSucceeded = true;
       setModalOpen(false);
       setEditingExpense(null);
       await loadData();
     } catch (err) {
+      if (uploadedReceipt && !saveSucceeded) {
+        try {
+          await storage.deleteFile(uploadedReceipt.bucketId, uploadedReceipt.fileId);
+        } catch (cleanupError) {
+          console.error("Failed to clean up uploaded expense receipt:", cleanupError);
+        }
+      }
       const message = editingExpense
         ? "Failed to update expense."
-        : "Failed to record expense.";
+        : err instanceof Error && err.message
+          ? err.message
+          : "Failed to record expense.";
       setError(message);
       toast.push("error", message);
     } finally {

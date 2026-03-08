@@ -71,12 +71,15 @@ export default function HousesPage() {
       const { rentEffectiveDate, ...rest } = values;
       const effectiveDate =
         rentEffectiveDate ?? new Date().toISOString().slice(0, 10);
+      const manualStatus = rest.status === "inactive" ? "inactive" : "vacant";
       const created = await databases.createDocument(
         rcmsDatabaseId,
         COLLECTIONS.houses,
         ID.unique(),
         {
           ...rest,
+          status: manualStatus,
+          currentTenantId: null,
           rentHistoryJson: appendRentHistory(null, {
             effectiveDate,
             amount: rest.monthlyRent,
@@ -121,13 +124,17 @@ export default function HousesPage() {
         collectionId: COLLECTIONS.tenants,
         queries: [Query.equal("house", [selected.$id]), Query.orderAsc("fullName")],
       });
-      const hasActiveOccupant = tenantsForHouse.some(
-        (tenant) => tenant.status === "active" && !tenant.moveOutDate
-      );
-      const normalizedStatus =
-        hasActiveOccupant && rest.status === "vacant" ? "occupied" : rest.status;
-      if (hasActiveOccupant && rest.status === "vacant") {
-        toast.push("warning", "House has active tenant(s). Status kept as occupied.");
+      const occupant =
+        tenantsForHouse.find((tenant) => tenant.status === "active" && !tenant.moveOutDate) ??
+        null;
+      const manualInactiveRequested = rest.status === "inactive";
+      const normalizedStatus = occupant
+        ? "occupied"
+        : manualInactiveRequested
+          ? "inactive"
+          : "vacant";
+      if (occupant && manualInactiveRequested) {
+        toast.push("warning", "House has an active tenant. Status kept as occupied.");
       }
       const rentChanged = rest.monthlyRent !== selected.monthlyRent;
       const effectiveDate =
@@ -140,6 +147,7 @@ export default function HousesPage() {
       const updatedPayload = {
         ...rest,
         status: normalizedStatus,
+        currentTenantId: occupant?.$id ?? null,
         rentHistoryJson: rentChanged
           ? appendRentHistory(selected.rentHistoryJson ?? null, {
               effectiveDate,

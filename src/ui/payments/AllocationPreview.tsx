@@ -2,9 +2,15 @@ import type { AllocationPreview } from "./allocation";
 
 type Props = {
   preview: AllocationPreview | null;
+  securityDepositApplied?: number;
+  totalAmount?: number;
 };
 
-export default function AllocationPreviewPanel({ preview }: Props) {
+export default function AllocationPreviewPanel({
+  preview,
+  securityDepositApplied = 0,
+  totalAmount = 0,
+}: Props) {
   if (!preview) {
     return (
       <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6 text-sm text-slate-500">
@@ -12,6 +18,8 @@ export default function AllocationPreviewPanel({ preview }: Props) {
       </div>
     );
   }
+  const rentApplied = preview.lines.reduce((sum, line) => sum + line.applied, 0);
+  const unallocated = Math.max(totalAmount - securityDepositApplied - rentApplied, 0);
 
   return (
     <div
@@ -22,6 +30,14 @@ export default function AllocationPreviewPanel({ preview }: Props) {
       <div className="mt-1 text-xs text-slate-500">
         Payment will apply to the oldest unpaid months first.
       </div>
+      {securityDepositApplied > 0 && (
+        <div className="mt-3 rounded-xl border px-4 py-3 text-xs text-slate-300" style={{ backgroundColor: "var(--surface-strong)", borderColor: "var(--border)" }}>
+          Security deposit allocation:{" "}
+          {securityDepositApplied.toLocaleString(undefined, {
+            minimumFractionDigits: 2,
+          })}
+        </div>
+      )}
       <div className="mt-4 space-y-3">
         {preview.lines.map((line) => (
           <div
@@ -46,6 +62,14 @@ export default function AllocationPreviewPanel({ preview }: Props) {
             </div>
           </div>
         ))}
+        {unallocated > 0 && (
+          <div className="rounded-xl border px-4 py-3 text-xs text-slate-400" style={{ backgroundColor: "var(--surface-strong)", borderColor: "var(--border)" }}>
+            Unallocated balance:{" "}
+            {unallocated.toLocaleString(undefined, {
+              minimumFractionDigits: 2,
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

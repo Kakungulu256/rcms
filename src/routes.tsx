@@ -23,10 +23,38 @@ export const router = createBrowserRouter([
     ),
     children: [
       { index: true, element: <DashboardPage /> },
-      { path: "houses", element: <HousesPage /> },
-      { path: "tenants", element: <TenantsPage /> },
-      { path: "payments", element: <PaymentsPage /> },
-      { path: "expenses", element: <ExpensesPage /> },
+      {
+        path: "houses",
+        element: (
+          <RequireRole allow={["admin", "clerk"]}>
+            <HousesPage />
+          </RequireRole>
+        ),
+      },
+      {
+        path: "tenants",
+        element: (
+          <RequireRole allow={["admin", "clerk", "viewer"]}>
+            <TenantsPage />
+          </RequireRole>
+        ),
+      },
+      {
+        path: "payments",
+        element: (
+          <RequireRole allow={["admin", "clerk", "viewer"]}>
+            <PaymentsPage />
+          </RequireRole>
+        ),
+      },
+      {
+        path: "expenses",
+        element: (
+          <RequireRole allow={["admin", "clerk"]}>
+            <ExpensesPage />
+          </RequireRole>
+        ),
+      },
       {
         path: "migration",
         element: (

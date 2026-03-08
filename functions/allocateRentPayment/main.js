@@ -30,9 +30,12 @@ function addMonths(date, count) {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + count, 1));
 }
 
-function buildMonthSeries(moveInDate, paymentDate, extraMonths = 0) {
+function buildMonthSeries(moveInDate, endDate, extraMonths = 0) {
   const start = startOfMonth(new Date(moveInDate));
-  const end = startOfMonth(new Date(paymentDate));
+  const end = startOfMonth(new Date(endDate));
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return [];
+  }
   const months = [];
   let cursor = start;
   while (cursor <= end) {
@@ -45,6 +48,40 @@ function buildMonthSeries(moveInDate, paymentDate, extraMonths = 0) {
   return months;
 }
 
+function parseDateSafe(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function getTenantUpdatedAt(tenant) {
+  return parseDateSafe(tenant?.$updatedAt);
+}
+
+function getTenantEffectiveEndDate(tenant, paymentDateValue) {
+  const moveOut = parseDateSafe(tenant?.moveOutDate);
+  const deactivatedAt =
+    tenant?.status === "inactive" && !moveOut ? getTenantUpdatedAt(tenant) : null;
+  const candidates = [paymentDateValue, moveOut, deactivatedAt].filter(Boolean);
+  if (candidates.length === 0) return paymentDateValue;
+  return candidates.reduce((earliest, current) =>
+    current.getTime() < earliest.getTime() ? current : earliest
+  );
+}
+
+function getCarryForwardMonths({ tenant, paymentDateValue, allocatableAmount, rent }) {
+  const moveOut = parseDateSafe(tenant?.moveOutDate);
+  const movedOutBeforePaymentMonth =
+    Boolean(moveOut) &&
+    startOfMonth(moveOut).getTime() < startOfMonth(paymentDateValue).getTime();
+  const canCarryForward =
+    tenant?.status === "active" && !movedOutBeforePaymentMonth;
+  if (!canCarryForward || rent <= 0 || allocatableAmount <= 0) {
+    return 0;
+  }
+  return Math.max(24, Math.ceil(allocatableAmount / rent) + 12);
+}
+
 function buildPaidByMonth(payments) {
   const totals = {};
   const seenReversalTargets = new Set();
@@ -53,14 +90,20 @@ function buildPaidByMonth(payments) {
       if (seenReversalTargets.has(payment.reversedPaymentId)) return;
       seenReversalTargets.add(payment.reversedPaymentId);
     }
-    if (!payment.allocationJson) return;
+    const multiplier = payment.isReversal ? -1 : 1;
+    if (!payment.allocationJson) {
+      const month = String(payment.paymentDate ?? "").slice(0, 7);
+      const amount = roundMoney(Math.abs(Number(payment.amount) || 0) * multiplier);
+      if (!month || !Number.isFinite(amount) || amount === 0) return;
+      totals[month] = roundMoney((totals[month] ?? 0) + amount);
+      return;
+    }
     try {
       const allocation = JSON.parse(payment.allocationJson);
-      const multiplier = payment.isReversal ? -1 : 1;
       Object.entries(allocation).forEach(([month, amount]) => {
-        const value = Number(amount) * multiplier;
+        const value = roundMoney(Number(amount) * multiplier);
         if (!Number.isFinite(value) || value === 0) return;
-        totals[month] = (totals[month] ?? 0) + value;
+        totals[month] = roundMoney((totals[month] ?? 0) + value);
       });
     } catch {
       // ignore malformed allocations
@@ -71,6 +114,64 @@ function buildPaidByMonth(payments) {
 
 function roundMoney(value) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+}
+
+function normalizeNote(value) {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeOptionalString(value) {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeOptionalNumber(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getReversedOriginalIds(payments) {
+  const reversed = new Set();
+  payments.forEach((payment) => {
+    if (payment.isReversal && payment.reversedPaymentId) {
+      reversed.add(payment.reversedPaymentId);
+    }
+  });
+  return reversed;
+}
+
+function getActiveRentPayments(payments) {
+  const reversedOriginalIds = getReversedOriginalIds(payments);
+  return payments.filter(
+    (payment) => !payment.isReversal && !reversedOriginalIds.has(payment.$id)
+  );
+}
+
+function resolveDepositState(tenant, rent) {
+  const tenantType = tenant.tenantType === "new" ? "new" : "old";
+  const securityDepositRequired =
+    tenantType === "new" && (tenant.securityDepositRequired ?? true);
+  const baseAmount = roundMoney(Math.max(Number(tenant.securityDepositAmount) || 0, 0));
+  const monthlyRent = roundMoney(Math.max(Number(rent) || 0, 0));
+  const securityDepositAmount =
+    securityDepositRequired && baseAmount <= 0 ? monthlyRent : baseAmount;
+  const securityDepositPaid = roundMoney(
+    Math.max(Number(tenant.securityDepositPaid) || 0, 0)
+  );
+  const securityDepositBalance = roundMoney(
+    Math.max(securityDepositAmount - securityDepositPaid, 0)
+  );
+  return {
+    tenantType,
+    securityDepositRequired,
+    securityDepositAmount,
+    securityDepositPaid,
+    securityDepositBalance,
+  };
 }
 
 function allocateReversal({ amount, paidByMonth }) {
@@ -141,17 +242,18 @@ function buildRentByMonth(months, tenantHistoryJson, houseHistoryJson, fallbackR
 }
 
 function allocatePayment({ amount, months, paidByMonth, rentByMonth }) {
-  let remaining = amount;
+  let remaining = roundMoney(Math.max(Number(amount) || 0, 0));
   const allocation = {};
   months.forEach((month) => {
     if (remaining <= 0) return;
     const paid = paidByMonth[month] ?? 0;
     const rent = rentByMonth[month] ?? 0;
-    const due = Math.max(rent - paid, 0);
+    const due = roundMoney(Math.max(rent - paid, 0));
     if (due <= 0) return;
-    const applied = Math.min(due, remaining);
+    const applied = roundMoney(Math.min(due, remaining));
+    if (applied <= 0) return;
     allocation[month] = applied;
-    remaining -= applied;
+    remaining = roundMoney(remaining - applied);
   });
   return { allocation, remaining };
 }
@@ -227,8 +329,19 @@ export default async (context) => {
     paymentDate,
     reference,
     notes,
+    receiptFileId,
+    receiptBucketId,
+    receiptFileName,
+    receiptFileMimeType,
+    receiptFileSize,
     reversePaymentId,
   } = body;
+  const normalizedNotes = normalizeNote(notes);
+  const normalizedReceiptFileId = normalizeOptionalString(receiptFileId);
+  const normalizedReceiptBucketId = normalizeOptionalString(receiptBucketId);
+  const normalizedReceiptFileName = normalizeOptionalString(receiptFileName);
+  const normalizedReceiptFileMimeType = normalizeOptionalString(receiptFileMimeType);
+  const normalizedReceiptFileSize = normalizeOptionalNumber(receiptFileSize);
 
   const client = new Client().setEndpoint(endpoint).setProject(projectId);
   if (jwt) {
@@ -271,13 +384,19 @@ export default async (context) => {
       if (!originalTenantId) {
         return res.json({ ok: false, error: "Original payment has no tenant." }, 400);
       }
+      const tenant = await databases.getDocument(databaseId, "tenants", originalTenantId);
       const tenantPayments = await listAllTenantPayments(
         databases,
         databaseId,
         originalTenantId
       );
       const paidByMonth = buildPaidByMonth(tenantPayments);
-      const reversalAmount = Math.abs(Number(original.amount) || 0);
+      const originalDepositApplied = roundMoney(
+        Math.max(Number(original.securityDepositApplied) || 0, 0)
+      );
+      const reversalAmount = roundMoney(
+        Math.max(Math.abs(Number(original.amount) || 0) - originalDepositApplied, 0)
+      );
       const { allocation, remaining } = allocateReversal({
         amount: reversalAmount,
         paidByMonth,
@@ -285,9 +404,18 @@ export default async (context) => {
       const appliedTotal = roundMoney(
         Object.values(allocation).reduce((sum, value) => sum + Number(value || 0), 0)
       );
-      if (appliedTotal <= 0) {
+      const currentDepositPaid = roundMoney(
+        Math.max(Number(tenant.securityDepositPaid) || 0, 0)
+      );
+      const depositToReverse = roundMoney(
+        Math.min(originalDepositApplied, currentDepositPaid)
+      );
+      if (appliedTotal <= 0 && depositToReverse <= 0) {
         return res.json(
-          { ok: false, error: "No paid month balance is available to reverse." },
+          {
+            ok: false,
+            error: "No paid month balance or deposit amount is available to reverse.",
+          },
           400
         );
       }
@@ -296,20 +424,36 @@ export default async (context) => {
           `Reversal allocation exhausted paid balances before full amount. remaining=${remaining}`
         );
       }
+      const totalReversalAmount = roundMoney(appliedTotal + depositToReverse);
       const recordedBy = req.headers["x-appwrite-user-id"] ?? null;
       log?.("Creating reversal document...");
       const reversal = await databases.createDocument(databaseId, "payments", ID.unique(), {
         tenant: originalTenantId,
-        amount: -appliedTotal,
+        amount: -totalReversalAmount,
+        securityDepositApplied: depositToReverse > 0 ? -depositToReverse : 0,
         method: original.method,
         paymentDate: paymentDate ?? original.paymentDate,
         reference,
-        notes: notes ?? "Reversal",
+        notes: normalizedNotes ?? "Reversal",
         isReversal: true,
         reversedPaymentId: original.$id,
         allocationJson: JSON.stringify(allocation),
         recordedBy,
       });
+      if (depositToReverse > 0) {
+        const currentDepositAmount = roundMoney(
+          Math.max(Number(tenant.securityDepositAmount) || 0, 0)
+        );
+        const nextDepositPaid = roundMoney(Math.max(currentDepositPaid - depositToReverse, 0));
+        const nextDepositBalance = roundMoney(
+          Math.max(currentDepositAmount - nextDepositPaid, 0)
+        );
+        await databases.updateDocument(databaseId, "tenants", originalTenantId, {
+          securityDepositPaid: nextDepositPaid,
+          securityDepositBalance: nextDepositBalance,
+          securityDepositRefunded: false,
+        });
+      }
       log?.("Reversal created.");
       return res.json({ ok: true, reversal });
     } catch (error) {
@@ -331,21 +475,55 @@ export default async (context) => {
     log?.(`Missing fields: ${missing.join(", ")}`);
     return res.json({ ok: false, error: `Missing fields: ${missing.join(", ")}` }, 400);
   }
+  if (!normalizedNotes) {
+    return res.json({ ok: false, error: "Payment status note is required." }, 400);
+  }
 
   try {
     log?.(`Allocating payment for tenant ${tenantId}`);
+    const paymentDateValue = parseDateSafe(paymentDate);
+    if (!paymentDateValue) {
+      return res.json({ ok: false, error: "Invalid payment date." }, 400);
+    }
     const tenant = await databases.getDocument(databaseId, "tenants", tenantId);
     const houseId =
       typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? null;
     const house = houseId
       ? await databases.getDocument(databaseId, "houses", houseId)
       : null;
-    const rent = tenant.rentOverride ?? house?.monthlyRent ?? 0;
+    const rent = roundMoney(tenant.rentOverride ?? house?.monthlyRent ?? 0);
+    const amountValue = roundMoney(Math.max(Number(amount) || 0, 0));
+    if (amountValue <= 0) {
+      return res.json({ ok: false, error: "Amount must be greater than zero." }, 400);
+    }
 
     const paymentList = await listAllTenantPayments(databases, databaseId, tenantId);
+    const activeRentPayments = getActiveRentPayments(paymentList);
+    const isInitialActivePayment = activeRentPayments.length === 0;
+    const depositState = resolveDepositState(tenant, rent);
+    const depositEligible =
+      depositState.securityDepositRequired &&
+      depositState.securityDepositBalance > 0 &&
+      isInitialActivePayment;
+    const securityDepositApplied = depositEligible
+      ? roundMoney(Math.min(amountValue, depositState.securityDepositBalance))
+      : 0;
+    const allocatableAmount = roundMoney(amountValue - securityDepositApplied);
     const paidByMonth = buildPaidByMonth(paymentList);
-
-    const months = buildMonthSeries(tenant.moveInDate, paymentDate, 24);
+    const effectiveEndDate = getTenantEffectiveEndDate(tenant, paymentDateValue);
+    const extraMonths = getCarryForwardMonths({
+      tenant,
+      paymentDateValue,
+      allocatableAmount,
+      rent,
+    });
+    const months = buildMonthSeries(tenant.moveInDate, effectiveEndDate, extraMonths);
+    if (months.length === 0) {
+      return res.json(
+        { ok: false, error: "No payable months found for this tenant and date." },
+        400
+      );
+    }
     const rentByMonth = buildRentByMonth(
       months,
       tenant.rentHistoryJson ?? null,
@@ -353,11 +531,16 @@ export default async (context) => {
       rent
     );
     const { allocation, remaining } = allocatePayment({
-      amount,
+      amount: allocatableAmount,
       months,
       paidByMonth,
       rentByMonth,
     });
+    if (remaining > 0.01) {
+      log?.(
+        `Payment retained unallocated balance: ${remaining}. Tenant may be inactive or monthly rent is zero.`
+      );
+    }
 
     const allocationJson = JSON.stringify(allocation);
     const recordedBy = req.headers["x-appwrite-user-id"] ?? null;
@@ -368,21 +551,47 @@ export default async (context) => {
       ID.unique(),
       {
         tenant: tenantId,
-        amount,
+        amount: amountValue,
+        securityDepositApplied,
         method,
         paymentDate,
         reference,
-        notes,
+        notes: normalizedNotes,
         allocationJson,
+        receiptFileId: normalizedReceiptFileId,
+        receiptBucketId: normalizedReceiptBucketId,
+        receiptFileName: normalizedReceiptFileName,
+        receiptFileMimeType: normalizedReceiptFileMimeType,
+        receiptFileSize: normalizedReceiptFileSize,
         recordedBy,
       }
     );
+
+    if (securityDepositApplied > 0) {
+      const nextDepositPaid = roundMoney(
+        Math.min(
+          depositState.securityDepositPaid + securityDepositApplied,
+          depositState.securityDepositAmount
+        )
+      );
+      const nextDepositBalance = roundMoney(
+        Math.max(depositState.securityDepositAmount - nextDepositPaid, 0)
+      );
+      await databases.updateDocument(databaseId, "tenants", tenantId, {
+        securityDepositRequired: true,
+        securityDepositAmount: depositState.securityDepositAmount,
+        securityDepositPaid: nextDepositPaid,
+        securityDepositBalance: nextDepositBalance,
+        securityDepositRefunded: false,
+      });
+    }
 
     return res.json({
       ok: true,
       payment,
       allocation,
       remaining,
+      securityDepositApplied,
     });
   } catch (error) {
     const reason =

@@ -6,6 +6,7 @@ This folder contains placeholder handlers for Appwrite Functions.
 - `allocateRentPayment`
 - `computeTenantStatus`
 - `migrateHistoricalData`
+- `manageUsers`
 
 ## Deploying (manual)
 1. Create a new Function in Appwrite Console.
@@ -28,3 +29,12 @@ Set these env vars in the Appwrite Function:
 - `RCMS_APPWRITE_PROJECT_ID`
 - `RCMS_APPWRITE_API_KEY`
 - `RCMS_APPWRITE_DATABASE_ID` (optional, defaults to `rcms`)
+
+## manageUsers Environment
+Set these env vars in the Appwrite Function:
+- `RCMS_APPWRITE_ENDPOINT`
+- `RCMS_APPWRITE_PROJECT_ID`
+- `RCMS_APPWRITE_API_KEY`
+- `RCMS_APPWRITE_TEAM_ADMIN_ID`
+- `RCMS_APPWRITE_TEAM_CLERK_ID`
+- `RCMS_APPWRITE_TEAM_VIEWER_ID`

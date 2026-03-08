@@ -21,8 +21,39 @@ export type AllocationPreview = {
   lines: AllocationLine[];
 };
 
+function roundMoney(value: number) {
+  return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+}
+
 function monthKey(date: Date) {
   return format(date, "yyyy-MM");
+}
+
+export function getPaymentMonthAmounts(
+  payment: Payment
+): Array<{ month: string; amount: number }> {
+  const multiplier = payment.isReversal ? -1 : 1;
+  const allocation = decodeJson<PaymentAllocation>(payment.allocationJson);
+  if (allocation) {
+    return Object.entries(allocation)
+      .map(([month, amount]) => ({
+        month,
+        amount: Number(amount) * multiplier,
+      }))
+      .filter(
+        (entry) =>
+          Boolean(entry.month) &&
+          Number.isFinite(entry.amount) &&
+          entry.amount !== 0
+      );
+  }
+
+  const month = payment.paymentDate?.slice(0, 7) ?? "";
+  const amount = Math.abs(Number(payment.amount) || 0) * multiplier;
+  if (!month || !Number.isFinite(amount) || amount === 0) {
+    return [];
+  }
+  return [{ month, amount }];
 }
 
 export function buildPaidByMonth(payments: Payment[]): Record<string, number> {
@@ -33,13 +64,8 @@ export function buildPaidByMonth(payments: Payment[]): Record<string, number> {
       if (seenReversalTargets.has(payment.reversedPaymentId)) return;
       seenReversalTargets.add(payment.reversedPaymentId);
     }
-    const allocation = decodeJson<PaymentAllocation>(payment.allocationJson);
-    if (!allocation) return;
-    const multiplier = payment.isReversal ? -1 : 1;
-    Object.entries(allocation).forEach(([month, amount]) => {
-      const value = Number(amount) * multiplier;
-      if (!Number.isFinite(value) || value === 0) return;
-      totals[month] = (totals[month] ?? 0) + value;
+    getPaymentMonthAmounts(payment).forEach(({ month, amount }) => {
+      totals[month] = (totals[month] ?? 0) + amount;
     });
   });
   return totals;
@@ -55,18 +81,13 @@ export function buildPaymentSummaryByMonth(
       if (seenReversalTargets.has(payment.reversedPaymentId)) return;
       seenReversalTargets.add(payment.reversedPaymentId);
     }
-    const allocation = decodeJson<PaymentAllocation>(payment.allocationJson);
-    if (!allocation) return;
     const paymentDate = payment.paymentDate?.slice(0, 10) ?? "";
-    const multiplier = payment.isReversal ? -1 : 1;
-    Object.entries(allocation).forEach(([month, amount]) => {
-      const value = Number(amount) * multiplier;
-      if (!Number.isFinite(value) || value === 0) return;
+    getPaymentMonthAmounts(payment).forEach(({ month, amount }) => {
       if (!summary[month]) summary[month] = [];
       summary[month].push({
         month,
         paymentDate,
-        amount: value,
+        amount,
       });
     });
   });
@@ -103,13 +124,13 @@ export function previewAllocation(params: {
   rentByMonth: Record<string, number>;
 }): AllocationPreview {
   const { amount, months, paidByMonth, rentByMonth } = params;
-  let remainingPayment = amount;
+  let remainingPayment = roundMoney(amount);
   const lines: AllocationLine[] = months.map((month) => {
     const paid = paidByMonth[month] ?? 0;
     const rent = rentByMonth[month] ?? 0;
-    const remaining = Math.max(rent - paid, 0);
-    const applied = Math.min(remaining, remainingPayment);
-    remainingPayment -= applied;
+    const remaining = roundMoney(Math.max(rent - paid, 0));
+    const applied = roundMoney(Math.min(remaining, remainingPayment));
+    remainingPayment = roundMoney(remainingPayment - applied);
     return {
       month,
       expected: rent,
@@ -120,7 +141,7 @@ export function previewAllocation(params: {
   });
 
   return {
-    totalApplied: amount - remainingPayment,
+    totalApplied: roundMoney(amount - remainingPayment),
     lines,
   };
 }

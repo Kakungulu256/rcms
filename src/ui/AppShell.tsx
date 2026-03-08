@@ -10,13 +10,13 @@ export default function AppShell() {
 
   const navItems = [
     { to: "/", label: "Dashboard", visible: true },
-    { to: "/houses", label: "Houses", visible: true },
-    { to: "/tenants", label: "Tenants", visible: true },
-    { to: "/payments", label: "Payments", visible: true },
-    { to: "/expenses", label: "Expenses", visible: true },
-    { to: "/migration", label: "Migration", visible: permissions.canUseMigration },
+    { to: "/houses", label: "Houses", visible: permissions.canManageHouses },
+    { to: "/tenants", label: "Tenants", visible: permissions.canViewTenants },
+    { to: "/payments", label: "Payments", visible: permissions.canViewPayments },
+    { to: "/expenses", label: "Expenses", visible: permissions.canRecordExpenses },
+    { to: "/migration", label: "Old Records", visible: permissions.canUseMigration },
     { to: "/reports", label: "Reports", visible: permissions.canViewReports },
-    // { to: "/settings", label: "Settings", visible: permissions.canAccessSettings },
+    { to: "/settings", label: "Settings", visible: permissions.canAccessSettings },
   ].filter((item) => item.visible);
 
   return (
@@ -70,7 +70,7 @@ export default function AppShell() {
                 {!compactSidebar && (
                   <>
                     <h1 className="mt-2 text-xl font-semibold" style={{ color: "var(--sidebar-brand-text)" }}>
-                      Rental Collection
+                      Rent Collection
                     </h1>
                     <p className="mt-1 text-sm" style={{ color: "var(--sidebar-brand-muted)" }}>
                       Operations & reporting
@@ -126,7 +126,7 @@ export default function AppShell() {
                 </button>
                 <div>
                 <h2 className="text-lg font-semibold" style={{ color: "var(--text)" }}>
-                  Rental Collection Management
+                  Rent Collection Management
                 </h2>
                 <p className="mt-1 text-sm" style={{ color: "var(--muted)" }}>
                   Welcome back. Review today's collection status.

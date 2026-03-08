@@ -6,6 +6,8 @@ import {
 } from "../payments/allocation";
 import type { House, Payment, Tenant } from "../../lib/schema";
 import { buildRentByMonth } from "../../lib/rentHistory";
+import { getTenantEffectiveEndDate } from "../../lib/tenancyDates";
+import { formatDisplayDate, formatShortMonth } from "../../lib/dateDisplay";
 
 type Props = {
   tenant?: Tenant | null;
@@ -33,8 +35,7 @@ export default function TenantDetail({
   onCloseStatus,
 }: Props) {
   const moveInDate = tenant?.moveInDate ?? null;
-  const moveOutDate = tenant?.moveOutDate ?? null;
-  const endDate = moveOutDate ? new Date(moveOutDate) : new Date();
+  const endDate = tenant ? getTenantEffectiveEndDate(tenant, new Date()) : new Date();
   const months = moveInDate ? buildMonthSeries(moveInDate, endDate) : [];
   const [yearFilter, setYearFilter] = useState(() => new Date().getFullYear());
 
@@ -126,15 +127,15 @@ export default function TenantDetail({
             Move-in Date
           </div>
           <div className="mt-2 text-sm text-slate-300">
-            {tenant.moveInDate?.slice(0, 10)}
+            {formatDisplayDate(tenant.moveInDate)}
           </div>
         </div>
         <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
           <div className="text-xs uppercase tracking-[0.2em] text-slate-500">
-            Move-out Date
+            Move-out Date (Optional)
           </div>
           <div className="mt-2 text-sm text-slate-300">
-            {tenant.moveOutDate?.slice(0, 10) || "--"}
+            {formatDisplayDate(tenant.moveOutDate)}
           </div>
         </div>
       </div>
@@ -214,7 +215,9 @@ export default function TenantDetail({
                             className="border-t"
                             style={{ borderColor: "var(--border)", backgroundColor: "#ffffff" }}
                           >
-                            <td className="px-4 py-3 text-slate-100">{month}</td>
+                            <td className="px-4 py-3 text-slate-100">
+                              {formatShortMonth(month)}
+                            </td>
                             <td className="px-4 py-3 text-slate-500">N/A</td>
                             <td className="amount px-4 py-3">0.00</td>
                             <td className="amount px-4 py-3 text-slate-200">
@@ -238,9 +241,11 @@ export default function TenantDetail({
                           style={{ borderColor: "var(--border)", backgroundColor: "#ffffff" }}
                         >
                           <td className="px-4 py-3 text-slate-100">
-                            {index === 0 ? month : ""}
+                            {index === 0 ? formatShortMonth(month) : ""}
                           </td>
-                          <td className="px-4 py-3 text-slate-400">{entry.paymentDate}</td>
+                          <td className="px-4 py-3 text-slate-400">
+                            {formatDisplayDate(entry.paymentDate, "N/A")}
+                          </td>
                           <td className="amount px-4 py-3">
                             {entry.amount.toLocaleString(undefined, {
                               minimumFractionDigits: 2,

@@ -144,6 +144,55 @@ async function setupTenants() {
     )
   );
   await ensureAttribute(() =>
+    databases.createEnumAttribute(
+      databaseId,
+      collectionId,
+      "tenantType",
+      ["new", "old"],
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createBooleanAttribute(
+      databaseId,
+      collectionId,
+      "securityDepositRequired",
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(
+      databaseId,
+      collectionId,
+      "securityDepositAmount",
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(
+      databaseId,
+      collectionId,
+      "securityDepositPaid",
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(
+      databaseId,
+      collectionId,
+      "securityDepositBalance",
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createBooleanAttribute(
+      databaseId,
+      collectionId,
+      "securityDepositRefunded",
+      false
+    )
+  );
+  await ensureAttribute(() =>
     databases.createFloatAttribute(databaseId, collectionId, "rentOverride", false)
   );
   await ensureAttribute(() =>
@@ -159,6 +208,15 @@ async function setupTenants() {
   await ensureIndex(() =>
     databases.createIndex(databaseId, collectionId, "idx_status", "key", ["status"])
   );
+  await ensureIndex(() =>
+    databases.createIndex(
+      databaseId,
+      collectionId,
+      "idx_tenant_type",
+      "key",
+      ["tenantType"]
+    )
+  );
 }
 
 async function setupPayments() {
@@ -170,6 +228,14 @@ async function setupPayments() {
   );
   await ensureAttribute(() =>
     databases.createFloatAttribute(databaseId, collectionId, "amount", true)
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(
+      databaseId,
+      collectionId,
+      "securityDepositApplied",
+      false
+    )
   );
   await ensureAttribute(() =>
     databases.createEnumAttribute(

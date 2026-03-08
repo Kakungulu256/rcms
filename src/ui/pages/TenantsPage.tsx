@@ -121,16 +121,26 @@ export default function TenantsPage() {
     }
   };
 
-  const normalizeTenantPayload = (values: TenantFormValues) => ({
-    ...values,
-    phone: values.phone?.trim() ? values.phone.trim() : null,
-    moveOutDate: values.moveOutDate?.trim() ? values.moveOutDate : null,
-    rentOverride:
-      typeof values.rentOverride === "number" && Number.isFinite(values.rentOverride)
-        ? values.rentOverride
-        : null,
-    notes: values.notes?.trim() ? values.notes.trim() : null,
-  });
+  const normalizeTenantPayload = (values: TenantFormValues) => {
+    const moveOutInput = values.moveOutDate?.trim() ? values.moveOutDate : null;
+    const status = moveOutInput ? "inactive" : values.status;
+    const moveOutDate =
+      status === "inactive"
+        ? moveOutInput ?? new Date().toISOString().slice(0, 10)
+        : null;
+    return {
+      ...values,
+      tenantType: values.tenantType === "old" ? "old" : "new",
+      status,
+      phone: values.phone?.trim() ? values.phone.trim() : null,
+      moveOutDate,
+      rentOverride:
+        typeof values.rentOverride === "number" && Number.isFinite(values.rentOverride)
+          ? values.rentOverride
+          : null,
+      notes: values.notes?.trim() ? values.notes.trim() : null,
+    };
+  };
 
   const syncHouseOccupancy = async (
     houseId: string,
@@ -210,8 +220,14 @@ export default function TenantsPage() {
       const house = houses.find((item) => item.$id === houseId);
       const rent = normalized.rentOverride ?? house?.monthlyRent ?? 0;
       const effectiveDate = rentEffectiveDate?.trim() || normalized.moveInDate;
+      const securityDepositAmount = normalized.tenantType === "new" ? rent : 0;
       const payload = {
         ...normalized,
+        securityDepositRequired: normalized.tenantType === "new",
+        securityDepositAmount,
+        securityDepositPaid: 0,
+        securityDepositBalance: securityDepositAmount,
+        securityDepositRefunded: false,
         rentHistoryJson:
           normalized.rentOverride != null
             ? appendRentHistory(null, {
@@ -281,6 +297,31 @@ export default function TenantsPage() {
       const newRent = normalized.rentOverride ?? house?.monthlyRent ?? 0;
       const previousRent =
         selected.rentOverride ?? previousHouse?.monthlyRent ?? 0;
+      const tenantType = normalized.tenantType ?? selected.tenantType ?? "old";
+      const currentDepositAmount =
+        typeof selected.securityDepositAmount === "number" &&
+        Number.isFinite(selected.securityDepositAmount)
+          ? selected.securityDepositAmount
+          : 0;
+      const currentDepositPaid =
+        typeof selected.securityDepositPaid === "number" &&
+        Number.isFinite(selected.securityDepositPaid)
+          ? selected.securityDepositPaid
+          : 0;
+      const nextDepositAmount =
+        tenantType === "new"
+          ? currentDepositAmount > 0
+            ? currentDepositAmount
+            : newRent
+          : 0;
+      const nextDepositPaid =
+        tenantType === "new"
+          ? Math.min(Math.max(currentDepositPaid, 0), nextDepositAmount)
+          : 0;
+      const nextDepositBalance =
+        tenantType === "new"
+          ? Math.max(nextDepositAmount - nextDepositPaid, 0)
+          : 0;
       const rentChanged = newRent !== previousRent;
       const hasRentEffectiveDate = Boolean(rentEffectiveDate?.trim());
       const effectiveDate =
@@ -292,6 +333,13 @@ export default function TenantsPage() {
       }
       const payload = {
         ...normalized,
+        tenantType,
+        securityDepositRequired: tenantType === "new",
+        securityDepositAmount: nextDepositAmount,
+        securityDepositPaid: nextDepositPaid,
+        securityDepositBalance: nextDepositBalance,
+        securityDepositRefunded:
+          tenantType === "new" ? Boolean(selected.securityDepositRefunded) : false,
         rentHistoryJson: rentChanged
           ? normalized.rentOverride != null
             ? appendRentHistory(selected.rentHistoryJson ?? null, {

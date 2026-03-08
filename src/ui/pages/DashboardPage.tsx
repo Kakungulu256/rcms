@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Query } from "appwrite";
-import { format } from "date-fns";
+import { addMonths, endOfMonth, endOfYear, format, isValid, parseISO, startOfMonth, startOfYear } from "date-fns";
 import { listAllDocuments, rcmsDatabaseId } from "../../lib/appwrite";
-import { COLLECTIONS, decodeJson } from "../../lib/schema";
-import { buildMonthSeries, buildPaidByMonth } from "../payments/allocation";
+import { COLLECTIONS } from "../../lib/schema";
+import { buildPaidByMonth, getPaymentMonthAmounts } from "../payments/allocation";
 import { buildRentByMonth } from "../../lib/rentHistory";
-import type { Expense, House, Payment, PaymentAllocation, Tenant } from "../../lib/schema";
+import { buildTenantMonthSeries, getTenantEffectiveEndDate } from "../../lib/tenancyDates";
+import { formatDisplayDate, formatShortMonth } from "../../lib/dateDisplay";
+import type { Expense, House, Payment, Tenant } from "../../lib/schema";
 
 type SummaryCard = {
   label: string;
@@ -13,8 +15,74 @@ type SummaryCard = {
   helper: string;
 };
 
+type OverviewMode = "month" | "year";
+
+type OverviewPeriod = {
+  mode: OverviewMode;
+  label: string;
+  start: Date;
+  end: Date;
+  startMonthKey: string;
+  endMonthKey: string;
+  monthKeys: string[];
+};
+
 function currency(value: number) {
-  return value.toLocaleString(undefined, { minimumFractionDigits: 2 });
+  return value.toLocaleString(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  });
+}
+
+function parseMonthSafe(value: string) {
+  const parsed = parseISO(`${value}-01`);
+  return isValid(parsed) ? parsed : new Date();
+}
+
+function parseYearSafe(value: string) {
+  const parsed = parseISO(`${value}-01-01`);
+  return isValid(parsed) ? parsed : new Date();
+}
+
+function buildMonthKeys(start: Date, end: Date) {
+  const keys: string[] = [];
+  let cursor = startOfMonth(start);
+  const endMonth = startOfMonth(end);
+  while (cursor <= endMonth) {
+    keys.push(format(cursor, "yyyy-MM"));
+    cursor = addMonths(cursor, 1);
+  }
+  return keys;
+}
+
+function buildOverviewPeriod(mode: OverviewMode, month: string, year: string): OverviewPeriod {
+  if (mode === "year") {
+    const yearDate = parseYearSafe(year);
+    const start = startOfYear(yearDate);
+    const end = endOfYear(yearDate);
+    return {
+      mode,
+      label: format(start, "yyyy"),
+      start,
+      end,
+      startMonthKey: format(start, "yyyy-MM"),
+      endMonthKey: format(end, "yyyy-MM"),
+      monthKeys: buildMonthKeys(start, end),
+    };
+  }
+
+  const monthDate = parseMonthSafe(month);
+  const start = startOfMonth(monthDate);
+  const end = endOfMonth(monthDate);
+  return {
+    mode,
+    label: formatShortMonth(start),
+    start,
+    end,
+    startMonthKey: format(start, "yyyy-MM"),
+    endMonthKey: format(end, "yyyy-MM"),
+    monthKeys: [format(start, "yyyy-MM")],
+  };
 }
 
 export default function DashboardPage() {
@@ -22,6 +90,9 @@ export default function DashboardPage() {
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [overviewMode, setOverviewMode] = useState<OverviewMode>("month");
+  const [selectedMonth, setSelectedMonth] = useState(() => format(new Date(), "yyyy-MM"));
+  const [selectedYear, setSelectedYear] = useState(() => format(new Date(), "yyyy"));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -68,8 +139,14 @@ export default function DashboardPage() {
   }, []);
 
   const summary = useMemo(() => {
+    const period = buildOverviewPeriod(overviewMode, selectedMonth, selectedYear);
     const today = new Date();
-    const monthKey = format(today, "yyyy-MM");
+    const effectiveEnd = period.end < today ? period.end : today;
+    const effectiveEndMonthKey = format(effectiveEnd, "yyyy-MM");
+    const periodMonthKeys = period.monthKeys.filter(
+      (monthKey) => monthKey <= effectiveEndMonthKey
+    );
+    const monthKeySet = new Set(periodMonthKeys);
     const normalizedPayments = (() => {
       const seenReversalTargets = new Set<string>();
       return payments.filter((payment) => {
@@ -80,14 +157,17 @@ export default function DashboardPage() {
       });
     })();
     const houseLookup = new Map(houses.map((house) => [house.$id, house]));
-    const activeCurrentTenants = tenants.filter(
-      (tenant) => tenant.status === "active" && !tenant.moveOutDate
-    );
     const occupiedHouseIds = new Set(
-      activeCurrentTenants
-        .map((tenant) =>
-          typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? ""
-        )
+      tenants
+        .filter((tenant) => {
+          const moveIn = parseISO(tenant.moveInDate);
+          if (!isValid(moveIn) || moveIn > effectiveEnd) {
+            return false;
+          }
+          const tenantEnd = getTenantEffectiveEndDate(tenant, effectiveEnd);
+          return tenantEnd >= effectiveEnd;
+        })
+        .map((tenant) => (typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? ""))
         .filter(Boolean)
     );
     const inactiveHouses = houses.filter((house) => house.status === "inactive").length;
@@ -96,25 +176,36 @@ export default function DashboardPage() {
       (house) => house.status !== "inactive" && !occupiedHouseIds.has(house.$id)
     ).length;
 
-    const expectedRent = activeCurrentTenants.reduce((total, tenant) => {
+    const expectedRent = tenants.reduce((total, tenant) => {
       const houseId =
         typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
-      const rent = tenant.rentOverride ?? houseLookup.get(houseId)?.monthlyRent ?? 0;
-      return total + rent;
-    }, 0);
-
-    const paidThisMonth = normalizedPayments.reduce((sum, payment) => {
-      const allocation = decodeJson<PaymentAllocation>(payment.allocationJson);
-      const sign = payment.isReversal ? -1 : 1;
-      if (!allocation) {
-        return payment.paymentDate?.slice(0, 7) === monthKey
-          ? sum + Number(payment.amount)
-          : sum;
+      const house = houseLookup.get(houseId);
+      const months = buildTenantMonthSeries(tenant, effectiveEnd).filter(
+        (month) => month >= period.startMonthKey && month <= effectiveEndMonthKey
+      );
+      if (months.length === 0) {
+        return total;
       }
-      return sum + (Number(allocation[monthKey] ?? 0) * sign);
+      const rentByMonth = buildRentByMonth({
+        months,
+        tenantHistoryJson: tenant.rentHistoryJson ?? null,
+        houseHistoryJson: house?.rentHistoryJson ?? null,
+        fallbackRent: tenant.rentOverride ?? house?.monthlyRent ?? 0,
+      });
+      return total + months.reduce((sum, month) => sum + (rentByMonth[month] ?? 0), 0);
     }, 0);
 
-    const arrears = activeCurrentTenants.reduce((sum, tenant) => {
+    const paidForPeriod = normalizedPayments.reduce(
+      (sum, payment) =>
+        sum +
+        getPaymentMonthAmounts(payment).reduce((monthSum, entry) => {
+          if (!monthKeySet.has(entry.month)) return monthSum;
+          return monthSum + entry.amount;
+        }, 0),
+      0
+    );
+
+    const arrears = tenants.reduce((sum, tenant) => {
       const houseId =
         typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
       const house = houseLookup.get(houseId);
@@ -123,7 +214,12 @@ export default function DashboardPage() {
           typeof payment.tenant === "string" ? payment.tenant : payment.tenant?.$id ?? "";
         return tenantId === tenant.$id;
       });
-      const months = buildMonthSeries(tenant.moveInDate, today);
+      const months = buildTenantMonthSeries(tenant, effectiveEnd).filter(
+        (month) => month <= effectiveEndMonthKey
+      );
+      if (months.length === 0) {
+        return sum;
+      }
       const paidByMonth = buildPaidByMonth(tenantPayments);
       const rentByMonth = buildRentByMonth({
         months,
@@ -136,52 +232,58 @@ export default function DashboardPage() {
       return sum + Math.max(expected - paid, 0);
     }, 0);
 
-    const expensesThisMonth = expenses.filter(
-      (expense) => expense.expenseDate?.slice(0, 7) === monthKey
-    );
-    const totalExpenses = expensesThisMonth.reduce(
+    const expensesInPeriod = expenses.filter((expense) => {
+      const expenseMonth = expense.expenseDate?.slice(0, 7) ?? "";
+      return Boolean(expenseMonth) && expenseMonth >= period.startMonthKey && expenseMonth <= effectiveEndMonthKey;
+    });
+    const totalExpenses = expensesInPeriod.reduce(
       (sum, expense) => sum + expense.amount,
       0
     );
-    const monthExpenseCount = expensesThisMonth.length;
-    const monthPaymentCount = normalizedPayments.filter((payment) => {
-      const allocation = decodeJson<PaymentAllocation>(payment.allocationJson);
-      if (allocation) {
-        return Number(allocation[monthKey] ?? 0) !== 0;
-      }
-      return payment.paymentDate?.slice(0, 7) === monthKey;
+    const periodExpenseCount = expensesInPeriod.length;
+    const periodPaymentCount = normalizedPayments.filter((payment) => {
+      if (payment.isReversal) return false;
+      return getPaymentMonthAmounts(payment).some(
+        (entry) => monthKeySet.has(entry.month) && entry.amount > 0
+      );
     }).length;
+    const expectedLabel =
+      period.mode === "month" ? `For ${period.label}` : `For ${period.label} (year)`;
+    const periodLabel =
+      effectiveEnd < period.end
+        ? `${period.label} (to ${formatShortMonth(effectiveEnd)})`
+        : period.label;
 
     const cards: SummaryCard[] = [
       {
         label: "Occupancy",
         value: `${occupied} occupied / ${vacant} vacant`,
-        helper: `${houses.length} total houses (${inactiveHouses} inactive)`,
+        helper: `${houses.length} total houses (${inactiveHouses} inactive) as of ${formatDisplayDate(effectiveEnd)}`,
       },
       {
         label: "Rent Expected",
         value: currency(expectedRent),
-        helper: "Current month expected",
+        helper: expectedLabel,
       },
       {
         label: "Rent Collected",
-        value: currency(paidThisMonth),
-        helper: `Collected for ${monthKey} (${monthPaymentCount} payment records)`,
+        value: currency(paidForPeriod),
+        helper: `Rent-only collected for ${periodLabel} (${periodPaymentCount} payment records)`,
       },
       {
         label: "Outstanding Arrears",
         value: currency(arrears),
-        helper: "Total expected vs paid to date",
+        helper: `Total expected vs paid up to ${formatDisplayDate(effectiveEnd)}`,
       },
       {
         label: "Total Expenses",
         value: currency(totalExpenses),
-        helper: `This month (${monthKey}) - ${monthExpenseCount} expense records`,
+        helper: `${periodLabel} - ${periodExpenseCount} expense records`,
       },
     ];
 
-    return { cards, monthKey };
-  }, [expenses, houses, payments, tenants]);
+    return { cards, periodLabel };
+  }, [expenses, houses, overviewMode, payments, selectedMonth, selectedYear, tenants]);
 
   return (
     <section className="space-y-6">
@@ -193,8 +295,44 @@ export default function DashboardPage() {
           Dashboard Overview
         </h3>
         <p className="mt-2 text-sm" style={{ color: "var(--muted)" }}>
-          Snapshot for {summary.monthKey}.
+          Summary for {summary.periodLabel}.
         </p>
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <label className="text-sm" style={{ color: "var(--muted)" }}>
+            View by
+            <select
+              className="input-base ml-3 rounded-md px-3 py-2 text-sm"
+              value={overviewMode}
+              onChange={(event) => setOverviewMode(event.target.value as OverviewMode)}
+            >
+              <option value="month">Month</option>
+              <option value="year">Year</option>
+            </select>
+          </label>
+          {overviewMode === "month" ? (
+            <label className="text-sm" style={{ color: "var(--muted)" }}>
+              Month
+              <input
+                type="month"
+                className="input-base ml-3 rounded-md px-3 py-2 text-sm"
+                value={selectedMonth}
+                onChange={(event) => setSelectedMonth(event.target.value)}
+              />
+            </label>
+          ) : (
+            <label className="text-sm" style={{ color: "var(--muted)" }}>
+              Year
+              <input
+                type="number"
+                min={2000}
+                max={2100}
+                className="input-base ml-3 w-28 rounded-md px-3 py-2 text-sm"
+                value={selectedYear}
+                onChange={(event) => setSelectedYear(event.target.value)}
+              />
+            </label>
+          )}
+        </div>
       </div>
 
       {error && (

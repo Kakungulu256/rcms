@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import * as XLSX from "xlsx";
 import { ID, Query } from "appwrite";
-import { databases, rcmsDatabaseId } from "../../lib/appwrite";
+import { databases, listAllDocuments, rcmsDatabaseId } from "../../lib/appwrite";
 import { COLLECTIONS } from "../../lib/schema";
 import {
   buildMonthSeries,
@@ -28,6 +28,7 @@ type TenantRow = {
   MoveInDate?: string;
   MoveOutDate?: string;
   Status?: string;
+  TenantType?: string;
   RentOverride?: number | string;
   Notes?: string;
   IsMigrated?: string | boolean;
@@ -198,6 +199,11 @@ export default function MigrationPage() {
         }
         const key = `${fullName.toLowerCase()}|${house.$id}`;
         if (tenantByKey.has(key)) continue;
+        const moveOutDate = normalize(row.MoveOutDate) || null;
+        const status =
+          moveOutDate != null
+            ? "inactive"
+            : normalize(row.Status).toLowerCase() || "active";
         const created = await databases.createDocument(
           rcmsDatabaseId,
           COLLECTIONS.tenants,
@@ -207,14 +213,54 @@ export default function MigrationPage() {
             phone: normalize(row.Phone) || null,
             house: house.$id,
             moveInDate: normalize(row.MoveInDate),
-            moveOutDate: normalize(row.MoveOutDate) || null,
-            status: normalize(row.Status).toLowerCase() || "active",
+            moveOutDate,
+            status,
+            tenantType: normalize(row.TenantType).toLowerCase() === "new" ? "new" : "old",
+            securityDepositRequired: false,
+            securityDepositAmount: 0,
+            securityDepositPaid: 0,
+            securityDepositBalance: 0,
+            securityDepositRefunded: false,
             rentOverride: parseNumber(row.RentOverride) || null,
             notes: normalize(row.Notes) || null,
             isMigrated: parseBooleanDefaultTrue(row.IsMigrated),
           }
         );
         tenantByKey.set(key, created as unknown as Tenant);
+      }
+
+      for (const [houseCode, house] of houseByCode.entries()) {
+        const tenantsForHouse = await listAllDocuments<Tenant>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.tenants,
+          queries: [Query.equal("house", [house.$id]), Query.orderAsc("fullName")],
+        });
+        const occupant =
+          tenantsForHouse.find((tenant) => tenant.status === "active" && !tenant.moveOutDate) ??
+          null;
+        const nextStatus = occupant
+          ? "occupied"
+          : house.status === "inactive"
+            ? "inactive"
+            : "vacant";
+        const nextCurrentTenantId = occupant?.$id ?? null;
+        if (
+          house.status === nextStatus &&
+          (house.currentTenantId ?? null) === nextCurrentTenantId
+        ) {
+          continue;
+        }
+        const updatedHouse = (await databases.updateDocument(
+          rcmsDatabaseId,
+          COLLECTIONS.houses,
+          house.$id,
+          {
+            status: nextStatus,
+            currentTenantId: nextCurrentTenantId,
+          }
+        )) as unknown as House;
+        houseByCode.set(houseCode, updatedHouse);
+        houseById.set(updatedHouse.$id, updatedHouse);
       }
 
       const tenantById = new Map<string, Tenant>();
@@ -341,17 +387,17 @@ export default function MigrationPage() {
       setErrors(newErrors);
       setStatus(
         newErrors.length === 0
-          ? "Import complete."
-          : "Import completed with warnings."
+          ? "Upload complete."
+          : "Upload completed with warnings."
       );
       if (newErrors.length === 0) {
-        toast.push("success", "Import complete.");
+        toast.push("success", "Upload complete.");
       } else {
-        toast.push("warning", "Import completed with warnings.");
+        toast.push("warning", "Upload completed with warnings.");
       }
     } catch (err) {
-      setErrors([`Import failed: ${String(err)}`]);
-      toast.push("error", "Import failed.");
+      setErrors([`Upload failed: ${String(err)}`]);
+      toast.push("error", "Upload failed.");
     } finally {
       setLoading(false);
     }
@@ -360,12 +406,12 @@ export default function MigrationPage() {
   return (
     <section className="space-y-6">
       <header>
-        <div className="text-sm text-slate-500">Migration</div>
+        <div className="text-sm text-slate-500">Old Records</div>
         <h3 className="mt-2 text-xl font-semibold text-white">
-          Historical Data Import
+          Old Records Upload
         </h3>
         <p className="mt-1 text-sm text-slate-500">
-          Upload an Excel workbook with the required sheets.
+          Upload an Excel file with the required sheets.
         </p>
       </header>
 
@@ -374,7 +420,7 @@ export default function MigrationPage() {
         style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
       >
         <div className="text-sm font-semibold text-slate-100">
-          Upload Excel Workbook
+          Upload Excel File
         </div>
         <div className="mt-2 text-xs text-slate-500">
           Sheets: Houses, Tenants, Payments, Expenses
@@ -411,7 +457,7 @@ export default function MigrationPage() {
           disabled={!parsed || loading}
           className="btn-primary mt-6 text-sm disabled:opacity-60"
         >
-          {loading ? "Importing..." : "Start Import"}
+          {loading ? "Uploading..." : "Start Upload"}
         </button>
         {status && <div className="mt-4 text-sm text-slate-300">{status}</div>}
         {errors.length > 0 && (
@@ -430,12 +476,12 @@ export default function MigrationPage() {
         style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
       >
         <div className="text-sm font-semibold text-slate-100">
-          Manual Migration
+          Manual Entry
         </div>
         <div className="mt-2 text-sm text-slate-400">
-          You can also add historical records manually using the Houses, Tenants,
+          You can also add old records manually using the Houses, Tenants,
           Payments, and Expenses screens. Use the original transaction dates and
-          add a note that the entry is migrated.
+          add a note that this entry was back-entered.
         </div>
       </div>
     </section>

@@ -16,6 +16,7 @@ These column headers are recommended for Excel imports. Dates should use `YYYY-M
 - `MoveInDate` (required; `YYYY-MM-DD`)
 - `MoveOutDate` (optional; `YYYY-MM-DD`)
 - `Status` (required: `active` | `inactive`)
+- `TenantType` (optional: `new` | `old`; defaults to `old`)
 - `RentOverride` (optional; number)
 - `Notes` (optional)
 - `IsMigrated` (optional; `true/false`)

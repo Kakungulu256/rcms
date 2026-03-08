@@ -13,6 +13,8 @@
     "seed:demo": "node scripts/seed-demo.mjs",
     "sanity:env": "node scripts/sanity-env.mjs",
     "seed:demo:reset": "node scripts/seed-reset.mjs",
+    "seed:report:scenarios": "node scripts/seed-report-scenarios.mjs",
+    "seed:report:scenarios:reset": "node scripts/reset-report-scenarios.mjs",
     "appwrite:users": "node scripts/bootstrap-users.mjs"
   },
   "dependencies": {

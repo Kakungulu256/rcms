@@ -8,6 +8,7 @@ export const COLLECTIONS = {
 
 export const HOUSE_STATUS = ["occupied", "vacant", "inactive"] as const;
 export const TENANT_STATUS = ["active", "inactive"] as const;
+export const TENANT_TYPES = ["new", "old"] as const;
 export const PAYMENT_METHODS = ["cash", "bank"] as const;
 export const EXPENSE_CATEGORIES = ["general", "maintenance"] as const;
 export const EXPENSE_SOURCES = ["rent_cash", "external"] as const;
@@ -15,6 +16,7 @@ export const AUDIT_ACTIONS = ["create", "update", "reverse", "delete"] as const;
 
 export type HouseStatus = (typeof HOUSE_STATUS)[number];
 export type TenantStatus = (typeof TENANT_STATUS)[number];
+export type TenantType = (typeof TENANT_TYPES)[number];
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 export type ExpenseCategory = (typeof EXPENSE_CATEGORIES)[number];
 export type ExpenseSource = (typeof EXPENSE_SOURCES)[number];
@@ -47,6 +49,12 @@ export type Tenant = {
   moveInDate: string;
   moveOutDate?: string;
   status: TenantStatus;
+  tenantType?: TenantType;
+  securityDepositRequired?: boolean;
+  securityDepositAmount?: number;
+  securityDepositPaid?: number;
+  securityDepositBalance?: number;
+  securityDepositRefunded?: boolean;
   rentOverride?: number;
   rentHistoryJson?: string;
   isMigrated?: boolean;
@@ -60,6 +68,7 @@ export type TenantForm = {
   moveInDate: string;
   moveOutDate?: string;
   status: TenantStatus;
+  tenantType: TenantType;
   rentOverride?: number;
   notes?: string;
 };
@@ -70,6 +79,7 @@ export type Payment = {
   $id: string;
   tenant: string | { $id?: string; fullName?: string };
   amount: number;
+  securityDepositApplied?: number;
   method: PaymentMethod;
   paymentDate: string;
   recordedBy?: string;
@@ -79,6 +89,11 @@ export type Payment = {
   reference?: string;
   notes?: string;
   allocationJson?: string;
+  receiptFileId?: string;
+  receiptBucketId?: string;
+  receiptFileName?: string;
+  receiptFileMimeType?: string;
+  receiptFileSize?: number;
 };
 
 export type PaymentForm = {
@@ -86,8 +101,10 @@ export type PaymentForm = {
   amount: number;
   method: PaymentMethod;
   paymentDate: string;
+  applySecurityDeposit?: boolean;
   reference?: string;
   notes?: string;
+  receiptFile?: FileList;
 };
 
 export type Expense = {
@@ -101,6 +118,11 @@ export type Expense = {
   maintenanceType?: string;
   isMigrated?: boolean;
   notes?: string;
+  receiptFileId?: string;
+  receiptBucketId?: string;
+  receiptFileName?: string;
+  receiptFileMimeType?: string;
+  receiptFileSize?: number;
 };
 
 export type ExpenseForm = {
@@ -112,6 +134,7 @@ export type ExpenseForm = {
   house?: string;
   maintenanceType?: string;
   notes?: string;
+  receiptFile?: FileList;
 };
 
 export type AuditLog = {
