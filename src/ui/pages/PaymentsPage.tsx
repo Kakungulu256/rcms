@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ID, Query } from "appwrite";
-import { format, startOfMonth } from "date-fns";
+import { startOfMonth } from "date-fns";
 import {
   account,
   databases,
@@ -218,8 +218,6 @@ export default function PaymentsPage() {
   const visiblePayments = useMemo(() => {
     return payments.filter((payment) => !payment.isReversal);
   }, [payments]);
-  const currentMonthKey = format(new Date(), "yyyy-MM");
-
   const getPaymentTenantId = (payment: Payment) =>
     typeof payment.tenant === "string" ? payment.tenant : payment.tenant?.$id ?? "";
 
@@ -248,27 +246,15 @@ export default function PaymentsPage() {
   const canEditPaymentRow = (payment: Payment) => {
     if (!canRecordPayments) return false;
     if (payment.isReversal) return false;
-    if (Math.abs(Number(payment.securityDepositApplied) || 0) > 0) return false;
     if (reversedPaymentIds.has(payment.$id)) return false;
-    if (payment.paymentDate?.slice(0, 7) !== currentMonthKey) return false;
-    const tenantId = getPaymentTenantId(payment);
-    if (!tenantId) return false;
-    const hasLaterPayment = payments.some((candidate) => {
-      if (candidate.$id === payment.$id) return false;
-      if (candidate.isReversal) return false;
-      return (
-        getPaymentTenantId(candidate) === tenantId &&
-        candidate.paymentDate > payment.paymentDate
-      );
-    });
-    return !hasLaterPayment;
+    return true;
   };
 
   const openEditPayment = (payment: Payment) => {
     if (!canEditPaymentRow(payment)) {
       toast.push(
         "warning",
-        "Only latest non-reversed payments in the current month can be edited."
+        "This payment cannot be edited."
       );
       return;
     }
@@ -594,7 +580,7 @@ export default function PaymentsPage() {
     if (!canEditPaymentRow(editingPayment)) {
       toast.push(
         "warning",
-        "Only latest non-reversed payments in the current month can be edited."
+        "This payment cannot be edited."
       );
       setEditOpen(false);
       setEditingPayment(null);
@@ -778,7 +764,7 @@ export default function PaymentsPage() {
               Payment History
             </div>
             <div className="mt-3 space-y-3 text-sm text-slate-300">
-              {visiblePayments.slice(0, 6).map((payment) => {
+              {visiblePayments.slice(0, 20).map((payment) => {
                 const tenantLabel =
                   typeof payment.tenant === "string"
                     ? tenantLookup.get(payment.tenant)?.fullName ?? payment.tenant
@@ -1003,7 +989,7 @@ export default function PaymentsPage() {
       <Modal
         open={canRecordPayments && editOpen && !!editingPayment && !!editValues}
         title="Edit Payment"
-        description="Update latest current-month payment details."
+        description="Update payment details and replace/remove receipt."
         onClose={() => {
           setEditOpen(false);
           setEditingPayment(null);
