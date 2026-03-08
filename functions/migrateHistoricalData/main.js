@@ -25,17 +25,6 @@ function normalize(value) {
   return String(value).trim();
 }
 
-function parseBoolean(value) {
-  if (typeof value === "boolean") return value;
-  if (!value) return false;
-  return ["true", "yes", "1"].includes(String(value).toLowerCase());
-}
-
-function parseBooleanDefaultTrue(value) {
-  if (value === undefined || value === null || value === "") return true;
-  return parseBoolean(value);
-}
-
 function parseNumber(value) {
   if (typeof value === "number") return value;
   if (!value) return 0;
@@ -365,7 +354,6 @@ export default async (context) => {
           amount: monthlyRent,
           source: "house",
         }),
-        isMigrated: true,
       });
       houseByCode.set(code, created);
       houseById.set(created.$id, created);
@@ -409,7 +397,6 @@ export default async (context) => {
         securityDepositRefunded: false,
         rentOverride: parseNumber(row.RentOverride) || null,
         notes: normalize(row.Notes) || null,
-        isMigrated: parseBooleanDefaultTrue(row.IsMigrated),
       });
       tenantByKey.set(key, created);
       counters.tenantsCreated += 1;
@@ -507,7 +494,6 @@ export default async (context) => {
         reference: normalize(row.Reference) || null,
         notes: normalize(row.Notes) || null,
         allocationJson,
-        isMigrated: parseBooleanDefaultTrue(row.IsMigrated),
       });
       paymentsByTenant.set(tenant.$id, [created, ...existingPayments]);
       counters.paymentsCreated += 1;
@@ -536,7 +522,6 @@ export default async (context) => {
         house: houseId,
         maintenanceType: normalize(row.MaintenanceType) || null,
         notes: normalize(row.Notes) || null,
-        isMigrated: parseBooleanDefaultTrue(row.IsMigrated),
       });
       counters.expensesCreated += 1;
     }

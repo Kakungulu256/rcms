@@ -37,7 +37,6 @@ type TenantRow = {
   TenantType?: string;
   RentOverride?: number | string;
   Notes?: string;
-  IsMigrated?: string | boolean;
 };
 
 type PaymentRow = {
@@ -49,7 +48,6 @@ type PaymentRow = {
   PaymentDate?: string;
   Reference?: string;
   Notes?: string;
-  IsMigrated?: string | boolean;
 };
 
 type ExpenseRow = {
@@ -61,7 +59,6 @@ type ExpenseRow = {
   HouseCode?: string;
   MaintenanceType?: string;
   Notes?: string;
-  IsMigrated?: string | boolean;
 };
 
 type ParsedData = {
@@ -135,7 +132,6 @@ function downloadMigrationTemplate() {
       "TenantType",
       "RentOverride",
       "Notes",
-      "IsMigrated",
     ],
     [
       "Jane Doe",
@@ -147,7 +143,6 @@ function downloadMigrationTemplate() {
       "old",
       "",
       "Optional note",
-      "true",
     ]
   );
   XLSX.utils.book_append_sheet(workbook, tenants, "Tenants");
@@ -162,7 +157,6 @@ function downloadMigrationTemplate() {
       "PaymentDate",
       "Reference",
       "Notes",
-      "IsMigrated",
     ],
     [
       "Jane Doe",
@@ -173,7 +167,6 @@ function downloadMigrationTemplate() {
       "2026-02-01",
       "RCPT-001",
       "Paid at office",
-      "true",
     ]
   );
   XLSX.utils.book_append_sheet(workbook, payments, "Payments");
@@ -188,7 +181,6 @@ function downloadMigrationTemplate() {
       "HouseCode",
       "MaintenanceType",
       "Notes",
-      "IsMigrated",
     ],
     [
       "general",
@@ -199,7 +191,6 @@ function downloadMigrationTemplate() {
       "",
       "",
       "Optional note",
-      "true",
     ]
   );
   XLSX.utils.book_append_sheet(workbook, expenses, "Expenses");
@@ -212,22 +203,11 @@ function normalize(value?: string | number) {
   return String(value).trim();
 }
 
-function parseBoolean(value?: string | boolean) {
-  if (typeof value === "boolean") return value;
-  if (!value) return false;
-  return ["true", "yes", "1"].includes(value.toLowerCase());
-}
-
 function parseNumber(value?: string | number) {
   if (typeof value === "number") return value;
   if (!value) return 0;
   const parsed = Number(value);
   return Number.isNaN(parsed) ? 0 : parsed;
-}
-
-function parseBooleanDefaultTrue(value?: string | boolean) {
-  if (value === undefined || value === null || value === "") return true;
-  return parseBoolean(value);
 }
 
 function parseSheet<T>(workbook: XLSX.WorkBook, name: string): T[] {
@@ -411,7 +391,6 @@ export default function MigrationPage() {
               amount: monthlyRent,
               source: "house",
             }),
-            isMigrated: true,
           }
         );
         houseByCode.set(code, created as unknown as House);
@@ -469,7 +448,6 @@ export default function MigrationPage() {
             securityDepositRefunded: false,
             rentOverride: parseNumber(row.RentOverride) || null,
             notes: normalize(row.Notes) || null,
-            isMigrated: parseBooleanDefaultTrue(row.IsMigrated),
           }
         );
         tenantByKey.set(key, created as unknown as Tenant);
@@ -586,7 +564,6 @@ export default function MigrationPage() {
             reference: normalize(row.Reference) || null,
             notes: normalize(row.Notes) || null,
             allocationJson,
-            isMigrated: parseBooleanDefaultTrue(row.IsMigrated),
           }
         );
         paymentsByTenant.set(
@@ -622,7 +599,6 @@ export default function MigrationPage() {
             house: houseId,
             maintenanceType: normalize(row.MaintenanceType) || null,
             notes: normalize(row.Notes) || null,
-            isMigrated: parseBooleanDefaultTrue(row.IsMigrated),
           }
         );
         if (!created) {

@@ -19,7 +19,6 @@ These column headers are recommended for Excel imports. Dates should use `YYYY-M
 - `TenantType` (optional: `new` | `old`; defaults to `old`)
 - `RentOverride` (optional; number)
 - `Notes` (optional)
-- `IsMigrated` (optional; `true/false`)
 
 ## Sheet: Payments
 - `TenantFullName` (required; or use `TenantId` if you prefer IDs)
@@ -29,7 +28,6 @@ These column headers are recommended for Excel imports. Dates should use `YYYY-M
 - `PaymentDate` (required; `YYYY-MM-DD`)
 - `Reference` (optional)
 - `Notes` (optional)
-- `IsMigrated` (optional; `true/false`)
 
 ## Sheet: Expenses
 - `Category` (required: `general` | `maintenance`)
@@ -40,4 +38,3 @@ These column headers are recommended for Excel imports. Dates should use `YYYY-M
 - `HouseCode` (required if Maintenance; optional otherwise)
 - `MaintenanceType` (optional)
 - `Notes` (optional)
-- `IsMigrated` (optional; `true/false`)
