@@ -186,7 +186,7 @@ function buildHouseRentLookup(houses) {
   return map;
 }
 
-function generatePayments(tenants, houseRentLookup) {
+function generatePayments(tenants, houseRentLookup, maxPayments = null) {
   const payments = [];
   let referenceCounter = 1;
   const today = parseDate(TODAY);
@@ -238,7 +238,9 @@ function generatePayments(tenants, houseRentLookup) {
   }
 
   payments.sort((a, b) => a.PaymentDate.localeCompare(b.PaymentDate));
-  return payments;
+  return typeof maxPayments === "number" && maxPayments > 0
+    ? payments.slice(0, maxPayments)
+    : payments;
 }
 
 function generateExpenses(houses, total = 920) {
@@ -279,12 +281,18 @@ function generateExpenses(houses, total = 920) {
   return expenses;
 }
 
-function createWorkbook(outputFile) {
-  const houses = generateHouses(96);
-  const tenants = generateTenants(houses, 260);
+function createWorkbook(outputFile, options = {}) {
+  const {
+    housesCount = 96,
+    tenantsCount = 260,
+    expensesCount = 920,
+    maxPayments = null,
+  } = options;
+  const houses = generateHouses(housesCount);
+  const tenants = generateTenants(houses, tenantsCount);
   const rentLookup = buildHouseRentLookup(houses);
-  const payments = generatePayments(tenants, rentLookup);
-  const expenses = generateExpenses(houses, 920);
+  const payments = generatePayments(tenants, rentLookup, maxPayments);
+  const expenses = generateExpenses(houses, expensesCount);
 
   const workbook = XLSX.utils.book_new();
 
@@ -367,6 +375,19 @@ function createWorkbook(outputFile) {
 }
 
 const outputFile = process.argv[2] || DEFAULT_OUTPUT_FILE;
-const summary = createWorkbook(outputFile);
+const housesCount = Number(process.argv[3] || 96);
+const tenantsCount = Number(process.argv[4] || 260);
+const expensesCount = Number(process.argv[5] || 920);
+const maxPaymentsArg = Number(process.argv[6] || "");
+const maxPayments = Number.isFinite(maxPaymentsArg) && maxPaymentsArg > 0
+  ? maxPaymentsArg
+  : null;
+
+const summary = createWorkbook(outputFile, {
+  housesCount,
+  tenantsCount,
+  expensesCount,
+  maxPayments,
+});
 console.log("Generated sample migration file:");
 console.log(JSON.stringify(summary, null, 2));

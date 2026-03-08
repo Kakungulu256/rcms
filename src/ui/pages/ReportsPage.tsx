@@ -26,7 +26,10 @@ import {
   getTenantEffectiveEndDate,
   isTenantInactiveAtDate,
 } from "../../lib/tenancyDates";
-import { getLatestPaymentNoteForMonth } from "../../lib/paymentNotes";
+import {
+  getLatestPaymentNoteForMonth,
+  getLatestPaymentNoteForRange,
+} from "../../lib/paymentNotes";
 import { formatDisplayDate, formatShortMonth } from "../../lib/dateDisplay";
 
 type ArrearsRow = {
@@ -607,25 +610,41 @@ export default function ReportsPage() {
           (sum, month) => sum + (paidByMonth[month] ?? 0),
           0
         );
+        const monthsInSelectedRange = monthsToReport.filter(
+          (month) => month >= rangeStartMonth && month <= rangeEndMonth
+        );
         const rate = rentByMonth[reportMonthKey] ?? 0;
         const nextRate = rentByMonth[nextMonthKey] ?? rate;
-        const rentPaid = paidByMonth[reportMonthKey] ?? 0;
+        const rentPaid = isMonthRange
+          ? paidByMonth[reportMonthKey] ?? 0
+          : monthsInSelectedRange.reduce(
+              (sum, month) => sum + (paidByMonth[month] ?? 0),
+              0
+            );
         const balance = Math.max(expectedUpToReport - paidUpToReport, 0);
-        const paymentDatesThisMonth = (paymentSummaryByMonth[reportMonthKey] ?? [])
+        const paymentEntriesInRange = isMonthRange
+          ? paymentSummaryByMonth[reportMonthKey] ?? []
+          : monthsInSelectedRange.flatMap(
+              (month) => paymentSummaryByMonth[month] ?? []
+            );
+        const paymentDatesInRange = paymentEntriesInRange
           .filter((item) => item.amount > 0)
           .map((item) => item.paymentDate)
           .sort((a, b) => a.localeCompare(b));
         const latestPaymentDate =
-          paymentDatesThisMonth.length > 0
+          paymentDatesInRange.length > 0
             ? formatDisplayDate(
-                paymentDatesThisMonth[paymentDatesThisMonth.length - 1],
+                paymentDatesInRange[paymentDatesInRange.length - 1],
                 "N/A"
               )
             : "N/A";
-        const statusNote = getLatestPaymentNoteForMonth(
-          tenantPayments,
-          reportMonthKey
-        );
+        const statusNote = isMonthRange
+          ? getLatestPaymentNoteForMonth(tenantPayments, reportMonthKey)
+          : getLatestPaymentNoteForRange(
+              tenantPayments,
+              rangeStartMonth,
+              rangeEndMonth
+            );
         const status = statusNote ?? "No note";
         const moveOutDate =
           tenant.moveOutDate &&
@@ -1190,6 +1209,7 @@ export default function ReportsPage() {
             ? "landscape"
             : "portrait",
       });
+      doc.setFont("helvetica", "bold");
       doc.setFontSize(16);
       const title =
         reportType === "summary"
@@ -1202,12 +1222,15 @@ export default function ReportsPage() {
           ? "RCMS Collections by House"
           : "RCMS Tenant Collection";
       doc.text(title, 14, 18);
+      doc.setFont("helvetica", "normal");
       doc.setFontSize(11);
       let y = 28;
       if (reportType === "summary" && !summary.isMonthRange) {
         doc.setFontSize(10);
+        doc.setFont("helvetica", "bold");
         doc.text(`Range: ${summary.reportPeriodLabel}`, 14, y);
         y += 6;
+        doc.setFont("helvetica", "normal");
         doc.setFontSize(11);
       }
       const pageWidth = doc.internal.pageSize.getWidth();
@@ -1227,7 +1250,11 @@ export default function ReportsPage() {
       const drawTable = (
         headers: string[],
         rows: string[][],
-        options?: { columnWidths?: number[]; wrapColumnIndexes?: number[] }
+        options?: {
+          columnWidths?: number[];
+          wrapColumnIndexes?: number[];
+          boldRowIndexes?: number[];
+        }
       ) => {
         const tableWidth = right - left;
         const baseWidth = tableWidth / headers.length;
@@ -1236,6 +1263,7 @@ export default function ReportsPage() {
             ? options.columnWidths
             : new Array(headers.length).fill(baseWidth);
         const wrapColumns = new Set(options?.wrapColumnIndexes ?? []);
+        const boldRows = new Set(options?.boldRowIndexes ?? []);
         const requestedTotal = requestedWidths.reduce((sum, width) => sum + width, 0);
         const scale = requestedTotal > 0 ? tableWidth / requestedTotal : 1;
         const columnWidths = requestedWidths.map((width) => width * scale);
@@ -1297,6 +1325,7 @@ export default function ReportsPage() {
 
           doc.setDrawColor(229, 231, 235);
           doc.setTextColor(17, 24, 39);
+          doc.setFont("helvetica", "bold");
           let x = left;
           headers.forEach((_, index) => {
             const width = columnWidths[index];
@@ -1304,6 +1333,7 @@ export default function ReportsPage() {
             doc.text(headerLines[index], x + cellPaddingX, y + textOffsetY);
             x += width;
           });
+          doc.setFont("helvetica", "normal");
           y += headerHeight;
         };
 
@@ -1311,7 +1341,7 @@ export default function ReportsPage() {
 
         doc.setDrawColor(229, 231, 235);
         doc.setTextColor(17, 24, 39);
-        rows.forEach((row) => {
+        rows.forEach((row, rowIndex) => {
           const rowLines = headers.map((_, index) =>
             splitBodyCell(row[index] ?? "", columnWidths[index], index)
           );
@@ -1324,12 +1354,14 @@ export default function ReportsPage() {
           }
 
           let x = left;
+          doc.setFont("helvetica", boldRows.has(rowIndex) ? "bold" : "normal");
           headers.forEach((_, index) => {
             const width = columnWidths[index];
             doc.rect(x, y, width, rowHeight);
             doc.text(rowLines[index], x + cellPaddingX, y + textOffsetY);
             x += width;
           });
+          doc.setFont("helvetica", "normal");
           y += rowHeight;
         });
 
@@ -1384,7 +1416,9 @@ export default function ReportsPage() {
         ) as string[];
         ensureSpace(12 + wrapped.length * 5);
         doc.setFontSize(10);
+        doc.setFont("helvetica", "bold");
         doc.text("Personal note:", left, y);
+        doc.setFont("helvetica", "normal");
         y += 5;
         wrapped.forEach((line) => {
           doc.text(line, left + 4, y);
@@ -1403,6 +1437,7 @@ export default function ReportsPage() {
       }
       if (reportType === "inactiveArrears") {
         doc.setFontSize(10);
+        doc.setFont("helvetica", "bold");
         doc.text(`Range: ${summary.reportPeriodLabel}`, left, y);
         y += 6;
         doc.text(
@@ -1410,6 +1445,7 @@ export default function ReportsPage() {
           left,
           y
         );
+        doc.setFont("helvetica", "normal");
         y += 6;
         doc.setFontSize(11);
         drawTable(
@@ -1427,10 +1463,12 @@ export default function ReportsPage() {
       }
       if (reportType === "summary") {
         doc.setFontSize(10);
+        doc.setFont("helvetica", "bold");
         doc.text(`Date: ${summary.currentDateKey}`, left, y);
         y += 6;
         doc.text("Summary of Tenants' Payment Status", left, y);
         y += 4;
+        doc.setFont("helvetica", "normal");
         doc.setFontSize(11);
 
         drawTable(summaryTableHeaders, summaryTableRows, {
@@ -1444,17 +1482,22 @@ export default function ReportsPage() {
             ["Total Rent Collected", ush(summary.amountPaidThisMonth)],
             ...summary.disbursementRows.map((row) => [row.label, ush(row.amount)]),
             ["Total cash to transfer to Landlord", ush(summary.totalCashToLandlord)],
-          ]
+          ],
+          { boldRowIndexes: [0, summary.disbursementRows.length + 1] }
         );
 
         ensureSpace(40);
         doc.setFontSize(11);
+        doc.setFont("helvetica", "bold");
         doc.text("Notes:", left, y);
         y += 6;
+        doc.setFont("helvetica", "normal");
         doc.setFontSize(10);
         doc.text(`1. This is a summary of payments as of ${summary.currentDateKey}.`, left + 4, y);
         y += 5;
+        doc.setFont("helvetica", "bold");
         doc.text("2. Breakdown of totals:", left + 4, y);
+        doc.setFont("helvetica", "normal");
         y += 5;
         doc.text(
           summary.isMonthRange
@@ -1488,7 +1531,9 @@ export default function ReportsPage() {
           y
         );
         y += 5;
+        doc.setFont("helvetica", "bold");
         doc.text(`e) Outstanding total balance: ${ush(summary.totalTenantBalance)}`, left + 8, y);
+        doc.setFont("helvetica", "normal");
         y += 5;
         doc.text(
           `3. ${summary.tenantsWithArrearsCount} tenant(s) remained with arrears to be collected in the next month.`,
@@ -1503,7 +1548,9 @@ export default function ReportsPage() {
             right - left - 12
           ) as string[];
           ensureSpace(5 + wrapped.length * 5);
+          doc.setFont("helvetica", "bold");
           doc.text("4. Personal note:", left + 4, y);
+          doc.setFont("helvetica", "normal");
           y += 5;
           wrapped.forEach((line) => {
             doc.text(line, left + 8, y);

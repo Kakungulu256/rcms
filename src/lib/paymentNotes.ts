@@ -24,6 +24,24 @@ function paymentTouchesMonth(payment: Payment, monthKey: string) {
   return Number(allocation[monthKey] ?? 0) > 0;
 }
 
+function paymentTouchesRange(
+  payment: Payment,
+  startMonthKey: string,
+  endMonthKey: string
+) {
+  const allocation = decodeJson<PaymentAllocation>(payment.allocationJson);
+  if (!allocation) {
+    const month = payment.paymentDate?.slice(0, 7) ?? "";
+    return month >= startMonthKey && month <= endMonthKey;
+  }
+  return Object.entries(allocation).some(
+    ([month, amount]) =>
+      month >= startMonthKey &&
+      month <= endMonthKey &&
+      Number(amount ?? 0) > 0
+  );
+}
+
 export function getLatestPaymentNoteForMonth(
   payments: Payment[],
   monthKey: string
@@ -32,6 +50,25 @@ export function getLatestPaymentNoteForMonth(
   const sorted = payments
     .filter((payment) => !payment.isReversal && !reversedOriginalIds.has(payment.$id))
     .filter((payment) => paymentTouchesMonth(payment, monthKey))
+    .slice()
+    .sort((a, b) => b.paymentDate.localeCompare(a.paymentDate));
+
+  for (const payment of sorted) {
+    const note = normalizePaymentNote(payment.notes);
+    if (note) return note;
+  }
+  return null;
+}
+
+export function getLatestPaymentNoteForRange(
+  payments: Payment[],
+  startMonthKey: string,
+  endMonthKey: string
+): string | null {
+  const reversedOriginalIds = getReversedOriginalIds(payments);
+  const sorted = payments
+    .filter((payment) => !payment.isReversal && !reversedOriginalIds.has(payment.$id))
+    .filter((payment) => paymentTouchesRange(payment, startMonthKey, endMonthKey))
     .slice()
     .sort((a, b) => b.paymentDate.localeCompare(a.paymentDate));
 

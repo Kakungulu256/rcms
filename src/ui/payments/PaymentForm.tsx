@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { PAYMENT_METHODS } from "../../lib/schema";
 import { formatAmount } from "../../lib/numberFormat";
@@ -42,6 +42,7 @@ export default function PaymentForm({
   disabled,
   loading,
 }: Props) {
+  const [tenantSearch, setTenantSearch] = useState("");
   const { register, handleSubmit, formState, watch, setValue } = useForm<PaymentFormValues>({
     defaultValues: {
       tenant: "",
@@ -60,6 +61,20 @@ export default function PaymentForm({
     () => tenants.find((tenant) => tenant.$id === selectedTenantId) ?? null,
     [selectedTenantId, tenants]
   );
+  const filteredTenants = useMemo(() => {
+    const query = tenantSearch.trim().toLowerCase();
+    if (!query) return tenants;
+    const matches = tenants.filter((tenant) => {
+      const name = tenant.fullName?.toLowerCase() ?? "";
+      const phone = tenant.phone?.toLowerCase() ?? "";
+      return name.includes(query) || phone.includes(query);
+    });
+    if (!selectedTenantId) return matches;
+    const hasSelected = matches.some((tenant) => tenant.$id === selectedTenantId);
+    if (hasSelected) return matches;
+    const selected = tenants.find((tenant) => tenant.$id === selectedTenantId);
+    return selected ? [selected, ...matches] : matches;
+  }, [selectedTenantId, tenantSearch, tenants]);
   const reversedPaymentIds = useMemo(() => {
     const ids = new Set<string>();
     payments.forEach((payment) => {
@@ -99,6 +114,13 @@ export default function PaymentForm({
     <form className="space-y-4" onSubmit={handleSubmit(onSubmit)}>
       <label className="block text-sm text-slate-300">
         Tenant
+        <input
+          type="search"
+          className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+          placeholder="Search tenant by name or phone"
+          value={tenantSearch}
+          onChange={(event) => setTenantSearch(event.target.value)}
+        />
         <select
           className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
           {...register("tenant", { required: true })}
@@ -106,7 +128,7 @@ export default function PaymentForm({
           <option value="" disabled>
             Select tenant
           </option>
-          {tenants.map((tenant) => (
+          {filteredTenants.map((tenant) => (
             <option key={tenant.$id} value={tenant.$id}>
               {tenant.fullName}
             </option>
