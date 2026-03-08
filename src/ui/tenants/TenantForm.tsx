@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import { useForm } from "react-hook-form";
 import { TENANT_STATUS, TENANT_TYPES } from "../../lib/schema";
+import TypeaheadField, { type TypeaheadOption } from "../TypeaheadField";
 import type { House, Tenant, TenantForm as TenantFormValues } from "../../lib/schema";
 
 type TenantFormWithEffectiveDate = TenantFormValues & {
@@ -29,7 +30,6 @@ export default function TenantForm({
   disabled,
   loading,
 }: Props) {
-  const [houseSearch, setHouseSearch] = useState("");
   const { register, handleSubmit, formState, setValue, watch } =
     useForm<TenantFormWithEffectiveDate>({
     defaultValues: {
@@ -50,20 +50,17 @@ export default function TenantForm({
   const moveOutDate = watch("moveOutDate");
   const status = watch("status");
   const selectedHouseId = watch("house");
-  const filteredHouses = useMemo(() => {
-    const query = houseSearch.trim().toLowerCase();
-    if (!query) return houses;
-    const matches = houses.filter((house) => {
-      const code = house.code?.toLowerCase() ?? "";
-      const name = house.name?.toLowerCase() ?? "";
-      return code.includes(query) || name.includes(query);
-    });
-    if (!selectedHouseId) return matches;
-    const hasSelected = matches.some((house) => house.$id === selectedHouseId);
-    if (hasSelected) return matches;
-    const selected = houses.find((house) => house.$id === selectedHouseId);
-    return selected ? [selected, ...matches] : matches;
-  }, [houseSearch, houses, selectedHouseId]);
+  const houseOptions = useMemo<TypeaheadOption[]>(
+    () =>
+      houses.map((house) => ({
+        id: house.$id,
+        label: house.code,
+        description: house.name?.trim() || undefined,
+        keywords: `${house.code} ${house.name ?? ""}`,
+      })),
+    [houses]
+  );
+  const houseField = register("house", { required: true });
 
   useEffect(() => {
     if (!moveOutDate?.trim()) return;
@@ -99,29 +96,24 @@ export default function TenantForm({
             {...register("phone")}
           />
         </label>
-        <label className="block text-sm text-slate-300">
-          House Assignment
-          <input
-            type="search"
-            className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
-            placeholder="Search house by code or name"
-            value={houseSearch}
-            onChange={(event) => setHouseSearch(event.target.value)}
+        <div>
+          <TypeaheadField
+            label="House Assignment"
+            placeholder="Type house code or name"
+            value={selectedHouseId}
+            options={houseOptions}
+            disabled={disabled}
+            emptyStateText="No house matches your search."
+            onChange={(houseId) =>
+              setValue("house", houseId, {
+                shouldDirty: true,
+                shouldTouch: true,
+                shouldValidate: true,
+              })
+            }
           />
-          <select
-            className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
-            {...register("house", { required: true })}
-          >
-            <option value="" disabled>
-              Select a house
-            </option>
-            {filteredHouses.map((house) => (
-              <option key={house.$id} value={house.$id}>
-                {house.code} {house.name ? `- ${house.name}` : ""}
-              </option>
-            ))}
-          </select>
-        </label>
+          <input type="hidden" {...houseField} />
+        </div>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">

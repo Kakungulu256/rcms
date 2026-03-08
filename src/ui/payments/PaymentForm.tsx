@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import { useForm } from "react-hook-form";
 import { PAYMENT_METHODS } from "../../lib/schema";
 import { formatAmount } from "../../lib/numberFormat";
+import TypeaheadField, { type TypeaheadOption } from "../TypeaheadField";
 import type { Payment, PaymentForm as PaymentFormValues, Tenant } from "../../lib/schema";
 
 type Props = {
@@ -42,7 +43,6 @@ export default function PaymentForm({
   disabled,
   loading,
 }: Props) {
-  const [tenantSearch, setTenantSearch] = useState("");
   const { register, handleSubmit, formState, watch, setValue } = useForm<PaymentFormValues>({
     defaultValues: {
       tenant: "",
@@ -61,20 +61,17 @@ export default function PaymentForm({
     () => tenants.find((tenant) => tenant.$id === selectedTenantId) ?? null,
     [selectedTenantId, tenants]
   );
-  const filteredTenants = useMemo(() => {
-    const query = tenantSearch.trim().toLowerCase();
-    if (!query) return tenants;
-    const matches = tenants.filter((tenant) => {
-      const name = tenant.fullName?.toLowerCase() ?? "";
-      const phone = tenant.phone?.toLowerCase() ?? "";
-      return name.includes(query) || phone.includes(query);
-    });
-    if (!selectedTenantId) return matches;
-    const hasSelected = matches.some((tenant) => tenant.$id === selectedTenantId);
-    if (hasSelected) return matches;
-    const selected = tenants.find((tenant) => tenant.$id === selectedTenantId);
-    return selected ? [selected, ...matches] : matches;
-  }, [selectedTenantId, tenantSearch, tenants]);
+  const tenantOptions = useMemo<TypeaheadOption[]>(
+    () =>
+      tenants.map((tenant) => ({
+        id: tenant.$id,
+        label: tenant.fullName,
+        description: tenant.phone?.trim() || undefined,
+        keywords: tenant.phone?.trim() || "",
+      })),
+    [tenants]
+  );
+  const tenantField = register("tenant", { required: true });
   const reversedPaymentIds = useMemo(() => {
     const ids = new Set<string>();
     payments.forEach((payment) => {
@@ -112,29 +109,22 @@ export default function PaymentForm({
 
   return (
     <form className="space-y-4" onSubmit={handleSubmit(onSubmit)}>
-      <label className="block text-sm text-slate-300">
-        Tenant
-        <input
-          type="search"
-          className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
-          placeholder="Search tenant by name or phone"
-          value={tenantSearch}
-          onChange={(event) => setTenantSearch(event.target.value)}
-        />
-        <select
-          className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
-          {...register("tenant", { required: true })}
-        >
-          <option value="" disabled>
-            Select tenant
-          </option>
-          {filteredTenants.map((tenant) => (
-            <option key={tenant.$id} value={tenant.$id}>
-              {tenant.fullName}
-            </option>
-          ))}
-        </select>
-      </label>
+      <TypeaheadField
+        label="Tenant"
+        placeholder="Type tenant name or phone"
+        value={selectedTenantId}
+        options={tenantOptions}
+        disabled={disabled}
+        emptyStateText="No tenant matches your search."
+        onChange={(tenantId) =>
+          setValue("tenant", tenantId, {
+            shouldDirty: true,
+            shouldTouch: true,
+            shouldValidate: true,
+          })
+        }
+      />
+      <input type="hidden" {...tenantField} />
       {selectedTenant && (
         <div
           className="rounded-xl border px-4 py-3 text-xs"
