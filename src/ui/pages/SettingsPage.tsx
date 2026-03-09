@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { Query } from "appwrite";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   account,
+  createWorkspaceDocument,
   databases,
   functions,
   listAllDocuments,
@@ -14,10 +15,20 @@ import { useAuth } from "../../auth/AuthContext";
 import { logAudit } from "../../lib/audit";
 import { getActiveWorkspaceId } from "../../lib/workspace";
 import { createBillingCheckoutSession } from "../../lib/billing";
-import { COLLECTIONS, type Plan, type WorkspaceMembership } from "../../lib/schema";
+import { formatDisplayDate } from "../../lib/dateDisplay";
+import {
+  COLLECTIONS,
+  type BillingPayment,
+  type Invoice,
+  type Plan,
+  type Subscription,
+  type WorkspaceMembership,
+} from "../../lib/schema";
 import { formatLimitValue, getLimitStatus } from "../../lib/planLimits";
 
 type AppRole = "admin" | "clerk" | "viewer";
+type SettingsTab = "billing" | "team";
+type BillingAction = "cancel" | "reactivate";
 
 type ManageUserSuccess = {
   ok: true;
@@ -43,6 +54,12 @@ function parseExecutionBody(response?: string) {
   } catch {
     return null;
   }
+}
+
+function formatMoney(amount: number | undefined, currency = "UGX") {
+  const value = Number(amount ?? 0);
+  if (!Number.isFinite(value)) return `0 ${currency}`;
+  return `${value.toLocaleString()} ${currency}`;
 }
 
 async function executeManageUsersFunction(
@@ -86,8 +103,9 @@ async function executeManageUsersFunction(
 }
 
 export default function SettingsPage() {
-  const { user, billing, canAccessFeature, planLimits } = useAuth();
+  const { user, billing, canAccessFeature, planLimits, refresh } = useAuth();
   const toast = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -100,11 +118,95 @@ export default function SettingsPage() {
   const [couponCode, setCouponCode] = useState("");
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [teamMemberCount, setTeamMemberCount] = useState(0);
+  const [subscription, setSubscription] = useState<Subscription | null>(null);
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [billingPayments, setBillingPayments] = useState<BillingPayment[]>([]);
+  const [billingLoading, setBillingLoading] = useState(false);
+  const [billingError, setBillingError] = useState<string | null>(null);
+  const [billingActionLoading, setBillingActionLoading] =
+    useState<BillingAction | null>(null);
+
+  const activeWorkspaceId = getActiveWorkspaceId();
   const manageUsersFunctionId = import.meta.env.VITE_MANAGE_USERS_FUNCTION_ID as
     | string
     | undefined;
   const manageUsersAccess = canAccessFeature("settings.manage_users");
   const teamMemberLimitStatus = getLimitStatus(planLimits.maxTeamMembers, teamMemberCount);
+
+  const currentTab = (searchParams.get("tab") || "billing").toLowerCase();
+  const activeTab: SettingsTab = currentTab === "team" ? "team" : "billing";
+
+  const latestPayment = useMemo(() => {
+    const preferred =
+      billingPayments.find((entry) => entry.status === "succeeded") ?? null;
+    return preferred ?? billingPayments[0] ?? null;
+  }, [billingPayments]);
+
+  const selectedPlan = useMemo(
+    () => plans.find((plan) => plan.code === planCode) ?? null,
+    [plans, planCode]
+  );
+  const currentPlan = useMemo(
+    () => plans.find((plan) => plan.code === (subscription?.planCode ?? billing?.planCode)) ?? null,
+    [billing?.planCode, plans, subscription?.planCode]
+  );
+
+  const renewalDate =
+    subscription?.currentPeriodEnd ??
+    subscription?.trialEndDate ??
+    billing?.trialEndDate ??
+    null;
+
+  const canCancelSubscription = Boolean(
+    subscription &&
+      ["trialing", "active", "past_due"].includes(subscription.state) &&
+      !subscription.cancelAtPeriodEnd
+  );
+  const canReactivateSubscription = Boolean(
+    subscription && (subscription.cancelAtPeriodEnd || subscription.state === "canceled")
+  );
+
+  const setTab = (tab: SettingsTab) => {
+    const next = new URLSearchParams(searchParams);
+    next.set("tab", tab);
+    setSearchParams(next, { replace: true });
+  };
+
+  const loadBillingData = async () => {
+    setBillingLoading(true);
+    setBillingError(null);
+    try {
+      const [subscriptionRows, invoiceRows, paymentRows] = await Promise.all([
+        listAllDocuments<Subscription>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.subscriptions,
+          queries: [Query.orderDesc("$updatedAt")],
+        }),
+        listAllDocuments<Invoice>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.invoices,
+          queries: [Query.orderDesc("$updatedAt")],
+        }),
+        listAllDocuments<BillingPayment>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.paymentsBilling,
+          queries: [Query.orderDesc("$updatedAt")],
+        }),
+      ]);
+      const latestSubscription = subscriptionRows[0] ?? null;
+      setSubscription(latestSubscription);
+      setInvoices(invoiceRows.slice(0, 25));
+      setBillingPayments(paymentRows.slice(0, 25));
+      setPlanCode((current) => current || latestSubscription?.planCode || "");
+    } catch (loadError) {
+      setBillingError("Failed to load billing settings.");
+      setSubscription(null);
+      setInvoices([]);
+      setBillingPayments([]);
+    } finally {
+      setBillingLoading(false);
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -118,7 +220,7 @@ export default function SettingsPage() {
         const docs = response.documents as unknown as Plan[];
         if (!active) return;
         setPlans(docs);
-        setPlanCode((current) => (current || docs[0]?.code || ""));
+        setPlanCode((current) => current || docs[0]?.code || "");
       } catch {
         if (active) {
           setPlans([]);
@@ -154,6 +256,10 @@ export default function SettingsPage() {
     };
   }, []);
 
+  useEffect(() => {
+    void loadBillingData();
+  }, []);
+
   const resetForm = () => {
     setName("");
     setEmail("");
@@ -161,8 +267,9 @@ export default function SettingsPage() {
     setRole("viewer");
   };
 
-  const handleStartCheckout = async () => {
-    if (!planCode.trim()) {
+  const handleStartCheckout = async (forcedPlanCode?: string) => {
+    const checkoutPlanCode = (forcedPlanCode || planCode).trim();
+    if (!checkoutPlanCode) {
       toast.push("warning", "Select a plan before continuing.");
       return;
     }
@@ -170,8 +277,8 @@ export default function SettingsPage() {
     setCheckoutLoading(true);
     try {
       const result = await createBillingCheckoutSession({
-        workspaceId: getActiveWorkspaceId(),
-        planCode: planCode.trim(),
+        workspaceId: activeWorkspaceId,
+        planCode: checkoutPlanCode,
         couponCode: couponCode.trim() || undefined,
       });
       if (!result.ok) {
@@ -186,6 +293,125 @@ export default function SettingsPage() {
       toast.push("error", message);
     } finally {
       setCheckoutLoading(false);
+    }
+  };
+
+  const handleBillingAction = async (action: BillingAction) => {
+    if (!subscription) {
+      toast.push("warning", "No active subscription record found.");
+      return;
+    }
+
+    if (
+      action === "cancel" &&
+      !window.confirm(
+        "Cancel subscription at period end? Access stays until renewal date, then premium features lock."
+      )
+    ) {
+      return;
+    }
+
+    if (
+      action === "reactivate" &&
+      !window.confirm(
+        "Reactivate this subscription now and restore normal access state?"
+      )
+    ) {
+      return;
+    }
+
+    setBillingActionLoading(action);
+    try {
+      const nowIso = new Date().toISOString();
+      const previousState = subscription.state;
+      const patch =
+        action === "cancel"
+          ? {
+              state: "canceled" as const,
+              cancelAtPeriodEnd: true,
+              canceledAt: nowIso,
+              endedAt: null,
+              graceEndsAt: subscription.graceEndsAt ?? subscription.currentPeriodEnd ?? null,
+              notes: "Cancellation requested by workspace admin from settings.",
+            }
+          : {
+              state: "active" as const,
+              cancelAtPeriodEnd: false,
+              canceledAt: null,
+              endedAt: null,
+              graceEndsAt: null,
+              retryCount: 0,
+              nextRetryAt: null,
+              lastRetryAt: null,
+              dunningStage: null,
+              lastFailureReason: null,
+              notes: "Reactivated by workspace admin from settings.",
+            };
+
+      const updated = (await databases.updateDocument(
+        rcmsDatabaseId,
+        COLLECTIONS.subscriptions,
+        subscription.$id,
+        patch
+      )) as unknown as Subscription;
+
+      await databases
+        .updateDocument(rcmsDatabaseId, COLLECTIONS.workspaces, activeWorkspaceId, {
+          subscriptionState: updated.state,
+        })
+        .catch(() => null);
+
+      await createWorkspaceDocument({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.subscriptionEvents,
+        data: {
+          subscriptionId: updated.$id,
+          eventType:
+            action === "cancel"
+              ? "subscription_cancel_requested"
+              : "subscription_reactivated",
+          eventSource: "settings_ui",
+          eventTime: nowIso,
+          stateFrom: previousState,
+          stateTo: updated.state,
+          idempotencyKey: `settings_${action}_${updated.$id}_${Date.now()}`,
+          payloadJson: JSON.stringify({ action, actorUserId: user?.id ?? null }),
+          actorUserId: user?.id ?? null,
+          reference: updated.$id,
+        },
+      }).catch(() => null);
+
+      if (user) {
+        void logAudit({
+          entityType: "subscription",
+          entityId: updated.$id,
+          action: "update",
+          actorId: user.id,
+          details: {
+            action,
+            previousState,
+            nextState: updated.state,
+            cancelAtPeriodEnd: updated.cancelAtPeriodEnd ?? false,
+          },
+        });
+      }
+
+      toast.push(
+        "success",
+        action === "cancel"
+          ? "Subscription marked to cancel at period end."
+          : "Subscription reactivated."
+      );
+      await loadBillingData();
+      await refresh();
+    } catch (actionError) {
+      const message =
+        actionError instanceof Error
+          ? actionError.message
+          : "Failed to update subscription.";
+      toast.push("error", message);
+    } finally {
+      setBillingActionLoading(null);
     }
   };
 
@@ -226,7 +452,7 @@ export default function SettingsPage() {
       const jwt = await account.createJWT();
       const { parsed, latest } = await executeManageUsersFunction(manageUsersFunctionId, {
         jwt: jwt.jwt,
-        workspaceId: getActiveWorkspaceId(),
+        workspaceId: activeWorkspaceId,
         name: name.trim() || null,
         email: normalizedEmail,
         password: password.trim() || null,
@@ -285,212 +511,356 @@ export default function SettingsPage() {
         </p>
       </header>
 
-      <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6">
-        <div className="text-sm font-semibold text-slate-100">Billing Lifecycle</div>
-        <p className="mt-2 text-xs text-slate-400">
-          Trial, grace period, and renewal status are enforced automatically.
-        </p>
-
-        <div className="mt-4 grid gap-4 md:grid-cols-3">
-          <div className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">
-            <div className="text-xs uppercase tracking-[0.2em] text-slate-500">State</div>
-            <div className="mt-2 text-lg font-semibold text-slate-100">
-              {billing?.effectiveState || billing?.state || "unknown"}
-            </div>
-          </div>
-          <div className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">
-            <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Plan</div>
-            <div className="mt-2 text-lg font-semibold text-slate-100">
-              {billing?.planCode || "Not set"}
-            </div>
-          </div>
-          <div className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">
-            <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Access</div>
-            <div className="mt-2 text-lg font-semibold text-slate-100">
-              {billing?.accessState || "full"}
-            </div>
-          </div>
-        </div>
-
-        {billing?.bannerTitle && billing?.bannerMessage ? (
-          <div
-            className="mt-4 rounded-xl border px-4 py-3 text-sm"
-            style={{
-              borderColor:
-                billing.bannerTone === "danger"
-                  ? "rgba(244,63,94,0.4)"
-                  : billing.bannerTone === "warning"
-                    ? "rgba(251,191,36,0.4)"
-                    : "rgba(56,189,248,0.4)",
-              backgroundColor:
-                billing.bannerTone === "danger"
-                  ? "rgba(190,24,93,0.15)"
-                  : billing.bannerTone === "warning"
-                    ? "rgba(180,83,9,0.15)"
-                    : "rgba(14,116,144,0.15)",
-              color: "var(--text)",
-            }}
+      <div
+        className="rounded-2xl border p-2"
+        style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
+      >
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setTab("billing")}
+            className={[
+              "rounded-xl px-4 py-2 text-sm transition",
+              activeTab === "billing"
+                ? "bg-blue-600 text-white"
+                : "border text-slate-300 hover:bg-slate-900/50",
+            ].join(" ")}
+            style={activeTab === "billing" ? undefined : { borderColor: "var(--border)" }}
           >
-            <div className="font-semibold">{billing.bannerTitle}</div>
-            <div className="mt-1 text-xs text-slate-100/90">{billing.bannerMessage}</div>
-          </div>
-        ) : null}
-
-        <div className="mt-5 grid gap-4 md:grid-cols-3">
-          <label className="block text-sm text-slate-300">
-            Plan
-            <select
-              value={planCode}
-              onChange={(event) => setPlanCode(event.target.value)}
-              className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
-            >
-              {plans.length === 0 ? <option value="">No active plans</option> : null}
-              {plans.map((plan) => (
-                <option key={plan.$id} value={plan.code}>
-                  {plan.name} ({Number(plan.priceAmount ?? 0).toLocaleString()} {plan.currency})
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="block text-sm text-slate-300">
-            Coupon (optional)
-            <input
-              value={couponCode}
-              onChange={(event) => setCouponCode(event.target.value.toUpperCase())}
-              className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
-              placeholder="DISCOUNT10"
-            />
-          </label>
-          <div className="flex items-end">
-            <button
-              type="button"
-              onClick={handleStartCheckout}
-              disabled={checkoutLoading || !planCode}
-              className="btn-primary w-full text-sm disabled:opacity-60"
-            >
-              {checkoutLoading ? "Starting checkout..." : "Pay / Upgrade"}
-            </button>
-          </div>
+            Billing
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("team")}
+            className={[
+              "rounded-xl px-4 py-2 text-sm transition",
+              activeTab === "team"
+                ? "bg-blue-600 text-white"
+                : "border text-slate-300 hover:bg-slate-900/50",
+            ].join(" ")}
+            style={activeTab === "team" ? undefined : { borderColor: "var(--border)" }}
+          >
+            Team & Users
+          </button>
         </div>
       </div>
 
-      <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6">
-        <div className="text-sm font-semibold text-slate-100">Add Team User</div>
-        <p className="mt-2 text-xs text-slate-500">
-          For existing users, leave password empty to only update role assignment.
-        </p>
-        {planLimits.maxTeamMembers != null ? (
-          <div className="mt-3 text-xs text-amber-300">
-            Team member usage: {teamMemberLimitStatus.used.toLocaleString()} /{" "}
-            {formatLimitValue(teamMemberLimitStatus.limit)}
-            {teamMemberLimitStatus.reached
-              ? " (limit reached - upgrade to add more users)"
-              : ""}
-            {teamMemberLimitStatus.reached ? (
-              <Link to="/app/upgrade" className="ml-2 underline">
-                Upgrade Plan
-              </Link>
-            ) : null}
-          </div>
-        ) : null}
-        {!manageUsersAccess.allowed ? (
-          <div className="mt-4 rounded-xl border border-amber-600/40 bg-amber-950/30 p-4 text-sm text-amber-100">
-            {manageUsersAccess.reason ||
-              "User management is locked on your current plan. Upgrade to continue."}
-            <div className="mt-2">
-              <Link to="/app/upgrade" className="underline">
-                View plans and upgrade
-              </Link>
+      {activeTab === "billing" && (
+        <div className="space-y-6">
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6">
+            <div className="text-sm font-semibold text-slate-100">Billing Lifecycle</div>
+            <p className="mt-2 text-xs text-slate-400">
+              Track plan, renewal date, invoices, and payment status.
+            </p>
+
+            <div className="mt-4 grid gap-4 md:grid-cols-4">
+              <div className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">
+                <div className="text-xs uppercase tracking-[0.2em] text-slate-500">State</div>
+                <div className="mt-2 text-lg font-semibold text-slate-100">
+                  {billing?.effectiveState || billing?.state || "unknown"}
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">
+                <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Current Plan</div>
+                <div className="mt-2 text-lg font-semibold text-slate-100">
+                  {(subscription?.planCode || billing?.planCode || "Not set").toUpperCase()}
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">
+                <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Renewal Date</div>
+                <div className="mt-2 text-lg font-semibold text-slate-100">
+                  {formatDisplayDate(renewalDate)}
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">
+                <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Payment Method</div>
+                <div className="mt-2 text-lg font-semibold text-slate-100">
+                  {(latestPayment?.provider || "Not set").toUpperCase()}
+                </div>
+                <div className="mt-1 text-xs text-slate-400">
+                  Ref: {latestPayment?.providerReference || latestPayment?.providerPaymentId || "--"}
+                </div>
+              </div>
             </div>
-          </div>
-        ) : null}
 
-        <form className="mt-5 space-y-4" onSubmit={handleSubmit}>
-          <div className="grid gap-4 md:grid-cols-2">
-            <label className="block text-sm text-slate-300">
-              Full Name
-              <input
-                type="text"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                placeholder="Jane Doe"
-                disabled={!manageUsersAccess.allowed}
-                className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
-              />
-            </label>
-            <label className="block text-sm text-slate-300">
-              Email
-              <input
-                type="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                placeholder="jane@example.com"
-                required
-                disabled={!manageUsersAccess.allowed}
-                className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
-              />
-            </label>
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-2">
-            <label className="block text-sm text-slate-300">
-              Password (for new users)
-              <input
-                type="password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                placeholder="At least 8 characters"
-                disabled={!manageUsersAccess.allowed}
-                className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
-              />
-            </label>
-            <label className="block text-sm text-slate-300">
-              Role
-              <select
-                value={role}
-                onChange={(event) => setRole(event.target.value as AppRole)}
-                disabled={!manageUsersAccess.allowed}
-                className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+            {billing?.bannerTitle && billing?.bannerMessage ? (
+              <div
+                className="mt-4 rounded-xl border px-4 py-3 text-sm"
+                style={{
+                  borderColor:
+                    billing.bannerTone === "danger"
+                      ? "rgba(244,63,94,0.4)"
+                      : billing.bannerTone === "warning"
+                        ? "rgba(251,191,36,0.4)"
+                        : "rgba(56,189,248,0.4)",
+                  backgroundColor:
+                    billing.bannerTone === "danger"
+                      ? "rgba(190,24,93,0.15)"
+                      : billing.bannerTone === "warning"
+                        ? "rgba(180,83,9,0.15)"
+                        : "rgba(14,116,144,0.15)",
+                  color: "var(--text)",
+                }}
               >
-                <option value="viewer">Viewer</option>
-                <option value="clerk">Clerk</option>
-                <option value="admin">Admin</option>
-              </select>
-            </label>
-          </div>
+                <div className="font-semibold">{billing.bannerTitle}</div>
+                <div className="mt-1 text-xs text-slate-100/90">{billing.bannerMessage}</div>
+              </div>
+            ) : null}
 
-          <div className="flex flex-wrap gap-3">
-            <button
-              type="submit"
-              disabled={submitting || !manageUsersAccess.allowed}
-              className="btn-primary text-sm disabled:opacity-60"
-            >
-              {submitting ? "Saving..." : "Create / Update User"}
-            </button>
-            <button
-              type="button"
-              onClick={resetForm}
-              disabled={submitting || !manageUsersAccess.allowed}
-              className="btn-secondary text-sm disabled:opacity-60"
-            >
-              Clear
-            </button>
-          </div>
-        </form>
+            {billingError ? (
+              <div className="mt-4 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+                {billingError}
+              </div>
+            ) : null}
 
-        {error && <p className="mt-4 text-sm text-rose-300">{error}</p>}
-
-        {result && (
-          <div className="mt-5 rounded-xl border border-emerald-700/50 bg-emerald-950/30 p-4 text-sm">
-            <div className="font-semibold text-emerald-200">
-              {result.created ? "User created successfully." : "User role updated successfully."}
+            <div className="mt-5 grid gap-4 md:grid-cols-3">
+              <label className="block text-sm text-slate-300">
+                Plan
+                <select
+                  value={planCode}
+                  onChange={(event) => setPlanCode(event.target.value)}
+                  className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                  disabled={billingLoading || plans.length === 0}
+                >
+                  {plans.length === 0 ? <option value="">No active plans</option> : null}
+                  {plans.map((plan) => (
+                    <option key={plan.$id} value={plan.code}>
+                      {plan.name} ({Number(plan.priceAmount ?? 0).toLocaleString()} {plan.currency})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block text-sm text-slate-300">
+                Coupon (optional)
+                <input
+                  value={couponCode}
+                  onChange={(event) => setCouponCode(event.target.value.toUpperCase())}
+                  className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                  placeholder="DISCOUNT10"
+                  disabled={billingLoading}
+                />
+              </label>
+              <div className="flex items-end">
+                <button
+                  type="button"
+                  onClick={() => handleStartCheckout()}
+                  disabled={checkoutLoading || !planCode || billingLoading}
+                  className="btn-primary w-full text-sm disabled:opacity-60"
+                >
+                  {checkoutLoading
+                    ? "Starting checkout..."
+                    : planCode && currentPlan && selectedPlan && selectedPlan.code !== currentPlan.code
+                      ? selectedPlan.priceAmount >= currentPlan.priceAmount
+                        ? "Upgrade Plan"
+                        : "Downgrade Plan"
+                      : "Pay / Renew Plan"}
+                </button>
+              </div>
             </div>
-            <div className="mt-2 text-emerald-100/90">
-              {result.user.name} ({result.user.email}) is now assigned as {result.role}.
+
+            <div className="mt-5 flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={() => handleStartCheckout(subscription?.planCode || billing?.planCode || planCode)}
+                disabled={checkoutLoading || billingLoading || !(subscription?.planCode || billing?.planCode || planCode)}
+                className="btn-secondary text-sm disabled:opacity-60"
+              >
+                Update Payment Method
+              </button>
+              <button
+                type="button"
+                onClick={() => handleBillingAction("cancel")}
+                disabled={!canCancelSubscription || billingActionLoading != null}
+                className="btn-danger text-sm disabled:opacity-60"
+              >
+                {billingActionLoading === "cancel"
+                  ? "Cancelling..."
+                  : "Cancel at Period End"}
+              </button>
+              <button
+                type="button"
+                onClick={() => handleBillingAction("reactivate")}
+                disabled={!canReactivateSubscription || billingActionLoading != null}
+                className="btn-secondary text-sm disabled:opacity-60"
+              >
+                {billingActionLoading === "reactivate"
+                  ? "Reactivating..."
+                  : "Reactivate Subscription"}
+              </button>
             </div>
           </div>
-        )}
-      </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6">
+            <div className="text-sm font-semibold text-slate-100">Invoice History</div>
+            <p className="mt-2 text-xs text-slate-500">
+              Latest invoices for this workspace subscription.
+            </p>
+            <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-800">
+              <table className="min-w-[980px] w-full text-left text-sm text-slate-300">
+                <thead className="text-xs text-slate-500" style={{ backgroundColor: "var(--surface-strong)" }}>
+                  <tr>
+                    <th className="px-4 py-3">Invoice No.</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3">Total</th>
+                    <th className="px-4 py-3">Amount Due</th>
+                    <th className="px-4 py-3">Issued</th>
+                    <th className="px-4 py-3">Due</th>
+                    <th className="px-4 py-3">Paid</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {invoices.map((invoice) => (
+                    <tr
+                      key={invoice.$id}
+                      className="border-t odd:bg-slate-950/30"
+                      style={{ borderColor: "var(--border)" }}
+                    >
+                      <td className="px-4 py-3 text-slate-100">{invoice.invoiceNumber}</td>
+                      <td className="px-4 py-3">{invoice.status}</td>
+                      <td className="amount px-4 py-3">
+                        {formatMoney(invoice.totalAmount, invoice.currency)}
+                      </td>
+                      <td className="amount px-4 py-3">
+                        {formatMoney(invoice.amountDue, invoice.currency)}
+                      </td>
+                      <td className="px-4 py-3">{formatDisplayDate(invoice.issuedAt)}</td>
+                      <td className="px-4 py-3">{formatDisplayDate(invoice.dueDate)}</td>
+                      <td className="px-4 py-3">{formatDisplayDate(invoice.paidAt)}</td>
+                    </tr>
+                  ))}
+                  {invoices.length === 0 && (
+                    <tr>
+                      <td className="px-4 py-4 text-slate-500" colSpan={7}>
+                        No invoices yet for this workspace.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "team" && (
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6">
+          <div className="text-sm font-semibold text-slate-100">Add Team User</div>
+          <p className="mt-2 text-xs text-slate-500">
+            For existing users, leave password empty to only update role assignment.
+          </p>
+          {planLimits.maxTeamMembers != null ? (
+            <div className="mt-3 text-xs text-amber-300">
+              Team member usage: {teamMemberLimitStatus.used.toLocaleString()} /{" "}
+              {formatLimitValue(teamMemberLimitStatus.limit)}
+              {teamMemberLimitStatus.reached
+                ? " (limit reached - upgrade to add more users)"
+                : ""}
+              {teamMemberLimitStatus.reached ? (
+                <Link to="/app/upgrade" className="ml-2 underline">
+                  Upgrade Plan
+                </Link>
+              ) : null}
+            </div>
+          ) : null}
+          {!manageUsersAccess.allowed ? (
+            <div className="mt-4 rounded-xl border border-amber-600/40 bg-amber-950/30 p-4 text-sm text-amber-100">
+              {manageUsersAccess.reason ||
+                "User management is locked on your current plan. Upgrade to continue."}
+              <div className="mt-2">
+                <Link to="/app/upgrade" className="underline">
+                  View plans and upgrade
+                </Link>
+              </div>
+            </div>
+          ) : null}
+
+          <form className="mt-5 space-y-4" onSubmit={handleSubmit}>
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="block text-sm text-slate-300">
+                Full Name
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  placeholder="Jane Doe"
+                  disabled={!manageUsersAccess.allowed}
+                  className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                />
+              </label>
+              <label className="block text-sm text-slate-300">
+                Email
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  placeholder="jane@example.com"
+                  required
+                  disabled={!manageUsersAccess.allowed}
+                  className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                />
+              </label>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="block text-sm text-slate-300">
+                Password (for new users)
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  placeholder="At least 8 characters"
+                  disabled={!manageUsersAccess.allowed}
+                  className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                />
+              </label>
+              <label className="block text-sm text-slate-300">
+                Role
+                <select
+                  value={role}
+                  onChange={(event) => setRole(event.target.value as AppRole)}
+                  disabled={!manageUsersAccess.allowed}
+                  className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                >
+                  <option value="viewer">Viewer</option>
+                  <option value="clerk">Clerk</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </label>
+            </div>
+
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="submit"
+                disabled={submitting || !manageUsersAccess.allowed}
+                className="btn-primary text-sm disabled:opacity-60"
+              >
+                {submitting ? "Saving..." : "Create / Update User"}
+              </button>
+              <button
+                type="button"
+                onClick={resetForm}
+                disabled={submitting || !manageUsersAccess.allowed}
+                className="btn-secondary text-sm disabled:opacity-60"
+              >
+                Clear
+              </button>
+            </div>
+          </form>
+
+          {error && <p className="mt-4 text-sm text-rose-300">{error}</p>}
+
+          {result && (
+            <div className="mt-5 rounded-xl border border-emerald-700/50 bg-emerald-950/30 p-4 text-sm">
+              <div className="font-semibold text-emerald-200">
+                {result.created ? "User created successfully." : "User role updated successfully."}
+              </div>
+              <div className="mt-2 text-emerald-100/90">
+                {result.user.name} ({result.user.email}) is now assigned as {result.role}.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </section>
   );
 }

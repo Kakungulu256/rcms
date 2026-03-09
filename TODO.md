@@ -239,7 +239,7 @@ Use this list in order. Complete and verify each item before moving to the next.
 - Add upgrade modal/page with current plan, limits, and comparison table.
 - Add billing status banner (trial days left, subscription expiry, past due).
 
-47. [ ] Add billing/settings management for workspace admin
+47. [x] Add billing/settings management for workspace admin
 - Billing tab in Settings:
 - current plan
 - renewal date
