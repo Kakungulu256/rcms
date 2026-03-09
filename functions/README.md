@@ -8,6 +8,8 @@ This folder contains Appwrite Function handlers for RCMS backend workflows.
 - `migrateHistoricalData`
 - `manageUsers`
 - `bootstrapWorkspace`
+- `billingCheckout`
+- `billingWebhook`
 
 ## Deploying (manual)
 1. Create a new Function in Appwrite Console.
@@ -60,3 +62,34 @@ Set these env vars in the Appwrite Function:
 Frontend env var (in app `.env`):
 - `VITE_MIGRATE_HISTORICAL_DATA_FUNCTION_ID=<your-appwrite-function-id>`
 - `VITE_BOOTSTRAP_WORKSPACE_FUNCTION_ID=<your-bootstrapWorkspace-function-id>`
+
+## billingCheckout Environment
+Set these env vars in the Appwrite Function:
+- `RCMS_APPWRITE_ENDPOINT`
+- `RCMS_APPWRITE_PROJECT_ID`
+- `RCMS_APPWRITE_API_KEY`
+- `RCMS_APPWRITE_DATABASE_ID` (optional, defaults to `rcms`)
+- `RCMS_APPWRITE_TEAM_ADMIN_ID` (required unless an Appwrite team named `admin` exists)
+- `RCMS_BILLING_PROVIDER` (optional, defaults to `flutterwave`)
+- `RCMS_BILLING_DEFAULT_CURRENCY` (optional, defaults to `UGX`)
+- `RCMS_BILLING_SUCCESS_URL` (required unless provided in function payload)
+- `RCMS_BILLING_CANCEL_URL` (optional)
+- `RCMS_BILLING_APP_BASE_URL` (optional, fallback for success/cancel URLs)
+- `RCMS_BILLING_WEBHOOK_URL` (optional; forwarded in checkout metadata)
+- `RCMS_BILLING_PRODUCT_NAME` (optional; shown on provider checkout)
+- `RCMS_BILLING_LOGO_URL` (optional)
+- `RCMS_FLUTTERWAVE_SECRET_KEY` (required for Flutterwave)
+- `RCMS_FLUTTERWAVE_BASE_URL` (optional, defaults to `https://api.flutterwave.com/v3`)
+
+## billingWebhook Environment
+Set these env vars in the Appwrite Function:
+- `RCMS_APPWRITE_ENDPOINT`
+- `RCMS_APPWRITE_PROJECT_ID`
+- `RCMS_APPWRITE_API_KEY`
+- `RCMS_APPWRITE_DATABASE_ID` (optional, defaults to `rcms`)
+- `RCMS_BILLING_PROVIDER` (optional, defaults to `flutterwave`)
+- `RCMS_FLUTTERWAVE_WEBHOOK_SECRET_HASH` (required for Flutterwave signature validation)
+- `RCMS_BILLING_PERIOD_DAYS` (optional, defaults to `30`)
+
+Additional frontend env var:
+- `VITE_BILLING_CHECKOUT_FUNCTION_ID=<your-billingCheckout-function-id>`

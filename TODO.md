@@ -205,7 +205,7 @@ Use this list in order. Complete and verify each item before moving to the next.
 - Keep plan pricing and trial settings editable by platform owner (no hardcoded prices in code).
 - Support coupon rules with percentage discounts per plan/package, validity windows, usage limits, and active/inactive state.
 
-41. [ ] Implement payment gateway abstraction + Flutterwave integration + webhook processing
+41. [x] Implement payment gateway abstraction + Flutterwave integration + webhook processing
 - Add gateway adapter interface/service so provider can be swapped without rewriting billing flows.
 - Implement Flutterwave adapter as the initial provider.
 - Create checkout session for plan purchase/upgrade.

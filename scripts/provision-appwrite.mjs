@@ -1071,6 +1071,15 @@ async function setupSubscriptions() {
   await ensureIndex(() =>
     databases.createIndex(databaseId, collectionId, "idx_sub_plan", "key", ["planCode"])
   );
+  await ensureIndex(() =>
+    databases.createIndex(
+      databaseId,
+      collectionId,
+      "idx_sub_gateway_ref",
+      "key",
+      ["gatewaySubscriptionRef"]
+    )
+  );
 }
 
 async function setupSubscriptionEvents() {
@@ -1219,6 +1228,15 @@ async function setupInvoices() {
   await ensureIndex(() =>
     databases.createIndex(databaseId, collectionId, "idx_invoice_status", "key", ["status"])
   );
+  await ensureIndex(() =>
+    databases.createIndex(
+      databaseId,
+      collectionId,
+      "idx_invoice_subscription",
+      "key",
+      ["subscriptionId"]
+    )
+  );
 }
 
 async function setupPaymentsBilling() {
@@ -1292,6 +1310,27 @@ async function setupPaymentsBilling() {
   );
   await ensureIndex(() =>
     databases.createIndex(databaseId, collectionId, "idx_billing_provider", "key", ["provider"])
+  );
+  await ensureIndex(() =>
+    databases.createIndex(
+      databaseId,
+      collectionId,
+      "idx_billing_provider_ref",
+      "key",
+      ["providerReference"]
+    )
+  );
+  await ensureIndex(() =>
+    databases.createIndex(
+      databaseId,
+      collectionId,
+      "idx_billing_subscription",
+      "key",
+      ["subscriptionId"]
+    )
+  );
+  await ensureIndex(() =>
+    databases.createIndex(databaseId, collectionId, "idx_billing_invoice", "key", ["invoiceId"])
   );
   await ensureIndex(() =>
     databases.createIndex(

@@ -1,0 +1,9 @@
+{
+  "name": "billing-checkout",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "main.js",
+  "dependencies": {
+    "node-appwrite": "^22.0.0"
+  }
+}
