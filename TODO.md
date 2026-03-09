@@ -253,7 +253,7 @@ Use this list in order. Complete and verify each item before moving to the next.
 - Provide controls for watermark style/opacity/position and preview before export.
 - Ensure exports without logo still work normally.
 
-49. [ ] Build platform owner dashboard (super-admin console)
+49. [x] Build platform owner dashboard (super-admin console)
 - Add owner-only dashboard to monitor all subscribers/workspaces.
 - Include: total signups, trialing, active paid, past due, churned, MRR/collections, plan distribution, and recent activity by workspace.
 - Include controls to edit plan prices/trial days and activate/deactivate plans globally.

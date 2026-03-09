@@ -18,7 +18,9 @@ import RequireAuth from "./auth/RequireAuth";
 import RequireBillingAccess from "./auth/RequireBillingAccess";
 import RequireFeature from "./auth/RequireFeature";
 import RequireRole from "./auth/RequireRole";
+import RequirePlatformOwner from "./auth/RequirePlatformOwner";
 import BillingLockedPage from "./ui/pages/BillingLockedPage";
+import PlatformOwnerPage from "./ui/pages/PlatformOwnerPage";
 
 export const router = createBrowserRouter([
   { path: "/", element: <LandingPage /> },
@@ -132,6 +134,14 @@ export const router = createBrowserRouter([
           <RequireRole allow={["admin"]}>
             <SettingsPage />
           </RequireRole>
+        ),
+      },
+      {
+        path: "platform",
+        element: (
+          <RequirePlatformOwner>
+            <PlatformOwnerPage />
+          </RequirePlatformOwner>
         ),
       },
       { path: "*", element: <Navigate to="/app" replace /> },

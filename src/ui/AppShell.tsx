@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
+import { isPlatformOwnerUser } from "../lib/platformOwner";
 
 export default function AppShell() {
   const { user, permissions, signOut, billing, canAccessFeature } = useAuth();
@@ -8,6 +9,10 @@ export default function AppShell() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const compactSidebar = collapsed && !mobileNavOpen;
   const billingLocked = billing?.accessState === "locked";
+  const isPlatformOwner = isPlatformOwnerUser({
+    id: user?.id || "",
+    email: user?.email || "",
+  });
 
   const navItems = [
     {
@@ -70,6 +75,12 @@ export default function AppShell() {
       to: "/app/settings",
       label: "Settings",
       visible: permissions.canAccessSettings,
+      premium: false,
+    },
+    {
+      to: "/app/platform",
+      label: "Platform",
+      visible: isPlatformOwner,
       premium: false,
     },
     {
