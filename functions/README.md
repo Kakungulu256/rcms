@@ -90,6 +90,9 @@ Set these env vars in the Appwrite Function:
 - `RCMS_BILLING_PROVIDER` (optional, defaults to `flutterwave`)
 - `RCMS_FLUTTERWAVE_WEBHOOK_SECRET_HASH` (required for Flutterwave signature validation)
 - `RCMS_BILLING_PERIOD_DAYS` (optional, defaults to `30`)
+- `RCMS_BILLING_GRACE_DAYS` (optional, defaults to `7`)
+- `RCMS_BILLING_MAX_RETRIES` (optional, defaults to `3`)
+- `RCMS_BILLING_RETRY_INTERVAL_HOURS` (optional, defaults to `24`)
 
 Additional frontend env var:
 - `VITE_BILLING_CHECKOUT_FUNCTION_ID=<your-billingCheckout-function-id>`

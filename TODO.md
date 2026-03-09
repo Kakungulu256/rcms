@@ -213,7 +213,7 @@ Use this list in order. Complete and verify each item before moving to the next.
 - Make webhook handler idempotent and audit-logged.
 - Keep gateway configuration environment-driven (`provider`, keys, webhook secret, callback URLs).
 
-42. [ ] Implement trial period and lifecycle rules
+42. [x] Implement trial period and lifecycle rules
 - Configure trial duration to `5 days` (editable in plan catalog/settings).
 - During trial, selected features are enabled.
 - After trial expiry without payment, lock premium features and show upgrade prompts.

@@ -1,10 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
-import { account, functions } from "../../lib/appwrite";
+import { Query } from "appwrite";
+import { account, databases, functions, rcmsDatabaseId } from "../../lib/appwrite";
 import { useToast } from "../ToastContext";
 import { useAuth } from "../../auth/AuthContext";
 import { logAudit } from "../../lib/audit";
 import { getActiveWorkspaceId } from "../../lib/workspace";
+import { createBillingCheckoutSession } from "../../lib/billing";
+import { COLLECTIONS, type Plan } from "../../lib/schema";
 
 type AppRole = "admin" | "clerk" | "viewer";
 
@@ -75,7 +78,7 @@ async function executeManageUsersFunction(
 }
 
 export default function SettingsPage() {
-  const { user } = useAuth();
+  const { user, billing } = useAuth();
   const toast = useToast();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -84,15 +87,72 @@ export default function SettingsPage() {
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<ManageUserSuccess | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [plans, setPlans] = useState<Plan[]>([]);
+  const [planCode, setPlanCode] = useState("");
+  const [couponCode, setCouponCode] = useState("");
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
   const manageUsersFunctionId = import.meta.env.VITE_MANAGE_USERS_FUNCTION_ID as
     | string
     | undefined;
+
+  useEffect(() => {
+    let active = true;
+    const loadPlans = async () => {
+      try {
+        const response = await databases.listDocuments(rcmsDatabaseId, COLLECTIONS.plans, [
+          Query.equal("isActive", [true]),
+          Query.orderAsc("sortOrder"),
+          Query.limit(20),
+        ]);
+        const docs = response.documents as unknown as Plan[];
+        if (!active) return;
+        setPlans(docs);
+        setPlanCode((current) => (current || docs[0]?.code || ""));
+      } catch {
+        if (active) {
+          setPlans([]);
+        }
+      }
+    };
+    void loadPlans();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const resetForm = () => {
     setName("");
     setEmail("");
     setPassword("");
     setRole("viewer");
+  };
+
+  const handleStartCheckout = async () => {
+    if (!planCode.trim()) {
+      toast.push("warning", "Select a plan before continuing.");
+      return;
+    }
+
+    setCheckoutLoading(true);
+    try {
+      const result = await createBillingCheckoutSession({
+        workspaceId: getActiveWorkspaceId(),
+        planCode: planCode.trim(),
+        couponCode: couponCode.trim() || undefined,
+      });
+      if (!result.ok) {
+        throw new Error(result.error || "Failed to start billing checkout.");
+      }
+      window.location.assign(result.checkoutUrl);
+    } catch (checkoutError) {
+      const message =
+        checkoutError instanceof Error
+          ? checkoutError.message
+          : "Failed to start billing checkout.";
+      toast.push("error", message);
+    } finally {
+      setCheckoutLoading(false);
+    }
   };
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -174,11 +234,100 @@ export default function SettingsPage() {
     <section className="space-y-6">
       <header>
         <div className="text-xs uppercase tracking-[0.35em] text-slate-500">Settings</div>
-        <h3 className="mt-3 text-2xl font-semibold text-white">Admin User Management</h3>
+        <h3 className="mt-3 text-2xl font-semibold text-white">Workspace Settings</h3>
         <p className="mt-2 text-sm text-slate-400">
-          Create users and assign exactly one role team.
+          Manage billing lifecycle and team permissions.
         </p>
       </header>
+
+      <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6">
+        <div className="text-sm font-semibold text-slate-100">Billing Lifecycle</div>
+        <p className="mt-2 text-xs text-slate-400">
+          Trial, grace period, and renewal status are enforced automatically.
+        </p>
+
+        <div className="mt-4 grid gap-4 md:grid-cols-3">
+          <div className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">
+            <div className="text-xs uppercase tracking-[0.2em] text-slate-500">State</div>
+            <div className="mt-2 text-lg font-semibold text-slate-100">
+              {billing?.effectiveState || billing?.state || "unknown"}
+            </div>
+          </div>
+          <div className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">
+            <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Plan</div>
+            <div className="mt-2 text-lg font-semibold text-slate-100">
+              {billing?.planCode || "Not set"}
+            </div>
+          </div>
+          <div className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">
+            <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Access</div>
+            <div className="mt-2 text-lg font-semibold text-slate-100">
+              {billing?.accessState || "full"}
+            </div>
+          </div>
+        </div>
+
+        {billing?.bannerTitle && billing?.bannerMessage ? (
+          <div
+            className="mt-4 rounded-xl border px-4 py-3 text-sm"
+            style={{
+              borderColor:
+                billing.bannerTone === "danger"
+                  ? "rgba(244,63,94,0.4)"
+                  : billing.bannerTone === "warning"
+                    ? "rgba(251,191,36,0.4)"
+                    : "rgba(56,189,248,0.4)",
+              backgroundColor:
+                billing.bannerTone === "danger"
+                  ? "rgba(190,24,93,0.15)"
+                  : billing.bannerTone === "warning"
+                    ? "rgba(180,83,9,0.15)"
+                    : "rgba(14,116,144,0.15)",
+              color: "var(--text)",
+            }}
+          >
+            <div className="font-semibold">{billing.bannerTitle}</div>
+            <div className="mt-1 text-xs text-slate-100/90">{billing.bannerMessage}</div>
+          </div>
+        ) : null}
+
+        <div className="mt-5 grid gap-4 md:grid-cols-3">
+          <label className="block text-sm text-slate-300">
+            Plan
+            <select
+              value={planCode}
+              onChange={(event) => setPlanCode(event.target.value)}
+              className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+            >
+              {plans.length === 0 ? <option value="">No active plans</option> : null}
+              {plans.map((plan) => (
+                <option key={plan.$id} value={plan.code}>
+                  {plan.name} ({Number(plan.priceAmount ?? 0).toLocaleString()} {plan.currency})
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-sm text-slate-300">
+            Coupon (optional)
+            <input
+              value={couponCode}
+              onChange={(event) => setCouponCode(event.target.value.toUpperCase())}
+              className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+              placeholder="DISCOUNT10"
+            />
+          </label>
+          <div className="flex items-end">
+            <button
+              type="button"
+              onClick={handleStartCheckout}
+              disabled={checkoutLoading || !planCode}
+              className="btn-primary w-full text-sm disabled:opacity-60"
+            >
+              {checkoutLoading ? "Starting checkout..." : "Pay / Upgrade"}
+            </button>
+          </div>
+        </div>
+      </div>
 
       <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6">
         <div className="text-sm font-semibold text-slate-100">Add Team User</div>

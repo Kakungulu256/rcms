@@ -1,23 +1,25 @@
 import { useState } from "react";
-import { NavLink, Outlet } from "react-router-dom";
+import { Link, NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 
 export default function AppShell() {
-  const { user, permissions, signOut } = useAuth();
+  const { user, permissions, signOut, billing } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const compactSidebar = collapsed && !mobileNavOpen;
+  const billingLocked = billing?.accessState === "locked";
 
   const navItems = [
-    { to: "/app", label: "Dashboard", visible: true, end: true },
-    { to: "/app/houses", label: "Houses", visible: permissions.canManageHouses },
-    { to: "/app/tenants", label: "Tenants", visible: permissions.canViewTenants },
-    { to: "/app/payments", label: "Payments", visible: permissions.canViewPayments },
-    { to: "/app/security-deposits", label: "Security Deposits", visible: permissions.canViewReports },
-    { to: "/app/expenses", label: "Expenses", visible: permissions.canRecordExpenses },
-    { to: "/app/migration", label: "Old Records", visible: permissions.canUseMigration },
-    { to: "/app/reports", label: "Reports", visible: permissions.canViewReports },
-    { to: "/app/settings", label: "Settings", visible: permissions.canAccessSettings },
+    { to: "/app", label: "Dashboard", visible: true, end: true, premium: false },
+    { to: "/app/houses", label: "Houses", visible: permissions.canManageHouses && !billingLocked, premium: true },
+    { to: "/app/tenants", label: "Tenants", visible: permissions.canViewTenants && !billingLocked, premium: true },
+    { to: "/app/payments", label: "Payments", visible: permissions.canViewPayments && !billingLocked, premium: true },
+    { to: "/app/security-deposits", label: "Security Deposits", visible: permissions.canViewReports && !billingLocked, premium: true },
+    { to: "/app/expenses", label: "Expenses", visible: permissions.canRecordExpenses && !billingLocked, premium: true },
+    { to: "/app/migration", label: "Old Records", visible: permissions.canUseMigration && !billingLocked, premium: true },
+    { to: "/app/reports", label: "Reports", visible: permissions.canViewReports && !billingLocked, premium: true },
+    { to: "/app/settings", label: "Settings", visible: permissions.canAccessSettings, premium: false },
+    { to: "/app/billing-lock", label: "Billing", visible: billingLocked, premium: false },
   ].filter((item) => item.visible);
 
   return (
@@ -147,6 +149,36 @@ export default function AppShell() {
                 </button>
               </div>
             </div>
+            {billing?.bannerTitle && billing?.bannerMessage && (
+              <div
+                className="mt-4 rounded-xl border px-4 py-3 text-sm"
+                style={{
+                  borderColor:
+                    billing.bannerTone === "danger"
+                      ? "rgba(244, 63, 94, 0.45)"
+                      : billing.bannerTone === "warning"
+                        ? "rgba(251, 191, 36, 0.45)"
+                        : "rgba(56, 189, 248, 0.45)",
+                  backgroundColor:
+                    billing.bannerTone === "danger"
+                      ? "rgba(190, 24, 93, 0.15)"
+                      : billing.bannerTone === "warning"
+                        ? "rgba(180, 83, 9, 0.15)"
+                        : "rgba(14, 116, 144, 0.15)",
+                  color: "var(--text)",
+                }}
+              >
+                <div className="font-semibold">{billing.bannerTitle}</div>
+                <div className="mt-1 flex flex-wrap items-center justify-between gap-3">
+                  <span className="text-xs md:text-sm">{billing.bannerMessage}</span>
+                  {permissions.canAccessSettings ? (
+                    <Link to="/app/settings" className="btn-secondary text-xs md:text-sm">
+                      Manage Billing
+                    </Link>
+                  ) : null}
+                </div>
+              </div>
+            )}
           </header>
 
           <main

@@ -240,6 +240,13 @@ export type Subscription = {
   trialEndDate?: string;
   currentPeriodStart?: string;
   currentPeriodEnd?: string;
+  pastDueSince?: string;
+  graceEndsAt?: string;
+  retryCount?: number;
+  nextRetryAt?: string;
+  lastRetryAt?: string;
+  dunningStage?: string;
+  lastFailureReason?: string;
   cancelAtPeriodEnd?: boolean;
   canceledAt?: string;
   endedAt?: string;

@@ -64,6 +64,10 @@ function addDaysIso(base, days) {
   return new Date(base.getTime() + Math.max(0, days) * 24 * 60 * 60 * 1000).toISOString();
 }
 
+function addHoursIso(base, hours) {
+  return new Date(base.getTime() + Math.max(0, hours) * 60 * 60 * 1000).toISOString();
+}
+
 function getHeader(headers, name) {
   const target = String(name).toLowerCase();
   for (const [key, value] of Object.entries(headers ?? {})) {
@@ -112,6 +116,109 @@ function mapSubscriptionState(status) {
   if (status === "canceled") return "canceled";
   if (status === "refunded") return "past_due";
   return null;
+}
+
+function resolveDunningPolicy() {
+  return {
+    graceDays: clampNumber(getEnv("RCMS_BILLING_GRACE_DAYS"), 1, 30),
+    maxRetries: clampNumber(getEnv("RCMS_BILLING_MAX_RETRIES"), 1, 10),
+    retryIntervalHours: clampNumber(getEnv("RCMS_BILLING_RETRY_INTERVAL_HOURS"), 1, 168),
+  };
+}
+
+function parseDate(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function deriveLifecycleUpdate(params) {
+  const { subscription, normalizedStatus, now, billingPeriodDays, dunningPolicy } = params;
+  const nowIso = now.toISOString();
+  const currentState = normalizeString(subscription.state) || "trialing";
+
+  if (normalizedStatus === "succeeded") {
+    return {
+      state: "active",
+      currentPeriodStart: nowIso,
+      currentPeriodEnd: addDaysIso(now, billingPeriodDays),
+      pastDueSince: null,
+      graceEndsAt: null,
+      retryCount: 0,
+      nextRetryAt: null,
+      lastRetryAt: nowIso,
+      dunningStage: null,
+      lastFailureReason: null,
+      canceledAt: null,
+      endedAt: null,
+      cancelAtPeriodEnd: false,
+    };
+  }
+
+  if (normalizedStatus === "canceled") {
+    return {
+      state: "canceled",
+      currentPeriodStart: subscription.currentPeriodStart || null,
+      currentPeriodEnd: subscription.currentPeriodEnd || null,
+      pastDueSince: subscription.pastDueSince || nowIso,
+      graceEndsAt: subscription.graceEndsAt || addDaysIso(now, dunningPolicy.graceDays),
+      retryCount: Number(subscription.retryCount ?? 0),
+      nextRetryAt: null,
+      lastRetryAt: nowIso,
+      dunningStage: "canceled",
+      lastFailureReason: normalizeString(subscription.lastFailureReason) || "Subscription canceled.",
+      canceledAt: nowIso,
+      endedAt: nowIso,
+      cancelAtPeriodEnd: true,
+    };
+  }
+
+  if (normalizedStatus === "failed" || normalizedStatus === "refunded") {
+    const previousRetryCount = Number(subscription.retryCount ?? 0);
+    const nextRetryCount = previousRetryCount + 1;
+    const pastDueSince = parseDate(subscription.pastDueSince) || now;
+    const graceEndsAt =
+      parseDate(subscription.graceEndsAt) ||
+      parseDate(addDaysIso(pastDueSince, dunningPolicy.graceDays));
+    const isGraceExpired = Boolean(graceEndsAt && now.getTime() > graceEndsAt.getTime());
+    const exceedsRetryCap = nextRetryCount > dunningPolicy.maxRetries;
+    const willExpire = isGraceExpired || exceedsRetryCap;
+    const nextState = willExpire ? "expired" : "past_due";
+
+    return {
+      state: nextState,
+      currentPeriodStart: subscription.currentPeriodStart || null,
+      currentPeriodEnd: subscription.currentPeriodEnd || null,
+      pastDueSince: pastDueSince.toISOString(),
+      graceEndsAt: graceEndsAt ? graceEndsAt.toISOString() : null,
+      retryCount: nextRetryCount,
+      nextRetryAt: willExpire ? null : addHoursIso(now, dunningPolicy.retryIntervalHours),
+      lastRetryAt: nowIso,
+      dunningStage: willExpire ? "final_notice" : `retry_${nextRetryCount}`,
+      lastFailureReason:
+        normalizeString(subscription.lastFailureReason) ||
+        "Last payment attempt failed. Retry scheduled.",
+      canceledAt: subscription.canceledAt || null,
+      endedAt: willExpire ? nowIso : subscription.endedAt || null,
+      cancelAtPeriodEnd: Boolean(subscription.cancelAtPeriodEnd),
+    };
+  }
+
+  return {
+    state: mapSubscriptionState(normalizedStatus) || currentState,
+    currentPeriodStart: subscription.currentPeriodStart || null,
+    currentPeriodEnd: subscription.currentPeriodEnd || null,
+    pastDueSince: subscription.pastDueSince || null,
+    graceEndsAt: subscription.graceEndsAt || null,
+    retryCount: Number(subscription.retryCount ?? 0),
+    nextRetryAt: subscription.nextRetryAt || null,
+    lastRetryAt: subscription.lastRetryAt || null,
+    dunningStage: subscription.dunningStage || null,
+    lastFailureReason: subscription.lastFailureReason || null,
+    canceledAt: subscription.canceledAt || null,
+    endedAt: subscription.endedAt || null,
+    cancelAtPeriodEnd: Boolean(subscription.cancelAtPeriodEnd),
+  };
 }
 
 function resolveBillingProvider() {
@@ -428,9 +535,9 @@ export default async (context) => {
       subscriptionId
     );
     const previousSubscriptionState = normalizeString(subscription.state);
-    const nextSubscriptionState = mapSubscriptionState(normalized.status) || previousSubscriptionState;
     const now = new Date();
     const billingPeriodDays = clampNumber(getEnv("RCMS_BILLING_PERIOD_DAYS"), 1, 365);
+    const dunningPolicy = resolveDunningPolicy();
 
     if (invoice) {
       const nextInvoiceStatus =
@@ -473,23 +580,42 @@ export default async (context) => {
       normalizeString(normalized.meta?.planCode) ||
       normalizeString(invoiceMetadata?.planCode) ||
       normalizeString(subscription.planCode);
+    const inferredFailureReason =
+      normalized.status === "failed"
+        ? normalizeString(normalized.raw?.data?.processor_response) ||
+          normalizeString(normalized.raw?.message) ||
+          "Payment attempt failed."
+        : normalized.status === "refunded"
+          ? "Payment was refunded by provider."
+          : null;
+
+    const lifecycleUpdate = deriveLifecycleUpdate({
+      subscription: {
+        ...subscription,
+        lastFailureReason: inferredFailureReason || subscription.lastFailureReason,
+      },
+      normalizedStatus: normalized.status,
+      now,
+      billingPeriodDays,
+      dunningPolicy,
+    });
+    const nextSubscriptionState = lifecycleUpdate.state || previousSubscriptionState;
 
     await databases.updateDocument(databaseId, COLLECTIONS.subscriptions, subscription.$id, {
       state: nextSubscriptionState,
       planCode: targetPlanCode,
-      currentPeriodStart:
-        normalized.status === "succeeded"
-          ? now.toISOString()
-          : subscription.currentPeriodStart || null,
-      currentPeriodEnd:
-        normalized.status === "succeeded"
-          ? addDaysIso(now, billingPeriodDays)
-          : subscription.currentPeriodEnd || null,
-      canceledAt:
-        normalized.status === "canceled" ? now.toISOString() : subscription.canceledAt || null,
-      endedAt:
-        normalized.status === "canceled" ? now.toISOString() : subscription.endedAt || null,
-      cancelAtPeriodEnd: normalized.status === "canceled",
+      currentPeriodStart: lifecycleUpdate.currentPeriodStart,
+      currentPeriodEnd: lifecycleUpdate.currentPeriodEnd,
+      pastDueSince: lifecycleUpdate.pastDueSince,
+      graceEndsAt: lifecycleUpdate.graceEndsAt,
+      retryCount: lifecycleUpdate.retryCount,
+      nextRetryAt: lifecycleUpdate.nextRetryAt,
+      lastRetryAt: lifecycleUpdate.lastRetryAt,
+      dunningStage: lifecycleUpdate.dunningStage,
+      lastFailureReason: lifecycleUpdate.lastFailureReason,
+      canceledAt: lifecycleUpdate.canceledAt,
+      endedAt: lifecycleUpdate.endedAt,
+      cancelAtPeriodEnd: lifecycleUpdate.cancelAtPeriodEnd,
       couponCode:
         normalizeCouponCode(normalized.meta?.couponCode) ||
         normalizeCouponCode(invoice?.couponCode) ||
@@ -555,6 +681,10 @@ export default async (context) => {
         status: normalized.status,
         previousState: previousSubscriptionState,
         nextState: nextSubscriptionState,
+        dunningStage: lifecycleUpdate.dunningStage,
+        retryCount: lifecycleUpdate.retryCount,
+        nextRetryAt: lifecycleUpdate.nextRetryAt,
+        graceEndsAt: lifecycleUpdate.graceEndsAt,
         providerReference: normalized.providerReference,
         providerPaymentId: normalized.providerPaymentId,
       },

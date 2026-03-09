@@ -209,6 +209,13 @@ export default async (context) => {
         trialEndDate,
         currentPeriodStart: trialStartDate,
         currentPeriodEnd: trialEndDate,
+        pastDueSince: null,
+        graceEndsAt: null,
+        retryCount: 0,
+        nextRetryAt: null,
+        lastRetryAt: null,
+        dunningStage: null,
+        lastFailureReason: null,
         cancelAtPeriodEnd: false,
         notes: "Initial trial subscription",
       });

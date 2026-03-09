@@ -1021,6 +1021,27 @@ async function setupSubscriptions() {
     databases.createDatetimeAttribute(databaseId, collectionId, "currentPeriodEnd", false)
   );
   await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "pastDueSince", false)
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "graceEndsAt", false)
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(databaseId, collectionId, "retryCount", false)
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "nextRetryAt", false)
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "lastRetryAt", false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "dunningStage", 32, false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "lastFailureReason", 512, false)
+  );
+  await ensureAttribute(() =>
     databases.createBooleanAttribute(
       databaseId,
       collectionId,
@@ -1079,6 +1100,12 @@ async function setupSubscriptions() {
       "key",
       ["gatewaySubscriptionRef"]
     )
+  );
+  await ensureIndex(() =>
+    databases.createIndex(databaseId, collectionId, "idx_sub_grace_ends", "key", ["graceEndsAt"])
+  );
+  await ensureIndex(() =>
+    databases.createIndex(databaseId, collectionId, "idx_sub_next_retry", "key", ["nextRetryAt"])
   );
 }
 

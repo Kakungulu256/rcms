@@ -14,7 +14,9 @@ import SettingsPage from "./ui/pages/SettingsPage";
 import SignupPage from "./ui/pages/SignupPage";
 import TenantsPage from "./ui/pages/TenantsPage";
 import RequireAuth from "./auth/RequireAuth";
+import RequireBillingAccess from "./auth/RequireBillingAccess";
 import RequireRole from "./auth/RequireRole";
+import BillingLockedPage from "./ui/pages/BillingLockedPage";
 
 export const router = createBrowserRouter([
   { path: "/", element: <LandingPage /> },
@@ -41,52 +43,72 @@ export const router = createBrowserRouter([
       {
         path: "houses",
         element: (
-          <RequireRole allow={["admin", "clerk"]}>
-            <HousesPage />
-          </RequireRole>
+          <RequireBillingAccess>
+            <RequireRole allow={["admin", "clerk"]}>
+              <HousesPage />
+            </RequireRole>
+          </RequireBillingAccess>
         ),
       },
       {
         path: "tenants",
         element: (
-          <RequireRole allow={["admin", "clerk", "viewer"]}>
-            <TenantsPage />
-          </RequireRole>
+          <RequireBillingAccess>
+            <RequireRole allow={["admin", "clerk", "viewer"]}>
+              <TenantsPage />
+            </RequireRole>
+          </RequireBillingAccess>
         ),
       },
       {
         path: "payments",
         element: (
-          <RequireRole allow={["admin", "clerk", "viewer"]}>
-            <PaymentsPage />
-          </RequireRole>
+          <RequireBillingAccess>
+            <RequireRole allow={["admin", "clerk", "viewer"]}>
+              <PaymentsPage />
+            </RequireRole>
+          </RequireBillingAccess>
         ),
       },
       {
         path: "expenses",
         element: (
-          <RequireRole allow={["admin", "clerk"]}>
-            <ExpensesPage />
-          </RequireRole>
+          <RequireBillingAccess>
+            <RequireRole allow={["admin", "clerk"]}>
+              <ExpensesPage />
+            </RequireRole>
+          </RequireBillingAccess>
         ),
       },
       {
         path: "migration",
         element: (
-          <RequireRole allow={["admin", "clerk"]}>
-            <MigrationPage />
-          </RequireRole>
+          <RequireBillingAccess>
+            <RequireRole allow={["admin", "clerk"]}>
+              <MigrationPage />
+            </RequireRole>
+          </RequireBillingAccess>
         ),
       },
-      { path: "reports", element: <ReportsPage /> },
+      {
+        path: "reports",
+        element: (
+          <RequireBillingAccess>
+            <ReportsPage />
+          </RequireBillingAccess>
+        ),
+      },
       {
         path: "security-deposits",
         element: (
-          <RequireRole allow={["admin", "clerk", "viewer"]}>
-            <SecurityDepositsPage />
-          </RequireRole>
+          <RequireBillingAccess>
+            <RequireRole allow={["admin", "clerk", "viewer"]}>
+              <SecurityDepositsPage />
+            </RequireRole>
+          </RequireBillingAccess>
         ),
       },
+      { path: "billing-lock", element: <BillingLockedPage /> },
       {
         path: "settings",
         element: (
