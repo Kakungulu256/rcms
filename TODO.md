@@ -191,7 +191,7 @@ Use this list in order. Complete and verify each item before moving to the next.
 - Default team membership as `admin` for that workspace owner.
 - Set initial subscription state to `trialing` with start/end dates.
 
-40. [ ] Add subscription domain models
+40. [x] Add subscription domain models
 - Add collections/tables for:
 - `plans`
 - `subscriptions`

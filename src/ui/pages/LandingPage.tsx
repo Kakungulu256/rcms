@@ -1,18 +1,23 @@
+import { Query } from "appwrite";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { COLLECTIONS, decodeJson, type Plan } from "../../lib/schema";
+import { databases, rcmsDatabaseId } from "../../lib/appwrite";
 
-type Plan = {
+type PlanCard = {
   name: string;
   price: string;
   description: string;
   points: string[];
   cta: string;
   highlighted?: boolean;
+  trialDays?: number;
 };
 
-const plans = [
+const fallbackPlans = [
   {
     name: "Starter",
-    price: "49,000 UGX / month",
+    price: "Price configured by platform owner",
     description: "For one small team managing day-to-day rent collection.",
     points: [
       "Up to 1 workspace",
@@ -23,7 +28,7 @@ const plans = [
   },
   {
     name: "Growth",
-    price: "149,000 UGX / month",
+    price: "Price configured by platform owner",
     description: "For active teams with higher transaction volume.",
     points: ["Everything in Starter", "Larger team capacity", "Priority operational support"],
     cta: "Choose Growth",
@@ -31,23 +36,41 @@ const plans = [
   },
   {
     name: "Agency",
-    price: "349,000 UGX / month",
+    price: "Price configured by platform owner",
     description: "For multi-property managers working across many landlords.",
     points: ["Everything in Growth", "High usage limits", "Advanced reporting and controls"],
     cta: "Choose Agency",
   },
-] satisfies Plan[];
+] satisfies PlanCard[];
+
+const defaultPlanPoints = [
+  "Role-based team access",
+  "Tenants, payments, houses, and expenses",
+  "Export-ready operational reports",
+];
+
+function formatPlanPrice(amount: number | undefined, currency: string | undefined) {
+  if (!Number.isFinite(amount as number)) {
+    return "Price configured by platform owner";
+  }
+
+  const isoCurrency = String(currency ?? "UGX").trim().toUpperCase() || "UGX";
+  try {
+    const formatted = new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: isoCurrency,
+      maximumFractionDigits: 0,
+    }).format(Number(amount));
+    return `${formatted} / month`;
+  } catch {
+    return `${Number(amount).toLocaleString()} ${isoCurrency} / month`;
+  }
+}
 
 const highlights = [
   { label: "Payment Allocation", text: "Auto-allocation to oldest arrears with clear month-by-month history." },
   { label: "Team Control", text: "Workspace-based access with role permissions for admin, clerk, and viewer." },
   { label: "Export Reports", text: "Generate monthly, tenant, and collection reports in PDF and XLSX." },
-];
-
-const stats = [
-  { value: "5 days", label: "Trial Period" },
-  { value: "3 roles", label: "Built-in RBAC" },
-  { value: "24/7", label: "Cloud Access" },
 ];
 
 const faqs = [
@@ -66,6 +89,89 @@ const faqs = [
 ];
 
 export default function LandingPage() {
+  const [plans, setPlans] = useState<PlanCard[]>(fallbackPlans);
+  const [pricingSource, setPricingSource] = useState<"catalog" | "fallback">("fallback");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadPlans = async () => {
+      try {
+        const response = await databases.listDocuments(rcmsDatabaseId, COLLECTIONS.plans, [
+          Query.equal("isActive", [true]),
+          Query.orderAsc("sortOrder"),
+          Query.limit(20),
+        ]);
+
+        const planCards = (response.documents as unknown as Plan[])
+          .map((document, index) => {
+            const metadata = decodeJson<{
+              points?: string[];
+              cta?: string;
+              highlighted?: boolean;
+            }>(document.metadataJson);
+            const points =
+              Array.isArray(metadata?.points) && metadata.points.length > 0
+                ? metadata.points.filter((point) => String(point).trim().length > 0)
+                : defaultPlanPoints;
+
+            return {
+              name: document.name || document.code || `Plan ${index + 1}`,
+              price: formatPlanPrice(document.priceAmount, document.currency),
+              description:
+                document.description?.trim() ||
+                "Flexible plan for operational rent collection and reporting.",
+              points,
+              cta: metadata?.cta?.trim() || `Choose ${document.name || "Plan"}`,
+              highlighted: Boolean(metadata?.highlighted),
+              trialDays: Number(document.trialDays ?? 0),
+            };
+          })
+          .filter((plan) => plan.name.trim().length > 0);
+
+        if (cancelled || planCards.length === 0) return;
+
+        planCards.sort((a, b) => {
+          if (a.highlighted && !b.highlighted) return -1;
+          if (!a.highlighted && b.highlighted) return 1;
+          return 0;
+        });
+        setPlans(planCards);
+        setPricingSource("catalog");
+      } catch {
+        if (!cancelled) {
+          setPlans(fallbackPlans);
+          setPricingSource("fallback");
+        }
+      }
+    };
+
+    void loadPlans();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const trialLabel = useMemo(() => {
+    const candidate = plans
+      .map((plan) => Number(plan.trialDays ?? 0))
+      .find((days) => Number.isFinite(days) && days > 0);
+    if (candidate && candidate > 0) {
+      return `${candidate.toLocaleString()} days`;
+    }
+    return "Configurable";
+  }, [plans]);
+
+  const stats = useMemo(
+    () => [
+      { value: trialLabel, label: "Trial Period" },
+      { value: "3 roles", label: "Built-in RBAC" },
+      { value: "24/7", label: "Cloud Access" },
+    ],
+    [trialLabel]
+  );
+
   return (
     <div className="landing-page min-h-screen" style={{ backgroundColor: "var(--bg)", color: "var(--text)" }}>
       <header
@@ -129,7 +235,7 @@ export default function LandingPage() {
               </p>
               <div className="mt-7 flex flex-wrap gap-3">
                 <Link to="/signup" className="landing-btn-primary text-sm">
-                  Start 5-Day Trial
+                  Start Free Trial
                 </Link>
                 <Link to="/login" className="landing-btn-secondary text-sm">
                   Login to RCMS
@@ -235,6 +341,11 @@ export default function LandingPage() {
           <p className="mt-2 text-sm" style={{ color: "var(--muted)" }}>
             Pick a plan based on your team size and portfolio.
           </p>
+          <p className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
+            {pricingSource === "catalog"
+              ? "Pricing is loaded from the live plan catalog."
+              : "Plan catalog is not reachable yet. Showing fallback package cards."}
+          </p>
           <div className="mt-5 grid gap-4 md:grid-cols-3">
             {plans.map((plan) => (
               <article
@@ -293,7 +404,7 @@ export default function LandingPage() {
             <div>
               <h3 className="text-xl font-semibold">Ready to streamline rent operations?</h3>
               <p className="mt-1 text-sm" style={{ color: "var(--muted)" }}>
-                Create your workspace and start with a 5-day trial.
+                Create your workspace and start with a {trialLabel.toLowerCase()} trial.
               </p>
             </div>
             <div className="flex gap-3">

@@ -249,7 +249,7 @@ export default function SignupPage() {
             <div className="mt-6 space-y-2 text-sm text-slate-400">
               <div>1. Create account</div>
               <div>2. Workspace is provisioned automatically</div>
-              <div>3. Trial starts immediately (5 days)</div>
+              <div>3. Trial starts immediately</div>
             </div>
             <div className="mt-6">
               <Link to="/" className="text-sm font-medium text-blue-200 hover:underline">

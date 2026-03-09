@@ -55,6 +55,7 @@ Set these env vars in the Appwrite Function:
 - `RCMS_APPWRITE_DATABASE_ID` (optional, defaults to `rcms`)
 - `RCMS_APPWRITE_TEAM_ADMIN_ID` (required unless an Appwrite team named `admin` exists)
 - `RCMS_TRIAL_DAYS` (optional, defaults to `5`)
+- `RCMS_DEFAULT_TRIAL_PLAN_CODE` (optional, defaults to `trial`)
 
 Frontend env var (in app `.env`):
 - `VITE_MIGRATE_HISTORICAL_DATA_FUNCTION_ID=<your-appwrite-function-id>`

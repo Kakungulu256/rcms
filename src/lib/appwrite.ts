@@ -33,6 +33,11 @@ export const WORKSPACE_SCOPED_COLLECTION_IDS = new Set<string>([
   COLLECTIONS.expenses,
   COLLECTIONS.securityDepositDeductions,
   COLLECTIONS.auditLogs,
+  COLLECTIONS.subscriptions,
+  COLLECTIONS.subscriptionEvents,
+  COLLECTIONS.invoices,
+  COLLECTIONS.paymentsBilling,
+  COLLECTIONS.couponRedemptions,
 ]);
 
 export function isWorkspaceScopedCollection(collectionId: string) {

@@ -88,9 +88,50 @@ function buildRolePermissions() {
 
 const rolePermissions = buildRolePermissions();
 
+const platformBillingCollectionIds = new Set([
+  "plans",
+  "feature_entitlements",
+  "coupons",
+]);
+
+const workspaceBillingCollectionIds = new Set([
+  "subscriptions",
+  "subscription_events",
+  "invoices",
+  "payments_billing",
+  "coupon_redemptions",
+]);
+
 function getCollectionPermissions(collectionId) {
   if (!rolePermissions) {
     return defaultPermissions;
+  }
+
+  if (platformBillingCollectionIds.has(collectionId)) {
+    if (collectionId === "plans") {
+      return [
+        Permission.read(Role.any()),
+        Permission.read(Role.team(teamIds.admin)),
+        Permission.create(Role.team(teamIds.admin)),
+        Permission.update(Role.team(teamIds.admin)),
+        Permission.delete(Role.team(teamIds.admin)),
+      ];
+    }
+
+    return [
+      Permission.read(Role.team(teamIds.admin)),
+      Permission.create(Role.team(teamIds.admin)),
+      Permission.update(Role.team(teamIds.admin)),
+      Permission.delete(Role.team(teamIds.admin)),
+    ];
+  }
+
+  if (workspaceBillingCollectionIds.has(collectionId)) {
+    return [
+      ...rolePermissions.adminCrud,
+      ...rolePermissions.viewerRead,
+      Permission.read(Role.team(teamIds.clerk)),
+    ];
   }
 
   if (collectionId === "houses") {
@@ -802,10 +843,529 @@ async function setupWorkspaces() {
   );
 }
 
+async function setupPlans() {
+  const collectionId = "plans";
+  await ensureCollection(collectionId, "Plans");
+
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "code", 48, true)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "name", 128, true)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "description", 1024, false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "currency", 8, true)
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(databaseId, collectionId, "priceAmount", true)
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(databaseId, collectionId, "trialDays", false)
+  );
+  await ensureAttribute(() =>
+    databases.createBooleanAttribute(databaseId, collectionId, "isActive", true)
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(databaseId, collectionId, "sortOrder", false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "entitlementsJson", 20000, false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "limitsJson", 20000, false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "metadataJson", 20000, false)
+  );
+
+  await ensureIndex(() =>
+    databases.createIndex(databaseId, collectionId, "idx_plan_code", "key", ["code"])
+  );
+  await ensureIndex(() =>
+    databases.createIndex(databaseId, collectionId, "idx_plan_active", "key", ["isActive"])
+  );
+}
+
+async function setupFeatureEntitlements() {
+  const collectionId = "feature_entitlements";
+  await ensureCollection(collectionId, "Feature Entitlements");
+
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "planCode", 48, true)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "featureKey", 96, true)
+  );
+  await ensureAttribute(() =>
+    databases.createBooleanAttribute(databaseId, collectionId, "enabled", true)
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(databaseId, collectionId, "limitValue", false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "limitUnit", 32, false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "notes", 512, false)
+  );
+
+  await ensureIndex(() =>
+    databases.createIndex(
+      databaseId,
+      collectionId,
+      "idx_entitlement_plan_feature",
+      "key",
+      ["planCode", "featureKey"]
+    )
+  );
+}
+
+async function setupCoupons() {
+  const collectionId = "coupons";
+  await ensureCollection(collectionId, "Coupons");
+
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "code", 48, true)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "name", 128, false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "description", 1024, false)
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(databaseId, collectionId, "discountPercent", true)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(
+      databaseId,
+      collectionId,
+      "appliesToPlanCodesJson",
+      20000,
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "validFrom", false)
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "validUntil", false)
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(databaseId, collectionId, "maxRedemptions", false)
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(
+      databaseId,
+      collectionId,
+      "maxRedemptionsPerWorkspace",
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(databaseId, collectionId, "redemptionCount", false)
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(databaseId, collectionId, "minPlanAmount", false)
+  );
+  await ensureAttribute(() =>
+    databases.createBooleanAttribute(databaseId, collectionId, "isActive", true)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "metadataJson", 20000, false)
+  );
+
+  await ensureIndex(() =>
+    databases.createIndex(databaseId, collectionId, "idx_coupon_code", "key", ["code"])
+  );
+  await ensureIndex(() =>
+    databases.createIndex(databaseId, collectionId, "idx_coupon_active", "key", ["isActive"])
+  );
+}
+
+async function setupSubscriptions() {
+  const collectionId = "subscriptions";
+  await ensureCollection(collectionId, "Subscriptions");
+  await ensureWorkspaceScope(collectionId);
+
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "planCode", 48, true)
+  );
+  await ensureAttribute(() =>
+    databases.createEnumAttribute(
+      databaseId,
+      collectionId,
+      "state",
+      ["trialing", "active", "past_due", "canceled", "expired"],
+      true
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "trialStartDate", false)
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "trialEndDate", false)
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(
+      databaseId,
+      collectionId,
+      "currentPeriodStart",
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "currentPeriodEnd", false)
+  );
+  await ensureAttribute(() =>
+    databases.createBooleanAttribute(
+      databaseId,
+      collectionId,
+      "cancelAtPeriodEnd",
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "canceledAt", false)
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "endedAt", false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "couponCode", 48, false)
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(databaseId, collectionId, "discountPercent", false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "gatewayProvider", 32, false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(
+      databaseId,
+      collectionId,
+      "gatewayCustomerRef",
+      128,
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(
+      databaseId,
+      collectionId,
+      "gatewaySubscriptionRef",
+      128,
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "notes", 512, false)
+  );
+
+  await ensureIndex(() =>
+    databases.createIndex(databaseId, collectionId, "idx_sub_state", "key", ["state"])
+  );
+  await ensureIndex(() =>
+    databases.createIndex(databaseId, collectionId, "idx_sub_plan", "key", ["planCode"])
+  );
+}
+
+async function setupSubscriptionEvents() {
+  const collectionId = "subscription_events";
+  await ensureCollection(collectionId, "Subscription Events");
+  await ensureWorkspaceScope(collectionId);
+
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "subscriptionId", 64, true)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "eventType", 64, true)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "eventSource", 32, false)
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "eventTime", true)
+  );
+  await ensureAttribute(() =>
+    databases.createEnumAttribute(
+      databaseId,
+      collectionId,
+      "stateFrom",
+      ["trialing", "active", "past_due", "canceled", "expired"],
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createEnumAttribute(
+      databaseId,
+      collectionId,
+      "stateTo",
+      ["trialing", "active", "past_due", "canceled", "expired"],
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(
+      databaseId,
+      collectionId,
+      "idempotencyKey",
+      128,
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "payloadJson", 20000, false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "actorUserId", 64, false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "reference", 128, false)
+  );
+
+  await ensureIndex(() =>
+    databases.createIndex(
+      databaseId,
+      collectionId,
+      "idx_sub_event_subscription",
+      "key",
+      ["subscriptionId"]
+    )
+  );
+  await ensureIndex(() =>
+    databases.createIndex(databaseId, collectionId, "idx_sub_event_time", "key", ["eventTime"])
+  );
+  await ensureIndex(() =>
+    databases.createIndex(
+      databaseId,
+      collectionId,
+      "idx_sub_event_idempotency",
+      "key",
+      ["idempotencyKey"]
+    )
+  );
+}
+
+async function setupInvoices() {
+  const collectionId = "invoices";
+  await ensureCollection(collectionId, "Invoices");
+  await ensureWorkspaceScope(collectionId);
+
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "subscriptionId", 64, true)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "invoiceNumber", 64, true)
+  );
+  await ensureAttribute(() =>
+    databases.createEnumAttribute(
+      databaseId,
+      collectionId,
+      "status",
+      ["draft", "open", "paid", "void", "uncollectible"],
+      true
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "currency", 8, true)
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(databaseId, collectionId, "subtotal", true)
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(databaseId, collectionId, "discountAmount", false)
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(databaseId, collectionId, "taxAmount", false)
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(databaseId, collectionId, "totalAmount", true)
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(databaseId, collectionId, "amountDue", true)
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(databaseId, collectionId, "amountPaid", false)
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "dueDate", false)
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "issuedAt", false)
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "paidAt", false)
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "periodStart", false)
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "periodEnd", false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "couponCode", 48, false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "metadataJson", 20000, false)
+  );
+
+  await ensureIndex(() =>
+    databases.createIndex(databaseId, collectionId, "idx_invoice_number", "key", ["invoiceNumber"])
+  );
+  await ensureIndex(() =>
+    databases.createIndex(databaseId, collectionId, "idx_invoice_status", "key", ["status"])
+  );
+}
+
+async function setupPaymentsBilling() {
+  const collectionId = "payments_billing";
+  await ensureCollection(collectionId, "Billing Payments");
+  await ensureWorkspaceScope(collectionId);
+
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "subscriptionId", 64, false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "invoiceId", 64, false)
+  );
+  await ensureAttribute(() =>
+    databases.createEnumAttribute(
+      databaseId,
+      collectionId,
+      "status",
+      ["pending", "succeeded", "failed", "refunded", "canceled"],
+      true
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "provider", 32, true)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(
+      databaseId,
+      collectionId,
+      "providerReference",
+      128,
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(
+      databaseId,
+      collectionId,
+      "providerPaymentId",
+      128,
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(databaseId, collectionId, "amount", true)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "currency", 8, true)
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "paidAt", false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "failureReason", 512, false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "rawPayloadJson", 20000, false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(
+      databaseId,
+      collectionId,
+      "idempotencyKey",
+      128,
+      false
+    )
+  );
+
+  await ensureIndex(() =>
+    databases.createIndex(databaseId, collectionId, "idx_billing_status", "key", ["status"])
+  );
+  await ensureIndex(() =>
+    databases.createIndex(databaseId, collectionId, "idx_billing_provider", "key", ["provider"])
+  );
+  await ensureIndex(() =>
+    databases.createIndex(
+      databaseId,
+      collectionId,
+      "idx_billing_idempotency",
+      "key",
+      ["idempotencyKey"]
+    )
+  );
+}
+
+async function setupCouponRedemptions() {
+  const collectionId = "coupon_redemptions";
+  await ensureCollection(collectionId, "Coupon Redemptions");
+  await ensureWorkspaceScope(collectionId);
+
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "couponCode", 48, true)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "subscriptionId", 64, false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "invoiceId", 64, false)
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "redeemedAt", true)
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(databaseId, collectionId, "discountPercent", true)
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(databaseId, collectionId, "discountAmount", false)
+  );
+  await ensureAttribute(() =>
+    databases.createEnumAttribute(
+      databaseId,
+      collectionId,
+      "status",
+      ["applied", "reverted", "expired", "invalid"],
+      true
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(
+      databaseId,
+      collectionId,
+      "redemptionReference",
+      128,
+      false
+    )
+  );
+
+  await ensureIndex(() =>
+    databases.createIndex(databaseId, collectionId, "idx_redemption_coupon", "key", ["couponCode"])
+  );
+  await ensureIndex(() =>
+    databases.createIndex(databaseId, collectionId, "idx_redemption_status", "key", ["status"])
+  );
+}
+
 async function main() {
   await ensureDatabase();
   await ensureReceiptsBucket();
   await setupWorkspaces();
+  await setupPlans();
+  await setupFeatureEntitlements();
+  await setupCoupons();
+  await setupSubscriptions();
+  await setupSubscriptionEvents();
+  await setupInvoices();
+  await setupPaymentsBilling();
+  await setupCouponRedemptions();
   await setupHouses();
   await setupTenants();
   await setupPayments();

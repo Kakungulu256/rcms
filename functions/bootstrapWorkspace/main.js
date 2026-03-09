@@ -38,6 +38,10 @@ function resolveTrialDays() {
   return Math.floor(configured);
 }
 
+function resolveDefaultTrialPlanCode() {
+  return getEnv("RCMS_DEFAULT_TRIAL_PLAN_CODE") || "trial";
+}
+
 function addDaysIso(baseDate, days) {
   const next = new Date(baseDate.getTime() + days * 24 * 60 * 60 * 1000);
   return next.toISOString();
@@ -109,6 +113,7 @@ export default async (context) => {
   );
   const databaseId = getEnv("RCMS_APPWRITE_DATABASE_ID", "APPWRITE_DATABASE_ID") || "rcms";
   const configuredAdminTeamId = getEnv("RCMS_APPWRITE_TEAM_ADMIN_ID", "APPWRITE_TEAM_ADMIN_ID");
+  const trialPlanCode = resolveDefaultTrialPlanCode();
   const jwt = normalizeString(body.jwt);
   const workspaceName = normalizeString(body.workspaceName);
 
@@ -142,14 +147,25 @@ export default async (context) => {
 
     if (existingWorkspaceId) {
       const workspace = await databases.getDocument(databaseId, "workspaces", existingWorkspaceId);
+      let subscriptionDoc = null;
+      try {
+        const subscriptionPage = await databases.listDocuments(databaseId, "subscriptions", [
+          Query.equal("workspaceId", [existingWorkspaceId]),
+          Query.limit(1),
+        ]);
+        subscriptionDoc = subscriptionPage.documents?.[0] ?? null;
+      } catch {
+        subscriptionDoc = null;
+      }
       return res.json({
         ok: true,
         created: false,
         workspace,
         subscription: {
-          state: workspace.subscriptionState ?? "trialing",
-          trialStartDate: workspace.trialStartDate ?? null,
-          trialEndDate: workspace.trialEndDate ?? null,
+          state: subscriptionDoc?.state ?? workspace.subscriptionState ?? "trialing",
+          trialStartDate: subscriptionDoc?.trialStartDate ?? workspace.trialStartDate ?? null,
+          trialEndDate: subscriptionDoc?.trialEndDate ?? workspace.trialEndDate ?? null,
+          planCode: subscriptionDoc?.planCode ?? trialPlanCode,
         },
       });
     }
@@ -183,6 +199,27 @@ export default async (context) => {
       notes: null,
     });
 
+    let createdSubscription = null;
+    try {
+      createdSubscription = await databases.createDocument(databaseId, "subscriptions", ID.unique(), {
+        workspaceId: workspace.$id,
+        planCode: trialPlanCode,
+        state: "trialing",
+        trialStartDate,
+        trialEndDate,
+        currentPeriodStart: trialStartDate,
+        currentPeriodEnd: trialEndDate,
+        cancelAtPeriodEnd: false,
+        notes: "Initial trial subscription",
+      });
+    } catch (subscriptionError) {
+      const subscriptionMessage =
+        subscriptionError?.response?.message ??
+        subscriptionError?.message ??
+        "Failed to create subscription record.";
+      logError?.(`bootstrapWorkspace subscription warning: ${subscriptionMessage}`);
+    }
+
     await users.updatePrefs({
       userId: caller.$id,
       prefs: {
@@ -204,10 +241,11 @@ export default async (context) => {
       workspace,
       membership,
       subscription: {
-        state: "trialing",
-        trialStartDate,
-        trialEndDate,
+        state: createdSubscription?.state ?? "trialing",
+        trialStartDate: createdSubscription?.trialStartDate ?? trialStartDate,
+        trialEndDate: createdSubscription?.trialEndDate ?? trialEndDate,
         trialDays,
+        planCode: createdSubscription?.planCode ?? trialPlanCode,
       },
     });
   } catch (error) {
