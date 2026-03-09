@@ -54,6 +54,12 @@ Set these env vars in the Appwrite Function:
 - `RCMS_APPWRITE_DATABASE_ID` (optional, defaults to `rcms`)
 - `RCMS_TRIAL_DAYS` (optional, defaults to `5`)
 - `RCMS_DEFAULT_TRIAL_PLAN_CODE` (optional, defaults to `trial`)
+- `RCMS_SIGNUP_MAX_REQUESTS` (optional, defaults to `5`)
+- `RCMS_SIGNUP_WINDOW_MINUTES` (optional, defaults to `15`)
+
+Notes:
+- Caller account must be enabled and email-verified.
+- One owner account maps to one workspace (existing owner workspace is reused).
 
 Frontend env var (in app `.env`):
 - `VITE_MIGRATE_HISTORICAL_DATA_FUNCTION_ID=<your-appwrite-function-id>`
@@ -75,6 +81,8 @@ Set these env vars in the Appwrite Function:
 - `RCMS_BILLING_LOGO_URL` (optional)
 - `RCMS_FLUTTERWAVE_SECRET_KEY` (required for Flutterwave)
 - `RCMS_FLUTTERWAVE_BASE_URL` (optional, defaults to `https://api.flutterwave.com/v3`)
+- `RCMS_CHECKOUT_MAX_REQUESTS` (optional, defaults to `8`)
+- `RCMS_CHECKOUT_WINDOW_MINUTES` (optional, defaults to `10`)
 
 ## billingWebhook Environment
 Set these env vars in the Appwrite Function:
@@ -89,6 +97,10 @@ Set these env vars in the Appwrite Function:
 - `RCMS_BILLING_MAX_RETRIES` (optional, defaults to `3`)
 - `RCMS_BILLING_RETRY_INTERVAL_HOURS` (optional, defaults to `24`)
 
+Notes:
+- Webhook handler only accepts `POST`.
+- Signature verification uses `RCMS_FLUTTERWAVE_WEBHOOK_SECRET_HASH`.
+
 Additional frontend env var:
 - `VITE_BILLING_CHECKOUT_FUNCTION_ID=<your-billingCheckout-function-id>`
 
@@ -100,6 +112,8 @@ Set these env vars in the Appwrite Function:
 - `RCMS_APPWRITE_DATABASE_ID` (optional, defaults to `rcms`)
 - `RCMS_DEFAULT_WORKSPACE_ID` (optional, defaults to `default`)
 - `RCMS_INVITE_EXPIRES_DAYS` (optional, defaults to `7`)
+- `RCMS_INVITE_MAX_REQUESTS` (optional, defaults to `20`)
+- `RCMS_INVITE_WINDOW_MINUTES` (optional, defaults to `60`)
 - `RCMS_APP_BASE_URL` (optional, used to generate `/accept-invite` URLs)
 - `RCMS_INVITE_WEBHOOK_URL` (optional, receives invite payload for email delivery)
 

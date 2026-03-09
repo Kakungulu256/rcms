@@ -77,6 +77,14 @@ function clampNumber(value, min, max) {
   return next;
 }
 
+function parsePositiveInt(value, fallback, min, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  const rounded = Math.floor(parsed);
+  if (rounded < min || rounded > max) return fallback;
+  return rounded;
+}
+
 function getNow() {
   return new Date();
 }
@@ -160,6 +168,18 @@ function resolveBillingConfig(body) {
       productName: getEnv("RCMS_BILLING_PRODUCT_NAME") || "RCMS Subscription",
       logoUrl: getEnv("RCMS_BILLING_LOGO_URL"),
     },
+  };
+}
+
+function resolveCheckoutRateLimit() {
+  return {
+    maxAttempts: parsePositiveInt(getEnv("RCMS_CHECKOUT_MAX_REQUESTS"), 8, 1, 200),
+    windowMinutes: parsePositiveInt(
+      getEnv("RCMS_CHECKOUT_WINDOW_MINUTES"),
+      10,
+      1,
+      1440
+    ),
   };
 }
 
@@ -277,6 +297,41 @@ async function assertCallerIsWorkspaceAdmin({
   }
 
   return workspace;
+}
+
+async function assertCheckoutRateLimit({
+  databases,
+  databaseId,
+  workspaceId,
+  actorUserId,
+  maxAttempts,
+  windowMinutes,
+}) {
+  const cutoffIso = new Date(Date.now() - windowMinutes * 60 * 1000).toISOString();
+  const page = await databases.listDocuments(
+    databaseId,
+    COLLECTIONS.subscriptionEvents,
+    [
+      Query.equal("workspaceId", [workspaceId]),
+      Query.greaterThanEqual("eventTime", [cutoffIso]),
+      Query.orderDesc("eventTime"),
+      Query.limit(Math.min(maxAttempts * 20, 200)),
+    ]
+  );
+
+  const attempts = (page.documents ?? []).filter((entry) => {
+    const eventType = String(entry.eventType ?? "").trim().toLowerCase();
+    const actorId = String(entry.actorUserId ?? "").trim();
+    return eventType === "checkout_initiated" && actorId === actorUserId;
+  }).length;
+
+  if (attempts >= maxAttempts) {
+    const error = new Error(
+      `Checkout rate limit reached. Try again in ${windowMinutes} minute(s).`
+    );
+    error.code = 429;
+    throw error;
+  }
 }
 
 function resolveWorkspaceIdFromBodyAndCaller(body, caller) {
@@ -411,6 +466,13 @@ export default async (context) => {
   }
   const couponCode = normalizeCouponCode(body.couponCode);
   const jwt = normalizeString(body.jwt);
+  const checkoutRateLimit = resolveCheckoutRateLimit();
+  const auditContext = {
+    workspaceId: null,
+    actorId: "billing_checkout",
+    subscriptionId: null,
+    callerUserId: null,
+  };
 
   try {
     const caller = await ensureCallerAuthenticated({
@@ -418,8 +480,20 @@ export default async (context) => {
       projectId,
       jwt,
     });
+    if (caller?.status === false) {
+      return res.json({ ok: false, error: "Caller account is disabled." }, 403);
+    }
+    if (caller?.emailVerification === false) {
+      return res.json(
+        { ok: false, error: "Verify your email before initiating checkout." },
+        403
+      );
+    }
 
     const workspaceId = resolveWorkspaceIdFromBodyAndCaller(body, caller);
+    auditContext.workspaceId = workspaceId;
+    auditContext.actorId = caller.$id || "billing_checkout";
+    auditContext.callerUserId = caller.$id || null;
     const callerWorkspaceId = normalizeWorkspaceId(caller?.prefs?.workspaceId);
     if (callerWorkspaceId && callerWorkspaceId !== workspaceId) {
       return res.json(
@@ -437,6 +511,14 @@ export default async (context) => {
       databaseId,
       workspaceId,
       caller,
+    });
+    await assertCheckoutRateLimit({
+      databases,
+      databaseId,
+      workspaceId,
+      actorUserId: caller.$id,
+      maxAttempts: checkoutRateLimit.maxAttempts,
+      windowMinutes: checkoutRateLimit.windowMinutes,
     });
     if (workspace.status !== "active") {
       return res.json(
@@ -516,6 +598,7 @@ export default async (context) => {
         }
       );
     }
+    auditContext.subscriptionId = subscription.$id;
 
     const invoice = await databases.createDocument(databaseId, COLLECTIONS.invoices, ID.unique(), {
       workspaceId,
@@ -645,6 +728,36 @@ export default async (context) => {
       error?.response?.message ||
       error?.message ||
       "Failed to create billing checkout session.";
+    try {
+      if (auditContext.workspaceId) {
+        const adminClient = new Client()
+          .setEndpoint(endpoint)
+          .setProject(projectId)
+          .setKey(apiKey);
+        const databases = new Databases(adminClient);
+        await writeAuditLog(databases, databaseId, {
+          workspaceId: auditContext.workspaceId,
+          entityType: "billing_checkout",
+          entityId:
+            auditContext.subscriptionId ||
+            auditContext.workspaceId ||
+            "checkout_failed",
+          action: "update",
+          actorId: auditContext.actorId,
+          details: {
+            status: "failed",
+            code: status,
+            error: message,
+            planCode,
+            couponCode,
+            subscriptionId: auditContext.subscriptionId,
+            actorUserId: auditContext.callerUserId,
+          },
+        });
+      }
+    } catch {
+      // Ignore audit failures in error path.
+    }
     logError?.(`billingCheckout failed: ${message}`);
     return res.json({ ok: false, error: message }, status);
   }

@@ -235,6 +235,7 @@ async function assertFeatureEnabled({
 }
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const PRORATE_ROUNDING_UNIT = 1000;
 
 function parseDateOnlyUtc(value) {
   if (!value) return null;
@@ -281,7 +282,7 @@ function prorateMonthlyRent({
   if (occupiedDays >= totalDaysInMonth) {
     return roundMoney(normalizedRent);
   }
-  return roundMoney((normalizedRent * occupiedDays) / totalDaysInMonth);
+  return roundProratedRent((normalizedRent * occupiedDays) / totalDaysInMonth);
 }
 
 function getTenantUpdatedAt(tenant) {
@@ -344,6 +345,12 @@ function buildPaidByMonth(payments) {
 
 function roundMoney(value) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+}
+
+function roundProratedRent(value) {
+  const normalized = Number(value) || 0;
+  if (normalized <= 0) return 0;
+  return Math.round(normalized / PRORATE_ROUNDING_UNIT) * PRORATE_ROUNDING_UNIT;
 }
 
 function normalizeNote(value) {

@@ -11,6 +11,12 @@ function roundCurrency(value: number) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 }
 
+function roundProratedRent(value: number) {
+  const normalized = Number(value) || 0;
+  if (normalized <= 0) return 0;
+  return Math.round(normalized / 1000) * 1000;
+}
+
 function parseDateOnlyUtc(value?: string | null) {
   if (!value) return null;
   const normalized = String(value).slice(0, 10);
@@ -61,7 +67,7 @@ function prorateMonthlyRent(params: {
   if (occupiedDays >= totalDaysInMonth) {
     return roundCurrency(normalizedRent);
   }
-  return roundCurrency((normalizedRent * occupiedDays) / totalDaysInMonth);
+  return roundProratedRent((normalizedRent * occupiedDays) / totalDaysInMonth);
 }
 
 export function parseRentHistory(value?: string | null): RentHistoryEntry[] {

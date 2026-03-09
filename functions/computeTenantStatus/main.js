@@ -45,6 +45,12 @@ function roundMoney(value) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 }
 
+function roundProratedRent(value) {
+  const normalized = Number(value) || 0;
+  if (normalized <= 0) return 0;
+  return Math.round(normalized / 1000) * 1000;
+}
+
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 function parseDateSafe(value) {
@@ -113,7 +119,7 @@ function prorateMonthlyRent({
   if (occupiedDays >= totalDaysInMonth) {
     return roundMoney(normalizedRent);
   }
-  return roundMoney((normalizedRent * occupiedDays) / totalDaysInMonth);
+  return roundProratedRent((normalizedRent * occupiedDays) / totalDaysInMonth);
 }
 
 function buildPaidByMonth(payments) {

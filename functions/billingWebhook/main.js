@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { Client, Databases, ID, Query } from "node-appwrite";
 
 const COLLECTIONS = {
@@ -78,6 +78,16 @@ function getHeader(headers, name) {
   return "";
 }
 
+function signaturesMatch(received, expected) {
+  const receivedValue = String(received ?? "");
+  const expectedValue = String(expected ?? "");
+  if (!receivedValue || !expectedValue) return false;
+  const left = Buffer.from(receivedValue);
+  const right = Buffer.from(expectedValue);
+  if (left.length !== right.length) return false;
+  return timingSafeEqual(left, right);
+}
+
 function parseTxRef(txRef) {
   const normalized = normalizeString(txRef);
   if (!normalized) return {};
@@ -130,6 +140,13 @@ function parseDate(value) {
   if (!value) return null;
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function didPeriodAdvance(previousPeriodEnd, nextPeriodEnd) {
+  const previous = parseDate(previousPeriodEnd);
+  const next = parseDate(nextPeriodEnd);
+  if (!previous || !next) return false;
+  return next.getTime() > previous.getTime();
 }
 
 function deriveLifecycleUpdate(params) {
@@ -256,7 +273,7 @@ function buildGatewayAdapter(provider) {
         getHeader(headers, "verif-hash") ||
         getHeader(headers, "flutterwave-signature") ||
         getHeader(headers, "x-flutterwave-signature");
-      return signature && signature === expectedSignature;
+      return signaturesMatch(signature, expectedSignature);
     },
     normalizeWebhook(payload, rawBody) {
       const event = normalizeString(payload?.event) || "unknown";
@@ -372,6 +389,10 @@ async function updateCouponUsageOnSuccess({
 
 export default async (context) => {
   const { req, res, error: logError } = context;
+  const requestMethod = String(req?.method ?? "POST").toUpperCase();
+  if (requestMethod !== "POST") {
+    return res.json({ ok: false, error: "Method not allowed." }, 405);
+  }
   const payload = parseJson(req.body);
   if (!payload) {
     return res.json({ ok: false, error: "Invalid JSON body." }, 400);
@@ -401,6 +422,14 @@ export default async (context) => {
     );
   }
 
+  const auditContext = {
+    workspaceId: null,
+    subscriptionId: null,
+    idempotencyKey: null,
+    status: null,
+    actorId: "billing_webhook",
+  };
+
   try {
     const provider = resolveBillingProvider();
     const adapter = buildGatewayAdapter(provider);
@@ -410,6 +439,8 @@ export default async (context) => {
     }
 
     const normalized = adapter.normalizeWebhook(payload, req.body);
+    auditContext.idempotencyKey = normalized.idempotencyKey || null;
+    auditContext.status = normalized.status || null;
     const parsedTx = parseTxRef(normalized.providerReference);
     let workspaceId = normalizeWorkspaceId(normalized.meta?.workspaceId) || parsedTx.workspaceId || null;
     let subscriptionId = normalizeString(normalized.meta?.subscriptionId) || parsedTx.subscriptionId || null;
@@ -443,6 +474,8 @@ export default async (context) => {
       invoiceId = invoiceId || normalizeString(billingPayment.invoiceId);
       paymentId = paymentId || billingPayment.$id;
     }
+    auditContext.workspaceId = workspaceId || null;
+    auditContext.subscriptionId = subscriptionId || null;
 
     if (!workspaceId) {
       return res.json(
@@ -534,7 +567,9 @@ export default async (context) => {
       COLLECTIONS.subscriptions,
       subscriptionId
     );
+    auditContext.subscriptionId = subscription.$id;
     const previousSubscriptionState = normalizeString(subscription.state);
+    const previousPlanCode = normalizeString(subscription.planCode);
     const now = new Date();
     const billingPeriodDays = clampNumber(getEnv("RCMS_BILLING_PERIOD_DAYS"), 1, 365);
     const dunningPolicy = resolveDunningPolicy();
@@ -600,6 +635,22 @@ export default async (context) => {
       dunningPolicy,
     });
     const nextSubscriptionState = lifecycleUpdate.state || previousSubscriptionState;
+    const planChanged =
+      Boolean(previousPlanCode) &&
+      Boolean(targetPlanCode) &&
+      previousPlanCode !== targetPlanCode;
+    const renewalCandidates = new Set(["active", "past_due"]);
+    const isRenewal =
+      normalized.status === "succeeded" &&
+      renewalCandidates.has(previousSubscriptionState || "") &&
+      didPeriodAdvance(subscription.currentPeriodEnd, lifecycleUpdate.currentPeriodEnd);
+    const isCancellation =
+      normalized.status === "canceled" || nextSubscriptionState === "canceled";
+    const isBillingFailure =
+      normalized.status === "failed" ||
+      normalized.status === "refunded" ||
+      nextSubscriptionState === "past_due" ||
+      nextSubscriptionState === "expired";
 
     await databases.updateDocument(databaseId, COLLECTIONS.subscriptions, subscription.$id, {
       state: nextSubscriptionState,
@@ -653,6 +704,86 @@ export default async (context) => {
       reference: invoiceId || paymentId || normalized.providerReference,
     });
 
+    if (planChanged) {
+      await writeSubscriptionEvent(databases, databaseId, {
+        workspaceId,
+        subscriptionId: subscription.$id,
+        eventType: "plan_changed",
+        eventSource: "webhook",
+        eventTime: now.toISOString(),
+        stateFrom: previousSubscriptionState,
+        stateTo: nextSubscriptionState,
+        idempotencyKey: `${normalized.idempotencyKey}:plan_changed`,
+        payload: {
+          fromPlanCode: previousPlanCode,
+          toPlanCode: targetPlanCode,
+          providerReference: normalized.providerReference,
+        },
+        actorUserId: "billing_webhook",
+        reference: invoiceId || paymentId || normalized.providerReference,
+      });
+    }
+
+    if (isRenewal) {
+      await writeSubscriptionEvent(databases, databaseId, {
+        workspaceId,
+        subscriptionId: subscription.$id,
+        eventType: "subscription_renewed",
+        eventSource: "webhook",
+        eventTime: now.toISOString(),
+        stateFrom: previousSubscriptionState,
+        stateTo: nextSubscriptionState,
+        idempotencyKey: `${normalized.idempotencyKey}:renewal`,
+        payload: {
+          providerReference: normalized.providerReference,
+          periodStart: lifecycleUpdate.currentPeriodStart,
+          periodEnd: lifecycleUpdate.currentPeriodEnd,
+        },
+        actorUserId: "billing_webhook",
+        reference: invoiceId || paymentId || normalized.providerReference,
+      });
+    }
+
+    if (isCancellation) {
+      await writeSubscriptionEvent(databases, databaseId, {
+        workspaceId,
+        subscriptionId: subscription.$id,
+        eventType: "subscription_canceled",
+        eventSource: "webhook",
+        eventTime: now.toISOString(),
+        stateFrom: previousSubscriptionState,
+        stateTo: nextSubscriptionState,
+        idempotencyKey: `${normalized.idempotencyKey}:canceled`,
+        payload: {
+          providerReference: normalized.providerReference,
+          canceledAt: lifecycleUpdate.canceledAt,
+        },
+        actorUserId: "billing_webhook",
+        reference: invoiceId || paymentId || normalized.providerReference,
+      });
+    }
+
+    if (isBillingFailure) {
+      await writeSubscriptionEvent(databases, databaseId, {
+        workspaceId,
+        subscriptionId: subscription.$id,
+        eventType: "billing_action_failed",
+        eventSource: "webhook",
+        eventTime: now.toISOString(),
+        stateFrom: previousSubscriptionState,
+        stateTo: nextSubscriptionState,
+        idempotencyKey: `${normalized.idempotencyKey}:billing_failed`,
+        payload: {
+          status: normalized.status,
+          failureReason: lifecycleUpdate.lastFailureReason,
+          retryCount: lifecycleUpdate.retryCount,
+          nextRetryAt: lifecycleUpdate.nextRetryAt,
+        },
+        actorUserId: "billing_webhook",
+        reference: invoiceId || paymentId || normalized.providerReference,
+      });
+    }
+
     if (normalized.status === "succeeded") {
       await updateCouponUsageOnSuccess({
         databases,
@@ -690,6 +821,74 @@ export default async (context) => {
       },
     });
 
+    if (planChanged) {
+      await writeAuditLog(databases, databaseId, {
+        workspaceId,
+        entityType: "subscription_plan_change",
+        entityId: subscription.$id,
+        action: "update",
+        actorId: "billing_webhook",
+        details: {
+          previousPlanCode,
+          nextPlanCode: targetPlanCode,
+          providerReference: normalized.providerReference,
+          invoiceId,
+        },
+      });
+    }
+
+    if (isRenewal) {
+      await writeAuditLog(databases, databaseId, {
+        workspaceId,
+        entityType: "subscription_renewal",
+        entityId: subscription.$id,
+        action: "update",
+        actorId: "billing_webhook",
+        details: {
+          periodStart: lifecycleUpdate.currentPeriodStart,
+          periodEnd: lifecycleUpdate.currentPeriodEnd,
+          providerReference: normalized.providerReference,
+          invoiceId,
+          paymentId,
+        },
+      });
+    }
+
+    if (isCancellation) {
+      await writeAuditLog(databases, databaseId, {
+        workspaceId,
+        entityType: "subscription_cancellation",
+        entityId: subscription.$id,
+        action: "update",
+        actorId: "billing_webhook",
+        details: {
+          status: normalized.status,
+          canceledAt: lifecycleUpdate.canceledAt,
+          endedAt: lifecycleUpdate.endedAt,
+          providerReference: normalized.providerReference,
+        },
+      });
+    }
+
+    if (isBillingFailure) {
+      await writeAuditLog(databases, databaseId, {
+        workspaceId,
+        entityType: "billing_failure",
+        entityId: subscription.$id,
+        action: "update",
+        actorId: "billing_webhook",
+        details: {
+          status: normalized.status,
+          reason: lifecycleUpdate.lastFailureReason,
+          retryCount: lifecycleUpdate.retryCount,
+          nextRetryAt: lifecycleUpdate.nextRetryAt,
+          graceEndsAt: lifecycleUpdate.graceEndsAt,
+          providerReference: normalized.providerReference,
+          providerPaymentId: normalized.providerPaymentId,
+        },
+      });
+    }
+
     return res.json({
       ok: true,
       provider,
@@ -705,6 +904,28 @@ export default async (context) => {
     const status = Number(error?.code) || 500;
     const message =
       error?.response?.message || error?.message || "Failed to process billing webhook.";
+    try {
+      if (auditContext.workspaceId) {
+        const adminClient = new Client().setEndpoint(endpoint).setProject(projectId).setKey(apiKey);
+        const databases = new Databases(adminClient);
+        await writeAuditLog(databases, databaseId, {
+          workspaceId: auditContext.workspaceId,
+          entityType: "billing_webhook",
+          entityId: auditContext.subscriptionId || auditContext.workspaceId,
+          action: "update",
+          actorId: auditContext.actorId,
+          details: {
+            status: "failed",
+            code: status,
+            error: message,
+            webhookStatus: auditContext.status,
+            idempotencyKey: auditContext.idempotencyKey,
+          },
+        });
+      }
+    } catch {
+      // Ignore audit failures in error path.
+    }
     logError?.(`billingWebhook failed: ${message}`);
     return res.json({ ok: false, error: message }, status);
   }

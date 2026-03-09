@@ -39,6 +39,14 @@ function normalizeWorkspaceId(value) {
   return normalizeString(value);
 }
 
+function parsePositiveInt(value, fallback, min, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  const rounded = Math.floor(parsed);
+  if (rounded < min || rounded > max) return fallback;
+  return rounded;
+}
+
 function normalizeRole(value) {
   const next = normalizeString(value)?.toLowerCase() ?? null;
   return next && ALLOWED_ROLES.includes(next) ? next : null;
@@ -67,6 +75,13 @@ function resolveInviteExpiryDays(body) {
     return Math.floor(fromEnv);
   }
   return 7;
+}
+
+function resolveInviteRateLimit() {
+  return {
+    maxRequests: parsePositiveInt(getEnv("RCMS_INVITE_MAX_REQUESTS"), 20, 1, 200),
+    windowMinutes: parsePositiveInt(getEnv("RCMS_INVITE_WINDOW_MINUTES"), 60, 1, 1440),
+  };
 }
 
 function buildClient(endpoint, projectId) {
@@ -298,6 +313,37 @@ async function countActiveWorkspaceMembers(databases, databaseId, workspaceId) {
   return Number(page.total ?? 0);
 }
 
+async function assertInviteCreateRateLimit({
+  databases,
+  databaseId,
+  workspaceId,
+  actorUserId,
+  maxRequests,
+  windowMinutes,
+}) {
+  const page = await databases.listDocuments(databaseId, "workspace_invitations", [
+    Query.equal("workspaceId", [workspaceId]),
+    Query.orderDesc("$updatedAt"),
+    Query.limit(Math.min(Math.max(maxRequests * 20, 80), 500)),
+  ]);
+
+  const cutoffMs = Date.now() - windowMinutes * 60 * 1000;
+  const attempts = (page.documents ?? []).filter((entry) => {
+    if (String(entry.invitedByUserId ?? "") !== actorUserId) return false;
+    const timestamp = parseDateSafe(entry.$updatedAt || entry.$createdAt);
+    if (!timestamp) return false;
+    return timestamp.getTime() >= cutoffMs;
+  }).length;
+
+  if (attempts >= maxRequests) {
+    const error = new Error(
+      `Invitation rate limit reached. Try again in ${windowMinutes} minute(s).`
+    );
+    error.code = 429;
+    throw error;
+  }
+}
+
 async function ensureCallerIsWorkspaceAdmin({
   endpoint,
   projectId,
@@ -312,6 +358,14 @@ async function ensureCallerIsWorkspaceAdmin({
   const callerClient = buildClient(endpoint, projectId).setJWT(jwt);
   const account = new Account(callerClient);
   const caller = await account.get();
+  if (caller?.status === false) {
+    throw Object.assign(new Error("Caller account is disabled."), { code: 403 });
+  }
+  if (caller?.emailVerification === false) {
+    throw Object.assign(new Error("Verify your email before managing invitations."), {
+      code: 403,
+    });
+  }
   const callerWorkspaceId = normalizeWorkspaceId(caller?.prefs?.workspaceId);
   if (callerWorkspaceId && callerWorkspaceId !== workspaceId) {
     throw Object.assign(new Error("Caller is not allowed to manage another workspace."), {
@@ -435,6 +489,7 @@ export default async (context) => {
   const action = normalizeString(body.action)?.toLowerCase() || "create";
   const workspaceId = resolveWorkspaceId(body);
   const jwt = normalizeString(body.jwt);
+  const inviteRateLimit = resolveInviteRateLimit();
 
   try {
     const adminClient = buildClient(endpoint, projectId).setKey(apiKey);
@@ -537,6 +592,14 @@ export default async (context) => {
       if (!role) {
         return res.json({ ok: false, error: "Role must be admin, clerk, or viewer." }, 400);
       }
+      await assertInviteCreateRateLimit({
+        databases,
+        databaseId,
+        workspaceId,
+        actorUserId: caller.$id,
+        maxRequests: inviteRateLimit.maxRequests,
+        windowMinutes: inviteRateLimit.windowMinutes,
+      });
 
       const existingUser = await findUserByEmail(users, email);
       if (existingUser) {
@@ -640,6 +703,15 @@ export default async (context) => {
       const callerClient = buildClient(endpoint, projectId).setJWT(jwt);
       const account = new Account(callerClient);
       const caller = await account.get();
+      if (caller?.status === false) {
+        return res.json({ ok: false, error: "Caller account is disabled." }, 403);
+      }
+      if (caller?.emailVerification === false) {
+        return res.json(
+          { ok: false, error: "Verify your email before accepting invitations." },
+          403
+        );
+      }
       const callerEmail = normalizeEmail(caller.email);
       if (!callerEmail || callerEmail !== normalizeEmail(invite.email)) {
         return res.json(
@@ -766,4 +838,3 @@ export default async (context) => {
     return res.json({ ok: false, error: message }, status);
   }
 };
-

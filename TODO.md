@@ -264,12 +264,12 @@ Use this list in order. Complete and verify each item before moving to the next.
 - Invite acceptance creates membership in the correct workspace and role.
 - Prevent duplicate conflicting memberships.
 
-51. [ ] Security and audit hardening for monetized flows
+51. [x] Security and audit hardening for monetized flows
 - Audit-log plan changes, renewals, cancellations, and failed billing actions.
 - Protect billing endpoints/functions with signature verification and strict auth.
 - Add anti-abuse checks (rate limiting for signup/invites/checkout initiation).
 
-52. [ ] Data migration strategy from current single-tenant app
+52. [x] Data migration strategy from current single-tenant app
 - Backfill existing records with a default `workspaceId`.
 - Create owner workspace/team from current admin account.
 - Migrate existing users into workspace memberships.
