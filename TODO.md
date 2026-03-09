@@ -177,6 +177,7 @@ Use this list in order. Complete and verify each item before moving to the next.
 - Add a top-level `workspace` model so each signup gets isolated data.
 - Scope all houses, tenants, payments, expenses, reports, and users to `workspaceId`.
 - Prevent cross-workspace access by query filters + backend checks.
+- Support property managers with many properties across different landlords within one workspace.
 
 38. [ ] Add public landing page and marketing site flow
 - New public route for product overview, pricing, FAQs, and CTA buttons.
@@ -199,6 +200,7 @@ Use this list in order. Complete and verify each item before moving to the next.
 - `payments_billing`
 - `feature_entitlements` (or plan JSON entitlements)
 - Track trial, active, past_due, canceled, expired states.
+- Keep plan pricing and trial settings editable by platform owner (no hardcoded prices in code).
 
 41. [ ] Implement billing integration + webhook processing
 - Integrate payment provider (Stripe recommended; Flutterwave/Pesapal optional).
@@ -207,7 +209,7 @@ Use this list in order. Complete and verify each item before moving to the next.
 - Make webhook handler idempotent and audit-logged.
 
 42. [ ] Implement trial period and lifecycle rules
-- Configure trial duration (for example 14 days).
+- Configure trial duration to `5 days` (editable in plan catalog/settings).
 - During trial, selected features are enabled.
 - After trial expiry without payment, lock premium features and show upgrade prompts.
 - Add grace period and retry/dunning behavior for failed renewals.
@@ -223,7 +225,7 @@ Use this list in order. Complete and verify each item before moving to the next.
 - Ensure role checks always include workspace context.
 
 45. [ ] Enforce plan limits (quota controls)
-- Add limits by plan (examples: max houses, max active tenants, max team members, exports/month).
+- Add limits by plan (examples: max properties, max landlords, max houses, max active tenants, max team members, exports/month).
 - Block create actions at limit with upgrade CTA.
 - Add usage counters and a usage dashboard card.
 
@@ -240,22 +242,33 @@ Use this list in order. Complete and verify each item before moving to the next.
 - payment method management
 - upgrade/downgrade/cancel/reactivate actions.
 
-48. [ ] Add team invitations and acceptance flow
+48. [ ] Add workspace branding (company logo) for exports
+- Allow workspace admin to upload/manage company logo (storage + validation).
+- Add option to include logo as watermark on exported reports (PDF/XLSX where applicable).
+- Provide controls for watermark style/opacity/position and preview before export.
+- Ensure exports without logo still work normally.
+
+49. [ ] Build platform owner dashboard (super-admin console)
+- Add owner-only dashboard to monitor all subscribers/workspaces.
+- Include: total signups, trialing, active paid, past due, churned, MRR/collections, plan distribution, and recent activity by workspace.
+- Include controls to edit plan prices/trial days and activate/deactivate plans globally.
+
+50. [ ] Add team invitations and acceptance flow
 - Admin sends invite by email with target role.
 - Invite acceptance creates membership in the correct workspace and role.
 - Prevent duplicate conflicting memberships.
 
-49. [ ] Security and audit hardening for monetized flows
+51. [ ] Security and audit hardening for monetized flows
 - Audit-log plan changes, renewals, cancellations, and failed billing actions.
 - Protect billing endpoints/functions with signature verification and strict auth.
 - Add anti-abuse checks (rate limiting for signup/invites/checkout initiation).
 
-50. [ ] Data migration strategy from current single-tenant app
+52. [ ] Data migration strategy from current single-tenant app
 - Backfill existing records with a default `workspaceId`.
 - Create owner workspace/team from current admin account.
 - Migrate existing users into workspace memberships.
 
-51. [ ] QA, UAT, and release readiness for SaaS transition
+53. [ ] QA, UAT, and release readiness for SaaS transition
 - Test matrix:
 - trial -> paid
 - paid -> expired/past_due
@@ -266,77 +279,78 @@ Use this list in order. Complete and verify each item before moving to the next.
 
 ### Suggested Subscription Plans (Initial Proposal)
 
-P1. [ ] Trial Plan (14 days)
+P1. [ ] Trial Plan (5 days)
 - Full access with light caps for evaluation.
 - Example caps: 10 houses, 50 tenants, 2 team members.
 
 P2. [ ] Starter (Small landlord)
-- Suggested price: USD 19/month (or UGX equivalent).
+- Suggested price: UGX 49,000/month.
 - Limits: up to 50 houses, 300 tenants, 3 team members.
 - Includes: payments, expenses, basic reports, exports.
 
 P3. [ ] Growth (Property manager)
-- Suggested price: USD 49/month.
-- Limits: up to 200 houses, 1,500 tenants, 10 team members.
+- Suggested price: UGX 149,000/month.
+- Limits: up to 200 houses, 1,500 tenants, 10 team members, multi-property support.
 - Includes: all reports, receipt uploads, migration tools, advanced exports.
 
-P4. [ ] Business (Agency scale)
-- Suggested price: USD 99/month.
+P4. [ ] Agency (Agency scale)
+- Suggested price: UGX 349,000/month.
 - Limits: up to 1,000 houses, 10,000 tenants, 30 team members.
-- Includes: priority support, audit enhancements, extended retention.
+- Includes: priority support, audit enhancements, extended retention, multi-landlord operations.
 
 P5. [ ] Enterprise (Custom)
 - Custom pricing and SLAs.
 - Unlimited/custom limits, dedicated onboarding, custom integrations.
+- Plan prices and trial days must be editable by platform owner at any time.
 
 ## Phase 11: Core Rental Policy and Deposit Enhancements (Immediate Next)
 
 > Priority note: Execute this phase before starting Phase 10 SaaS changes.
 
-52. [x] Implement prorated rent for partial occupancy months
+54. [x] Implement prorated rent for partial occupancy months
 - Add policy-driven rent proration when tenant move-in/move-out is mid-month.
 - Recommended default: `Actual-day prorate` (`monthlyRent * occupiedDays / daysInMonth`).
 - Define rounding rules and whether move-in/move-out day is billable.
 - Apply proration to first and last occupancy month in allocation, arrears, dashboard, and reports.
 
-53. [x] Add occupied/vacant filter on Houses list
+55. [x] Add occupied/vacant filter on Houses list
 - Add house status quick filters (`All`, `Occupied`, `Vacant`, `Inactive`) on Houses page.
 - Ensure counts and list update consistently with filter state.
 
-54. [x] Restrict Tenant house assignment to vacant houses only
+56. [x] Restrict Tenant house assignment to vacant houses only
 - In tenant create/edit form, show only `vacant` houses in House Assignment selection.
 - Keep currently assigned house visible when editing an existing tenant record.
 - Show clear validation/error if no vacant houses are available.
 
-55. [x] Add Security Deposits tab/page
+57. [x] Add Security Deposits tab/page
 - Create a dedicated tab/page to list tenant security deposit records.
 - Include: required deposit, paid amount, balance, refund status, and related deductions.
 - Add filters and totals (e.g., total held, total deducted, total refundable).
 
-56. [x] Add maintenance expense checkbox: "Affects security deposit"
+58. [x] Add maintenance expense checkbox: "Affects security deposit"
 - Under Expenses when category is `maintenance`, add a checkbox field:
 - `Affects tenant security deposit`.
 - Store this flag on the expense record with optional deduction note.
 
-57. [x] Link maintenance deductions to tenant deposit ledger
+59. [x] Link maintenance deductions to tenant deposit ledger
 - When maintenance expense is marked as affecting deposit, associate it to:
 - the occupying tenant of that house at the expense date.
 - Record deduction details in tenant deposit ledger:
 - date, item fixed, amount, notes, expense reference.
 
-58. [x] Add tenant-facing "Deposit Deductions" history tab
+60. [x] Add tenant-facing "Deposit Deductions" history tab
 - In tenant detail, add a tab/section showing all deposit deductions tied to that tenant.
 - Include clear running balance after each deduction entry.
 
-59. [x] Add Security Deposit Deductions report
+61. [x] Add Security Deposit Deductions report
 - Add report/export showing deduction history by tenant/house/date range.
 - Include totals and opening/closing deposit balances per tenant.
 
-60. [x] Add type-ahead house selector in maintenance expense form
+62. [x] Add type-ahead house selector in maintenance expense form
 - When category is `maintenance`, replace plain house dropdown with type-ahead/autosuggest.
 - Search by house code and house name to reduce scrolling.
 
-61. [x] QA and policy validation for Phase 11
+63. [x] QA and policy validation for Phase 11
 - Test proration edge cases (end/start month dates, February, leap years).
 - Test house availability rules during tenant create/edit.
 - Test deposit deduction flow from expenses -> tenant ledger -> reports.

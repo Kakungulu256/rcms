@@ -121,6 +121,7 @@ export default function PaymentForm({
         placeholder="Type tenant name or phone"
         value={selectedTenantId}
         options={tenantOptions}
+        maxResults={Math.max(8, tenantOptions.length)}
         disabled={disabled}
         emptyStateText="No tenant matches your search."
         onChange={(tenantId) =>
