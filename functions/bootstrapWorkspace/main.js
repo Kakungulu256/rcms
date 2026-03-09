@@ -1,4 +1,4 @@
-import { Account, Client, Databases, ID, Query, Teams, Users } from "node-appwrite";
+import { Account, Client, Databases, ID, Query, Users } from "node-appwrite";
 
 function getEnv(...keys) {
   for (const key of keys) {
@@ -47,46 +47,61 @@ function addDaysIso(baseDate, days) {
   return next.toISOString();
 }
 
-async function findTeamByName(teams, expectedName) {
-  const normalizedExpected = String(expectedName).trim().toLowerCase();
-  const page = await teams.list([Query.limit(100)]);
-  return (
-    (page.teams ?? []).find(
-      (team) => String(team.name ?? "").trim().toLowerCase() === normalizedExpected
-    ) ?? null
+async function findWorkspaceMembership(databases, databaseId, workspaceId, userId) {
+  const page = await databases.listDocuments(databaseId, "workspace_memberships", [
+    Query.equal("workspaceId", [workspaceId]),
+    Query.equal("userId", [userId]),
+    Query.limit(1),
+  ]);
+  return page.documents?.[0] ?? null;
+}
+
+async function ensureWorkspaceMembership({
+  databases,
+  databaseId,
+  workspaceId,
+  userId,
+  email,
+  role,
+  invitedByUserId = null,
+}) {
+  const existing = await findWorkspaceMembership(
+    databases,
+    databaseId,
+    workspaceId,
+    userId
   );
-}
 
-async function listMembershipsForUser(teams, teamId, userId) {
-  const memberships = [];
-  let cursor = null;
-  while (true) {
-    const queries = [Query.equal("userId", [userId]), Query.limit(100)];
-    if (cursor) {
-      queries.push(Query.cursorAfter(cursor));
-    }
-    const page = await teams.listMemberships({ teamId, queries });
-    memberships.push(...(page.memberships ?? []));
-    if ((page.memberships ?? []).length < 100) {
-      break;
-    }
-    cursor = page.memberships[page.memberships.length - 1].$id;
+  if (existing) {
+    const updated = await databases.updateDocument(
+      databaseId,
+      "workspace_memberships",
+      existing.$id,
+      {
+        email: email ?? existing.email ?? null,
+        role,
+        status: "active",
+        invitedByUserId: invitedByUserId ?? existing.invitedByUserId ?? null,
+      }
+    );
+    return { created: false, membershipId: updated.$id, document: updated };
   }
-  return memberships;
-}
 
-async function ensureTeamMembership(teams, teamId, userId, name) {
-  const existing = await listMembershipsForUser(teams, teamId, userId);
-  if (existing.length > 0) {
-    return { created: false, membershipId: existing[0].$id };
-  }
-  const created = await teams.createMembership({
-    teamId,
-    roles: ["member"],
-    userId,
-    name,
-  });
-  return { created: true, membershipId: created.$id };
+  const created = await databases.createDocument(
+    databaseId,
+    "workspace_memberships",
+    ID.unique(),
+    {
+      workspaceId,
+      userId,
+      email: email ?? null,
+      role,
+      status: "active",
+      invitedByUserId: invitedByUserId ?? null,
+      notes: null,
+    }
+  );
+  return { created: true, membershipId: created.$id, document: created };
 }
 
 export default async (context) => {
@@ -112,7 +127,6 @@ export default async (context) => {
     "APPWRITE_FUNCTION_API_KEY"
   );
   const databaseId = getEnv("RCMS_APPWRITE_DATABASE_ID", "APPWRITE_DATABASE_ID") || "rcms";
-  const configuredAdminTeamId = getEnv("RCMS_APPWRITE_TEAM_ADMIN_ID", "APPWRITE_TEAM_ADMIN_ID");
   const trialPlanCode = resolveDefaultTrialPlanCode();
   const jwt = normalizeString(body.jwt);
   const workspaceName = normalizeString(body.workspaceName);
@@ -143,10 +157,20 @@ export default async (context) => {
     const adminClient = new Client().setEndpoint(endpoint).setProject(projectId).setKey(apiKey);
     const databases = new Databases(adminClient);
     const users = new Users(adminClient);
-    const teams = new Teams(adminClient);
 
     if (existingWorkspaceId) {
       const workspace = await databases.getDocument(databaseId, "workspaces", existingWorkspaceId);
+      if (workspace.ownerUserId === caller.$id) {
+        await ensureWorkspaceMembership({
+          databases,
+          databaseId,
+          workspaceId: workspace.$id,
+          userId: caller.$id,
+          email: caller.email ?? null,
+          role: "admin",
+          invitedByUserId: caller.$id,
+        });
+      }
       let subscriptionDoc = null;
       try {
         const subscriptionPage = await databases.listDocuments(databaseId, "subscriptions", [
@@ -168,21 +192,6 @@ export default async (context) => {
           planCode: subscriptionDoc?.planCode ?? trialPlanCode,
         },
       });
-    }
-
-    let adminTeamId = configuredAdminTeamId;
-    if (!adminTeamId) {
-      const adminTeam = await findTeamByName(teams, "admin");
-      adminTeamId = adminTeam?.$id ?? null;
-    }
-    if (!adminTeamId) {
-      return res.json(
-        {
-          ok: false,
-          error: "Admin team is not configured. Set RCMS_APPWRITE_TEAM_ADMIN_ID.",
-        },
-        500
-      );
     }
 
     const now = new Date();
@@ -235,12 +244,15 @@ export default async (context) => {
       },
     });
 
-    const membership = await ensureTeamMembership(
-      teams,
-      adminTeamId,
-      caller.$id,
-      caller.name ?? "Workspace Admin"
-    );
+    const membership = await ensureWorkspaceMembership({
+      databases,
+      databaseId,
+      workspaceId: workspace.$id,
+      userId: caller.$id,
+      email: caller.email ?? null,
+      role: "admin",
+      invitedByUserId: caller.$id,
+    });
 
     return res.json({
       ok: true,

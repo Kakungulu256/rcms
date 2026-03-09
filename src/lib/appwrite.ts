@@ -27,6 +27,7 @@ export const teams = new Teams(appwriteClient);
 export const rcmsDatabaseId = databaseId ?? "rcms";
 export const rcmsReceiptsBucketId = receiptsBucketId ?? "rcms_receipts";
 export const WORKSPACE_SCOPED_COLLECTION_IDS = new Set<string>([
+  COLLECTIONS.workspaceMemberships,
   COLLECTIONS.houses,
   COLLECTIONS.tenants,
   COLLECTIONS.payments,

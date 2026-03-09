@@ -1,4 +1,4 @@
-import { Account, Client, Databases, ID, Query, Teams } from "node-appwrite";
+import { Account, Client, Databases, ID, Query } from "node-appwrite";
 
 function getEnv(...keys) {
   for (const key of keys) {
@@ -502,26 +502,37 @@ async function ensureCallerCanMigrate({
   endpoint,
   projectId,
   jwt,
-  adminTeamId,
-  clerkTeamId,
+  databases,
+  databaseId,
+  workspaceId,
 }) {
   if (!jwt) {
     throw Object.assign(new Error("Missing caller JWT."), { code: 401 });
   }
   const callerClient = new Client().setEndpoint(endpoint).setProject(projectId).setJWT(jwt);
   const account = new Account(callerClient);
-  const teams = new Teams(callerClient);
-  await account.get();
-  const teamList = await teams.list();
-  const hasAllowedTeam = (teamList.teams ?? []).some((team) => {
-    const name = String(team.name ?? "").trim().toLowerCase();
-    const byName = name === "admin" || name === "clerk";
-    const byId =
-      (adminTeamId && team.$id === adminTeamId) ||
-      (clerkTeamId && team.$id === clerkTeamId);
-    return Boolean(byName || byId);
-  });
-  if (!hasAllowedTeam) {
+  const caller = await account.get();
+  const callerWorkspaceId = normalizeWorkspaceId(caller?.prefs?.workspaceId);
+  if (callerWorkspaceId && callerWorkspaceId !== workspaceId) {
+    throw Object.assign(new Error("Caller is not allowed to use another workspace."), {
+      code: 403,
+    });
+  }
+
+  const workspace = await databases.getDocument(databaseId, "workspaces", workspaceId);
+  if (workspace?.ownerUserId === caller.$id) {
+    return;
+  }
+
+  const membershipPage = await databases.listDocuments(databaseId, "workspace_memberships", [
+    Query.equal("workspaceId", [workspaceId]),
+    Query.equal("userId", [caller.$id]),
+    Query.equal("status", ["active"]),
+    Query.limit(1),
+  ]);
+  const membership = membershipPage.documents?.[0] ?? null;
+  const role = String(membership?.role ?? "").trim().toLowerCase();
+  if (role !== "admin" && role !== "clerk") {
     throw Object.assign(new Error("Only admin or clerk can run old-record import."), {
       code: 403,
     });
@@ -551,8 +562,6 @@ export default async (context) => {
     "APPWRITE_FUNCTION_API_KEY"
   );
   const databaseId = getEnv("RCMS_APPWRITE_DATABASE_ID", "APPWRITE_DATABASE_ID") || "rcms";
-  const adminTeamId = getEnv("RCMS_APPWRITE_TEAM_ADMIN_ID", "APPWRITE_TEAM_ADMIN_ID");
-  const clerkTeamId = getEnv("RCMS_APPWRITE_TEAM_CLERK_ID", "APPWRITE_TEAM_CLERK_ID");
 
   if (!endpoint || !projectId || !apiKey) {
     return res.json(
@@ -579,19 +588,20 @@ export default async (context) => {
   }
 
   try {
-    await ensureCallerCanMigrate({
-      endpoint,
-      projectId,
-      jwt,
-      adminTeamId,
-      clerkTeamId,
-    });
-
     const adminClient = new Client()
       .setEndpoint(endpoint)
       .setProject(projectId)
       .setKey(apiKey);
     const databases = new Databases(adminClient);
+
+    await ensureCallerCanMigrate({
+      endpoint,
+      projectId,
+      jwt,
+      databases,
+      databaseId,
+      workspaceId,
+    });
 
     await assertFeatureEnabled({
       databases,

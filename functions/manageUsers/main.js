@@ -1,4 +1,4 @@
-import { Account, Client, Databases, ID, Query, Teams, Users } from "node-appwrite";
+import { Account, Client, Databases, ID, Query, Users } from "node-appwrite";
 
 const ALLOWED_ROLES = ["admin", "clerk", "viewer"];
 
@@ -49,22 +49,6 @@ function normalizeEmail(value) {
 function normalizeRole(value) {
   const next = normalizeString(value)?.toLowerCase() ?? null;
   return next && ALLOWED_ROLES.includes(next) ? next : null;
-}
-
-function roleLabel(role) {
-  return role.charAt(0).toUpperCase() + role.slice(1);
-}
-
-function getRoleTeamIds() {
-  return {
-    admin: getEnv("RCMS_APPWRITE_TEAM_ADMIN_ID", "APPWRITE_TEAM_ADMIN_ID"),
-    clerk: getEnv("RCMS_APPWRITE_TEAM_CLERK_ID", "APPWRITE_TEAM_CLERK_ID"),
-    viewer: getEnv("RCMS_APPWRITE_TEAM_VIEWER_ID", "APPWRITE_TEAM_VIEWER_ID"),
-  };
-}
-
-function hasAllRoleTeamIds(roleTeamIds) {
-  return Boolean(roleTeamIds.admin && roleTeamIds.clerk && roleTeamIds.viewer);
 }
 
 function buildClient(endpoint, projectId) {
@@ -199,26 +183,60 @@ async function assertFeatureEnabled({
   }
 }
 
-async function ensureCallerIsAdmin({ endpoint, projectId, jwt, adminTeamId }) {
+async function findUserByEmail(users, email) {
+  const list = await users.list([Query.equal("email", [email]), Query.limit(1)]);
+  return list.users.find((item) => item.email?.toLowerCase() === email) ?? null;
+}
+
+async function findWorkspaceMembership(databases, databaseId, workspaceId, userId) {
+  const page = await databases.listDocuments(databaseId, "workspace_memberships", [
+    Query.equal("workspaceId", [workspaceId]),
+    Query.equal("userId", [userId]),
+    Query.limit(1),
+  ]);
+  return page.documents?.[0] ?? null;
+}
+
+async function ensureCallerIsWorkspaceAdmin({
+  endpoint,
+  projectId,
+  jwt,
+  databases,
+  databaseId,
+  workspaceId,
+}) {
   if (!jwt) {
     throw Object.assign(new Error("Missing caller JWT."), { code: 401 });
   }
 
   const callerClient = buildClient(endpoint, projectId).setJWT(jwt);
   const account = new Account(callerClient);
-  const teams = new Teams(callerClient);
-
   const caller = await account.get();
-  const teamList = await teams.list();
-  const hasAdminTeam = (teamList.teams ?? []).some((team) => {
-    const byId = adminTeamId && team.$id === adminTeamId;
-    const byName = String(team.name ?? "").trim().toLowerCase() === "admin";
-    return byId || byName;
-  });
-
-  if (!hasAdminTeam) {
+  const callerWorkspaceId = normalizeWorkspaceId(caller?.prefs?.workspaceId);
+  if (callerWorkspaceId && callerWorkspaceId !== workspaceId) {
     throw Object.assign(
-      new Error("Only admins can create users and assign roles."),
+      new Error("Caller is not allowed to manage another workspace."),
+      { code: 403 }
+    );
+  }
+
+  const workspace = await databases.getDocument(databaseId, "workspaces", workspaceId);
+  if (workspace?.ownerUserId === caller.$id) {
+    return caller;
+  }
+
+  const membership = await findWorkspaceMembership(
+    databases,
+    databaseId,
+    workspaceId,
+    caller.$id
+  );
+  const role = String(membership?.role ?? "").trim().toLowerCase();
+  const status = String(membership?.status ?? "inactive").trim().toLowerCase();
+
+  if (status !== "active" || role !== "admin") {
+    throw Object.assign(
+      new Error("Only workspace admins can create users and assign roles."),
       { code: 403 }
     );
   }
@@ -226,80 +244,52 @@ async function ensureCallerIsAdmin({ endpoint, projectId, jwt, adminTeamId }) {
   return caller;
 }
 
-async function findUserByEmail(users, email) {
-  const list = await users.list([Query.equal("email", [email]), Query.limit(1)]);
-  return list.users.find((item) => item.email?.toLowerCase() === email) ?? null;
-}
-
-async function listMembershipsForUser(teams, teamId, userId) {
-  const memberships = [];
-  let cursor = null;
-
-  while (true) {
-    const queries = [Query.equal("userId", [userId]), Query.limit(100)];
-    if (cursor) {
-      queries.push(Query.cursorAfter(cursor));
-    }
-
-    const page = await teams.listMemberships({ teamId, queries });
-    memberships.push(...(page.memberships ?? []));
-
-    if ((page.memberships ?? []).length < 100) {
-      break;
-    }
-    cursor = page.memberships[page.memberships.length - 1].$id;
-  }
-
-  return memberships;
-}
-
-async function removeRoleMemberships(teams, teamId, userId) {
-  const memberships = await listMembershipsForUser(teams, teamId, userId);
-  for (const membership of memberships) {
-    await teams.deleteMembership({ teamId, membershipId: membership.$id });
-  }
-  return memberships.length;
-}
-
-async function ensureRoleMembership(teams, teamId, userId, label) {
-  const memberships = await listMembershipsForUser(teams, teamId, userId);
-  if (memberships.length > 0) {
-    return { created: false, membershipId: memberships[0].$id };
-  }
-
-  const created = await teams.createMembership({
-    teamId,
-    roles: ["member"],
-    userId,
-    name: label,
-  });
-  return { created: true, membershipId: created.$id };
-}
-
-async function assignExclusiveRoleMembership({
-  teams,
-  roleTeamIds,
-  targetRole,
+async function upsertWorkspaceMembership({
+  databases,
+  databaseId,
+  workspaceId,
   userId,
+  email,
+  role,
+  actorUserId,
 }) {
-  let removedCount = 0;
-  for (const role of ALLOWED_ROLES) {
-    if (role === targetRole) continue;
-    removedCount += await removeRoleMemberships(teams, roleTeamIds[role], userId);
+  const existing = await findWorkspaceMembership(
+    databases,
+    databaseId,
+    workspaceId,
+    userId
+  );
+  if (existing) {
+    const updated = await databases.updateDocument(
+      databaseId,
+      "workspace_memberships",
+      existing.$id,
+      {
+        email: email ?? existing.email ?? null,
+        role,
+        status: "active",
+        invitedByUserId: actorUserId ?? existing.invitedByUserId ?? null,
+      }
+    );
+    return { created: false, document: updated };
   }
 
-  const ensured = await ensureRoleMembership(
-    teams,
-    roleTeamIds[targetRole],
-    userId,
-    roleLabel(targetRole)
+  const created = await databases.createDocument(
+    databaseId,
+    "workspace_memberships",
+    ID.unique(),
+    {
+      workspaceId,
+      userId,
+      email: email ?? null,
+      role,
+      status: "active",
+      invitedByUserId: actorUserId ?? null,
+      notes: null,
+    }
   );
 
-  return {
-    removedCount,
-    membershipCreated: ensured.created,
-    targetMembershipId: ensured.membershipId,
-  };
+  return { created: true, document: created };
 }
 
 export default async (context) => {
@@ -325,7 +315,6 @@ export default async (context) => {
     "APPWRITE_FUNCTION_API_KEY"
   );
   const databaseId = getEnv("RCMS_APPWRITE_DATABASE_ID", "APPWRITE_DATABASE_ID") || "rcms";
-  const roleTeamIds = getRoleTeamIds();
 
   if (!endpoint || !projectId || !apiKey) {
     return res.json(
@@ -333,16 +322,6 @@ export default async (context) => {
         ok: false,
         error:
           "Missing function credentials. Set endpoint, project ID, and API key env vars.",
-      },
-      500
-    );
-  }
-  if (!hasAllRoleTeamIds(roleTeamIds)) {
-    return res.json(
-      {
-        ok: false,
-        error:
-          "Missing role team IDs. Set admin, clerk, and viewer team IDs in function env vars.",
       },
       500
     );
@@ -366,17 +345,18 @@ export default async (context) => {
   }
 
   try {
-    await ensureCallerIsAdmin({
-      endpoint,
-      projectId,
-      jwt,
-      adminTeamId: roleTeamIds.admin,
-    });
-
     const adminClient = buildClient(endpoint, projectId).setKey(apiKey);
     const databases = new Databases(adminClient);
     const users = new Users(adminClient);
-    const teams = new Teams(adminClient);
+
+    const caller = await ensureCallerIsWorkspaceAdmin({
+      endpoint,
+      projectId,
+      jwt,
+      databases,
+      databaseId,
+      workspaceId,
+    });
 
     await assertFeatureEnabled({
       databases,
@@ -430,11 +410,14 @@ export default async (context) => {
       });
     }
 
-    const membershipResult = await assignExclusiveRoleMembership({
-      teams,
-      roleTeamIds,
-      targetRole: role,
+    const membershipResult = await upsertWorkspaceMembership({
+      databases,
+      databaseId,
+      workspaceId,
       userId: user.$id,
+      email: user.email ?? email,
+      role,
+      actorUserId: caller.$id,
     });
 
     return res.json({
@@ -447,7 +430,12 @@ export default async (context) => {
         name: user.name ?? name,
         workspaceId,
       },
-      membership: membershipResult,
+      membership: {
+        created: membershipResult.created,
+        membershipId: membershipResult.document.$id,
+        role: membershipResult.document.role,
+        status: membershipResult.document.status,
+      },
     });
   } catch (error) {
     const status = Number(error?.code) || 500;

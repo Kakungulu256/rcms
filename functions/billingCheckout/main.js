@@ -1,7 +1,8 @@
-import { Account, Client, Databases, ID, Query, Teams } from "node-appwrite";
+import { Account, Client, Databases, ID, Query } from "node-appwrite";
 
 const COLLECTIONS = {
   workspaces: "workspaces",
+  workspaceMemberships: "workspace_memberships",
   plans: "plans",
   subscriptions: "subscriptions",
   subscriptionEvents: "subscription_events",
@@ -236,28 +237,46 @@ async function findOne(databases, databaseId, collectionId, queries) {
   return result.documents?.[0] ?? null;
 }
 
-async function ensureCallerIsAdmin({ endpoint, projectId, jwt, configuredAdminTeamId }) {
+async function ensureCallerAuthenticated({ endpoint, projectId, jwt }) {
   if (!jwt) {
     throw Object.assign(new Error("Missing caller JWT."), { code: 401 });
   }
 
   const callerClient = new Client().setEndpoint(endpoint).setProject(projectId).setJWT(jwt);
   const account = new Account(callerClient);
-  const teams = new Teams(callerClient);
+  return account.get();
+}
 
-  const caller = await account.get();
-  const memberships = await teams.list();
-  const hasAdminMembership = (memberships.teams ?? []).some((team) => {
-    const byId = configuredAdminTeamId && team.$id === configuredAdminTeamId;
-    const byName = String(team.name ?? "").trim().toLowerCase() === "admin";
-    return byId || byName;
-  });
-  if (!hasAdminMembership) {
-    throw Object.assign(new Error("Only admins can initiate billing checkout."), {
+async function assertCallerIsWorkspaceAdmin({
+  databases,
+  databaseId,
+  workspaceId,
+  caller,
+}) {
+  const workspace = await databases.getDocument(databaseId, COLLECTIONS.workspaces, workspaceId);
+  if (workspace?.ownerUserId === caller.$id) {
+    return workspace;
+  }
+
+  const membershipPage = await databases.listDocuments(
+    databaseId,
+    COLLECTIONS.workspaceMemberships,
+    [
+      Query.equal("workspaceId", [workspaceId]),
+      Query.equal("userId", [caller.$id]),
+      Query.equal("status", ["active"]),
+      Query.limit(1),
+    ]
+  );
+  const membership = membershipPage.documents?.[0] ?? null;
+  const role = String(membership?.role ?? "").trim().toLowerCase();
+  if (role !== "admin") {
+    throw Object.assign(new Error("Only workspace admins can initiate billing checkout."), {
       code: 403,
     });
   }
-  return caller;
+
+  return workspace;
 }
 
 function resolveWorkspaceIdFromBodyAndCaller(body, caller) {
@@ -366,7 +385,6 @@ export default async (context) => {
     "APPWRITE_FUNCTION_API_KEY"
   );
   const databaseId = getEnv("RCMS_APPWRITE_DATABASE_ID", "APPWRITE_DATABASE_ID") || "rcms";
-  const configuredAdminTeamId = getEnv("RCMS_APPWRITE_TEAM_ADMIN_ID", "APPWRITE_TEAM_ADMIN_ID");
 
   if (!endpoint || !projectId || !apiKey) {
     return res.json(
@@ -395,11 +413,10 @@ export default async (context) => {
   const jwt = normalizeString(body.jwt);
 
   try {
-    const caller = await ensureCallerIsAdmin({
+    const caller = await ensureCallerAuthenticated({
       endpoint,
       projectId,
       jwt,
-      configuredAdminTeamId,
     });
 
     const workspaceId = resolveWorkspaceIdFromBodyAndCaller(body, caller);
@@ -415,7 +432,12 @@ export default async (context) => {
     const databases = new Databases(adminClient);
     const gateway = buildGatewayAdapter(billingConfig);
 
-    const workspace = await databases.getDocument(databaseId, COLLECTIONS.workspaces, workspaceId);
+    const workspace = await assertCallerIsWorkspaceAdmin({
+      databases,
+      databaseId,
+      workspaceId,
+      caller,
+    });
     if (workspace.status !== "active") {
       return res.json(
         { ok: false, error: "Workspace is inactive and cannot checkout." },

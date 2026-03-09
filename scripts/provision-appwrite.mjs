@@ -160,6 +160,15 @@ function getCollectionPermissions(collectionId) {
     ];
   }
 
+  if (collectionId === "workspace_memberships") {
+    return [
+      Permission.read(Role.users()),
+      Permission.create(Role.team(teamIds.admin)),
+      Permission.update(Role.team(teamIds.admin)),
+      Permission.delete(Role.team(teamIds.admin)),
+    ];
+  }
+
   return [
     ...rolePermissions.adminCrud,
     ...rolePermissions.clerkReadCreateUpdate,
@@ -852,6 +861,71 @@ async function setupWorkspaces() {
   );
 }
 
+async function setupWorkspaceMemberships() {
+  const collectionId = "workspace_memberships";
+  await ensureCollection(collectionId, "Workspace Memberships");
+  await ensureWorkspaceScope(collectionId);
+
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "userId", 64, true)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "email", 256, false)
+  );
+  await ensureAttribute(() =>
+    databases.createEnumAttribute(
+      databaseId,
+      collectionId,
+      "role",
+      ["admin", "clerk", "viewer"],
+      true
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createEnumAttribute(
+      databaseId,
+      collectionId,
+      "status",
+      ["active", "inactive"],
+      true
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(
+      databaseId,
+      collectionId,
+      "invitedByUserId",
+      64,
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "notes", 512, false)
+  );
+
+  await ensureIndex(() =>
+    databases.createIndex(
+      databaseId,
+      collectionId,
+      "idx_workspace_member_user",
+      "key",
+      ["workspaceId", "userId"]
+    )
+  );
+  await ensureIndex(() =>
+    databases.createIndex(databaseId, collectionId, "idx_workspace_member_role", "key", ["role"])
+  );
+  await ensureIndex(() =>
+    databases.createIndex(
+      databaseId,
+      collectionId,
+      "idx_workspace_member_status",
+      "key",
+      ["status"]
+    )
+  );
+}
+
 async function setupPlans() {
   const collectionId = "plans";
   await ensureCollection(collectionId, "Plans");
@@ -1433,6 +1507,7 @@ async function main() {
   await ensureDatabase();
   await ensureReceiptsBucket();
   await setupWorkspaces();
+  await setupWorkspaceMemberships();
   await setupPlans();
   await setupFeatureEntitlements();
   await setupCoupons();

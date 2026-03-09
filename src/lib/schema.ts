@@ -1,5 +1,6 @@
 export const COLLECTIONS = {
   workspaces: "workspaces",
+  workspaceMemberships: "workspace_memberships",
   houses: "houses",
   tenants: "tenants",
   payments: "payments",
@@ -213,6 +214,17 @@ export type Workspace = {
   subscriptionState?: SubscriptionState;
   trialStartDate?: string;
   trialEndDate?: string;
+  notes?: string;
+};
+
+export type WorkspaceMembership = {
+  $id: string;
+  workspaceId?: string;
+  userId: string;
+  email?: string;
+  role: "admin" | "clerk" | "viewer";
+  status: "active" | "inactive";
+  invitedByUserId?: string;
   notes?: string;
 };
 

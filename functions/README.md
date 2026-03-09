@@ -36,9 +36,7 @@ Set these env vars in the Appwrite Function:
 - `RCMS_APPWRITE_ENDPOINT`
 - `RCMS_APPWRITE_PROJECT_ID`
 - `RCMS_APPWRITE_API_KEY`
-- `RCMS_APPWRITE_TEAM_ADMIN_ID`
-- `RCMS_APPWRITE_TEAM_CLERK_ID`
-- `RCMS_APPWRITE_TEAM_VIEWER_ID`
+- `RCMS_APPWRITE_DATABASE_ID` (optional, defaults to `rcms`)
 
 ## migrateHistoricalData Environment
 Set these env vars in the Appwrite Function:
@@ -46,8 +44,6 @@ Set these env vars in the Appwrite Function:
 - `RCMS_APPWRITE_PROJECT_ID`
 - `RCMS_APPWRITE_API_KEY`
 - `RCMS_APPWRITE_DATABASE_ID` (optional, defaults to `rcms`)
-- `RCMS_APPWRITE_TEAM_ADMIN_ID` (optional if team names are exactly `Admin`/`admin`)
-- `RCMS_APPWRITE_TEAM_CLERK_ID` (optional if team names are exactly `Clerk`/`clerk`)
 
 ## bootstrapWorkspace Environment
 Set these env vars in the Appwrite Function:
@@ -55,7 +51,6 @@ Set these env vars in the Appwrite Function:
 - `RCMS_APPWRITE_PROJECT_ID`
 - `RCMS_APPWRITE_API_KEY`
 - `RCMS_APPWRITE_DATABASE_ID` (optional, defaults to `rcms`)
-- `RCMS_APPWRITE_TEAM_ADMIN_ID` (required unless an Appwrite team named `admin` exists)
 - `RCMS_TRIAL_DAYS` (optional, defaults to `5`)
 - `RCMS_DEFAULT_TRIAL_PLAN_CODE` (optional, defaults to `trial`)
 
@@ -69,7 +64,6 @@ Set these env vars in the Appwrite Function:
 - `RCMS_APPWRITE_PROJECT_ID`
 - `RCMS_APPWRITE_API_KEY`
 - `RCMS_APPWRITE_DATABASE_ID` (optional, defaults to `rcms`)
-- `RCMS_APPWRITE_TEAM_ADMIN_ID` (required unless an Appwrite team named `admin` exists)
 - `RCMS_BILLING_PROVIDER` (optional, defaults to `flutterwave`)
 - `RCMS_BILLING_DEFAULT_CURRENCY` (optional, defaults to `UGX`)
 - `RCMS_BILLING_SUCCESS_URL` (required unless provided in function payload)

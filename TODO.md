@@ -224,7 +224,7 @@ Use this list in order. Complete and verify each item before moving to the next.
 - Gate both frontend UI and backend function actions.
 - Return clear messages when a feature is locked by plan.
 
-44. [ ] Refactor RBAC to workspace-aware memberships
+44. [x] Refactor RBAC to workspace-aware memberships
 - Keep roles (`admin`, `clerk`, `viewer`) but make them workspace-scoped.
 - Allow an admin to invite/manage users only inside their workspace.
 - Ensure role checks always include workspace context.

@@ -1,12 +1,24 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { Query } from "appwrite";
-import { account, listAllDocuments, teams } from "../lib/appwrite";
-import { getRolePermissions, resolveRoleFromTeams, type AppRole, type RolePermissions } from "./rbac";
+import { account, listAllDocuments } from "../lib/appwrite";
+import {
+  getRolePermissions,
+  resolveRoleFromWorkspaceMembership,
+  type AppRole,
+  type RolePermissions,
+} from "./rbac";
 import {
   resolveWorkspaceIdFromAccount,
   setActiveWorkspaceId,
 } from "../lib/workspace";
-import { COLLECTIONS, type FeatureEntitlement, type Plan, type Subscription, type Workspace } from "../lib/schema";
+import {
+  COLLECTIONS,
+  type FeatureEntitlement,
+  type Plan,
+  type Subscription,
+  type Workspace,
+  type WorkspaceMembership,
+} from "../lib/schema";
 import { databases, rcmsDatabaseId } from "../lib/appwrite";
 import { evaluateBillingSnapshot, type BillingSnapshot } from "../lib/subscriptionLifecycle";
 import {
@@ -81,17 +93,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const workspaceId = setActiveWorkspaceId(workspaceFromPrefs);
       const hasWorkspace = Boolean(workspaceFromPrefs);
       let role: AppRole = "viewer";
-      let teamIds: string[] = [];
+      const teamIds: string[] = [];
       let billing: BillingSnapshot | null = null;
       let featureEntitlements = buildFeatureEntitlements({});
-      try {
-        const teamResult = await teams.list();
-        const teamList = teamResult.teams ?? [];
-        teamIds = teamList.map((team) => team.$id);
-        role = resolveRoleFromTeams(teamList);
-      } catch {
-        role = "viewer";
-      }
 
       if (hasWorkspace) {
         try {
@@ -115,6 +119,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             ]);
             planDoc = (planResult.documents?.[0] as unknown as Plan | undefined) ?? null;
           }
+          const membershipResult = await databases
+            .listDocuments(rcmsDatabaseId, COLLECTIONS.workspaceMemberships, [
+              Query.equal("workspaceId", [workspaceId]),
+              Query.equal("userId", [result.$id]),
+              Query.equal("status", ["active"]),
+              Query.limit(1),
+            ])
+            .catch(() => null);
+          const membership =
+            (membershipResult?.documents?.[0] as unknown as WorkspaceMembership | undefined) ??
+            null;
+          role = resolveRoleFromWorkspaceMembership(membership);
+          if (role === "viewer" && workspaceDoc.ownerUserId === result.$id) {
+            role = "admin";
+          }
+
           let featureRows: FeatureEntitlement[] = [];
           if (subscriptionDoc?.planCode) {
             featureRows = await listAllDocuments<FeatureEntitlement>({
@@ -133,6 +153,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             subscription: subscriptionDoc,
           });
         } catch {
+          role = "viewer";
           billing = null;
           featureEntitlements = buildFeatureEntitlements({});
         }

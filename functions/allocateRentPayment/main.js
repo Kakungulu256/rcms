@@ -1,4 +1,4 @@
-import { Client, Databases, ID, Query, Teams } from "node-appwrite";
+import { Account, Client, Databases, ID, Query } from "node-appwrite";
 
 const REQUIRED_FIELDS = ["tenantId", "amount", "method", "paymentDate"];
 
@@ -28,16 +28,39 @@ function assertWorkspaceAccess(document, workspaceId, label) {
   }
 }
 
-async function callerHasAdminRole({ endpoint, projectId, jwt, adminTeamId }) {
+async function callerHasWorkspaceRole({
+  endpoint,
+  projectId,
+  jwt,
+  databases,
+  databaseId,
+  workspaceId,
+  allowedRoles,
+}) {
   if (!jwt) return true;
   const callerClient = new Client().setEndpoint(endpoint).setProject(projectId).setJWT(jwt);
-  const teams = new Teams(callerClient);
-  const teamList = await teams.list();
-  return (teamList.teams ?? []).some((team) => {
-    const byId = adminTeamId && team.$id === adminTeamId;
-    const byName = String(team.name ?? "").trim().toLowerCase() === "admin";
-    return Boolean(byId || byName);
-  });
+  const account = new Account(callerClient);
+  const caller = await account.get();
+
+  const callerWorkspaceId = normalizeWorkspaceId(caller?.prefs?.workspaceId);
+  if (callerWorkspaceId && callerWorkspaceId !== workspaceId) {
+    return false;
+  }
+
+  const workspace = await databases.getDocument(databaseId, "workspaces", workspaceId);
+  if (workspace?.ownerUserId === caller.$id) {
+    return allowedRoles.includes("admin");
+  }
+
+  const membershipPage = await databases.listDocuments(databaseId, "workspace_memberships", [
+    Query.equal("workspaceId", [workspaceId]),
+    Query.equal("userId", [caller.$id]),
+    Query.equal("status", ["active"]),
+    Query.limit(1),
+  ]);
+  const membership = membershipPage.documents?.[0] ?? null;
+  const role = String(membership?.role ?? "").trim().toLowerCase();
+  return allowedRoles.includes(role);
 }
 
 function parseJson(body) {
@@ -539,8 +562,6 @@ export default async (context) => {
     getEnv("APPWRITE_API_KEY") ||
     getEnv("APPWRITE_FUNCTION_API_KEY");
   const databaseId = getEnv("RCMS_APPWRITE_DATABASE_ID") || "rcms";
-  const adminTeamId =
-    getEnv("RCMS_APPWRITE_TEAM_ADMIN_ID") || getEnv("APPWRITE_TEAM_ADMIN_ID");
 
   if (!endpoint || !projectId) {
     log?.("Missing Appwrite endpoint or project in function env.");
@@ -615,11 +636,14 @@ export default async (context) => {
         featureKey: "payments.reverse",
       });
 
-      const isAdmin = await callerHasAdminRole({
+      const isAdmin = await callerHasWorkspaceRole({
         endpoint,
         projectId,
         jwt,
-        adminTeamId,
+        databases: entitlementDatabases,
+        databaseId,
+        workspaceId,
+        allowedRoles: ["admin"],
       });
       if (!isAdmin) {
         return res.json(
