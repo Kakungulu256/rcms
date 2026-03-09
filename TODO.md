@@ -179,12 +179,12 @@ Use this list in order. Complete and verify each item before moving to the next.
 - Prevent cross-workspace access by query filters + backend checks.
 - Support property managers with many properties across different landlords within one workspace.
 
-38. [ ] Add public landing page and marketing site flow
+38. [x] Add public landing page and marketing site flow
 - New public route for product overview, pricing, FAQs, and CTA buttons.
 - Keep app routes protected behind authentication.
 - Add clear `Start free trial` and `Login` entry points.
 
-39. [ ] Build self-service signup + workspace bootstrap
+39. [x] Build self-service signup + workspace bootstrap
 - On signup, create:
 - Appwrite user
 - Workspace record

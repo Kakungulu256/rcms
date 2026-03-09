@@ -765,7 +765,40 @@ async function setupWorkspaces() {
     )
   );
   await ensureAttribute(() =>
+    databases.createEnumAttribute(
+      databaseId,
+      collectionId,
+      "subscriptionState",
+      ["trialing", "active", "past_due", "canceled", "expired"],
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "trialStartDate", false)
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "trialEndDate", false)
+  );
+  await ensureAttribute(() =>
     databases.createStringAttribute(databaseId, collectionId, "notes", 512, false)
+  );
+  await ensureIndex(() =>
+    databases.createIndex(
+      databaseId,
+      collectionId,
+      "idx_workspace_owner",
+      "key",
+      ["ownerUserId"]
+    )
+  );
+  await ensureIndex(() =>
+    databases.createIndex(
+      databaseId,
+      collectionId,
+      "idx_workspace_subscription_state",
+      "key",
+      ["subscriptionState"]
+    )
   );
 }
 

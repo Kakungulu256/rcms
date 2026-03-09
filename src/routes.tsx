@@ -3,20 +3,34 @@ import AppShell from "./ui/AppShell";
 import DashboardPage from "./ui/pages/DashboardPage";
 import ExpensesPage from "./ui/pages/ExpensesPage";
 import HousesPage from "./ui/pages/HousesPage";
+import LandingPage from "./ui/pages/LandingPage";
 import LoginPage from "./ui/pages/LoginPage";
 import MigrationPage from "./ui/pages/MigrationPage";
 import PaymentsPage from "./ui/pages/PaymentsPage";
 import ReportsPage from "./ui/pages/ReportsPage";
+import ResetPasswordPage from "./ui/pages/ResetPasswordPage";
 import SecurityDepositsPage from "./ui/pages/SecurityDepositsPage";
 import SettingsPage from "./ui/pages/SettingsPage";
+import SignupPage from "./ui/pages/SignupPage";
 import TenantsPage from "./ui/pages/TenantsPage";
 import RequireAuth from "./auth/RequireAuth";
 import RequireRole from "./auth/RequireRole";
 
 export const router = createBrowserRouter([
+  { path: "/", element: <LandingPage /> },
   { path: "/login", element: <LoginPage /> },
+  { path: "/signup", element: <SignupPage /> },
+  { path: "/reset-password", element: <ResetPasswordPage /> },
+  { path: "/houses", element: <Navigate to="/app/houses" replace /> },
+  { path: "/tenants", element: <Navigate to="/app/tenants" replace /> },
+  { path: "/payments", element: <Navigate to="/app/payments" replace /> },
+  { path: "/security-deposits", element: <Navigate to="/app/security-deposits" replace /> },
+  { path: "/expenses", element: <Navigate to="/app/expenses" replace /> },
+  { path: "/migration", element: <Navigate to="/app/migration" replace /> },
+  { path: "/reports", element: <Navigate to="/app/reports" replace /> },
+  { path: "/settings", element: <Navigate to="/app/settings" replace /> },
   {
-    path: "/",
+    path: "/app",
     element: (
       <RequireAuth>
         <AppShell />
@@ -81,7 +95,8 @@ export const router = createBrowserRouter([
           </RequireRole>
         ),
       },
-      { path: "*", element: <Navigate to="/" replace /> },
+      { path: "*", element: <Navigate to="/app" replace /> },
     ],
   },
+  { path: "*", element: <Navigate to="/" replace /> },
 ]);

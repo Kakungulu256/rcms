@@ -9,15 +9,15 @@ export default function AppShell() {
   const compactSidebar = collapsed && !mobileNavOpen;
 
   const navItems = [
-    { to: "/", label: "Dashboard", visible: true },
-    { to: "/houses", label: "Houses", visible: permissions.canManageHouses },
-    { to: "/tenants", label: "Tenants", visible: permissions.canViewTenants },
-    { to: "/payments", label: "Payments", visible: permissions.canViewPayments },
-    { to: "/security-deposits", label: "Security Deposits", visible: permissions.canViewReports },
-    { to: "/expenses", label: "Expenses", visible: permissions.canRecordExpenses },
-    { to: "/migration", label: "Old Records", visible: permissions.canUseMigration },
-    { to: "/reports", label: "Reports", visible: permissions.canViewReports },
-    { to: "/settings", label: "Settings", visible: permissions.canAccessSettings },
+    { to: "/app", label: "Dashboard", visible: true, end: true },
+    { to: "/app/houses", label: "Houses", visible: permissions.canManageHouses },
+    { to: "/app/tenants", label: "Tenants", visible: permissions.canViewTenants },
+    { to: "/app/payments", label: "Payments", visible: permissions.canViewPayments },
+    { to: "/app/security-deposits", label: "Security Deposits", visible: permissions.canViewReports },
+    { to: "/app/expenses", label: "Expenses", visible: permissions.canRecordExpenses },
+    { to: "/app/migration", label: "Old Records", visible: permissions.canUseMigration },
+    { to: "/app/reports", label: "Reports", visible: permissions.canViewReports },
+    { to: "/app/settings", label: "Settings", visible: permissions.canAccessSettings },
   ].filter((item) => item.visible);
 
   return (
@@ -87,6 +87,7 @@ export default function AppShell() {
               <NavLink
                 key={item.to}
                 to={item.to}
+                end={item.end}
                 onClick={() => setMobileNavOpen(false)}
                 className={({ isActive }) =>
                   [

@@ -177,6 +177,9 @@ export type Workspace = {
   name: string;
   ownerUserId?: string;
   status: "active" | "inactive";
+  subscriptionState?: "trialing" | "active" | "past_due" | "canceled" | "expired";
+  trialStartDate?: string;
+  trialEndDate?: string;
   notes?: string;
 };
 

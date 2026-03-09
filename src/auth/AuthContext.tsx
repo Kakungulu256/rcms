@@ -13,6 +13,7 @@ type AuthUser = {
   role: AppRole;
   teamIds: string[];
   workspaceId: string;
+  hasWorkspace: boolean;
 };
 
 type AuthState = {
@@ -23,6 +24,7 @@ type AuthState = {
   error: string | null;
   signIn: (email: string, password: string) => Promise<boolean>;
   signOut: () => Promise<void>;
+  refresh: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -31,7 +33,8 @@ function mapUser(
   user: { $id: string; name?: string; email?: string },
   role: AppRole,
   teamIds: string[],
-  workspaceId: string
+  workspaceId: string,
+  hasWorkspace: boolean
 ): AuthUser {
   return {
     id: user.$id,
@@ -40,6 +43,7 @@ function mapUser(
     role,
     teamIds,
     workspaceId,
+    hasWorkspace,
   };
 }
 
@@ -56,6 +60,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         result as unknown as { prefs?: Record<string, unknown> }
       );
       const workspaceId = setActiveWorkspaceId(workspaceFromPrefs);
+      const hasWorkspace = Boolean(workspaceFromPrefs);
       let role: AppRole = "viewer";
       let teamIds: string[] = [];
       try {
@@ -66,7 +71,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } catch {
         role = "viewer";
       }
-      setUser(mapUser(result, role, teamIds, workspaceId));
+      setUser(mapUser(result, role, teamIds, workspaceId, hasWorkspace));
       setError(null);
     } catch (err) {
       setUser(null);
@@ -117,8 +122,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       error,
       signIn,
       signOut,
+      refresh: refreshUser,
     }),
-    [user, role, permissions, loading, error, signIn, signOut]
+    [user, role, permissions, loading, error, signIn, signOut, refreshUser]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
