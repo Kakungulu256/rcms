@@ -30,6 +30,9 @@ export default function BillingLockedPage() {
             : "Contact your workspace admin to renew or upgrade billing."}
         </p>
         <div className="mt-4 flex flex-wrap gap-3">
+          <Link to="/app/upgrade" className="btn-primary text-sm">
+            View Plans
+          </Link>
           {isAdmin ? (
             <Link to="/app/settings" className="btn-primary text-sm">
               Open Billing Settings

@@ -13,6 +13,7 @@ import SecurityDepositsPage from "./ui/pages/SecurityDepositsPage";
 import SettingsPage from "./ui/pages/SettingsPage";
 import SignupPage from "./ui/pages/SignupPage";
 import TenantsPage from "./ui/pages/TenantsPage";
+import UpgradePage from "./ui/pages/UpgradePage";
 import RequireAuth from "./auth/RequireAuth";
 import RequireBillingAccess from "./auth/RequireBillingAccess";
 import RequireFeature from "./auth/RequireFeature";
@@ -123,6 +124,7 @@ export const router = createBrowserRouter([
           </RequireFeature>
         ),
       },
+      { path: "upgrade", element: <UpgradePage /> },
       { path: "billing-lock", element: <BillingLockedPage /> },
       {
         path: "settings",

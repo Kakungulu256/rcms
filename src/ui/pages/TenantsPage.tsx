@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ID, Query } from "appwrite";
 import { endOfMonth, subMonths } from "date-fns";
+import { Link } from "react-router-dom";
 import TenantDetail from "../tenants/TenantDetail";
 import TenantForm from "../tenants/TenantForm";
 import TenantList from "../tenants/TenantList";
@@ -581,9 +582,14 @@ export default function TenantsPage() {
                   disabled={activeTenantLimitStatus.reached}
                   className="btn-primary text-sm disabled:opacity-60"
                 >
-                  Add Tenant
+                  {activeTenantLimitStatus.reached ? "Add Tenant (Locked)" : "Add Tenant"}
                 </button>
               )}
+              {canManageTenants && activeTenantLimitStatus.reached ? (
+                <Link to="/app/upgrade" className="btn-secondary text-sm">
+                  Upgrade Plan
+                </Link>
+              ) : null}
               <button
                 onClick={loadData}
                 className="btn-secondary text-sm"

@@ -234,7 +234,7 @@ Use this list in order. Complete and verify each item before moving to the next.
 - Block create actions at limit with upgrade CTA.
 - Add usage counters and a usage dashboard card.
 
-46. [ ] Add locked-state UX and upgrade/paywall screens
+46. [x] Add locked-state UX and upgrade/paywall screens
 - Show locked badges and disabled buttons for unavailable features.
 - Add upgrade modal/page with current plan, limits, and comparison table.
 - Add billing status banner (trial days left, subscription expiry, past due).

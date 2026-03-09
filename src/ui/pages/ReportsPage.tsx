@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Query } from "appwrite";
+import { Link } from "react-router-dom";
 import {
   addMonths,
   endOfMonth,
@@ -2141,15 +2142,28 @@ export default function ReportsPage() {
           className="btn-primary text-sm"
           disabled={loading || exportingXlsx || exportLimitStatus.reached}
         >
-          {exportingXlsx ? "Exporting..." : "Export XLSX"}
+          {exportingXlsx
+            ? "Exporting..."
+            : exportLimitStatus.reached
+              ? "Export XLSX (Locked)"
+              : "Export XLSX"}
         </button>
         <button
           onClick={exportPdf}
           className="btn-secondary text-sm"
           disabled={loading || exportingPdf || exportLimitStatus.reached}
         >
-          {exportingPdf ? "Exporting..." : "Export PDF"}
+          {exportingPdf
+            ? "Exporting..."
+            : exportLimitStatus.reached
+              ? "Export PDF (Locked)"
+              : "Export PDF"}
         </button>
+        {exportLimitStatus.reached ? (
+          <Link to="/app/upgrade" className="btn-secondary text-sm">
+            Upgrade Plan
+          </Link>
+        ) : null}
         {planLimits.exportsPerMonth != null && (
           <div className="text-xs text-amber-300">
             Exports this month: {exportLimitStatus.used.toLocaleString()} /{" "}

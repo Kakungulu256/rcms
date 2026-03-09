@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { Query } from "appwrite";
+import { Link } from "react-router-dom";
 import {
   account,
   databases,
@@ -385,12 +386,22 @@ export default function SettingsPage() {
             {teamMemberLimitStatus.reached
               ? " (limit reached - upgrade to add more users)"
               : ""}
+            {teamMemberLimitStatus.reached ? (
+              <Link to="/app/upgrade" className="ml-2 underline">
+                Upgrade Plan
+              </Link>
+            ) : null}
           </div>
         ) : null}
         {!manageUsersAccess.allowed ? (
           <div className="mt-4 rounded-xl border border-amber-600/40 bg-amber-950/30 p-4 text-sm text-amber-100">
             {manageUsersAccess.reason ||
               "User management is locked on your current plan. Upgrade to continue."}
+            <div className="mt-2">
+              <Link to="/app/upgrade" className="underline">
+                View plans and upgrade
+              </Link>
+            </div>
           </div>
         ) : null}
 

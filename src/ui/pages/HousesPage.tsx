@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ID, Query } from "appwrite";
+import { Link } from "react-router-dom";
 import HouseDetail from "../houses/HouseDetail";
 import HouseForm from "../houses/HouseForm";
 import HouseList from "../houses/HouseList";
@@ -313,9 +314,14 @@ export default function HousesPage() {
                   disabled={houseLimitStatus.reached}
                   className="btn-primary text-sm disabled:opacity-60"
                 >
-                  Add House
+                  {houseLimitStatus.reached ? "Add House (Locked)" : "Add House"}
                 </button>
               )}
+              {canManageHouses && houseLimitStatus.reached ? (
+                <Link to="/app/upgrade" className="btn-secondary text-sm">
+                  Upgrade Plan
+                </Link>
+              ) : null}
               <button
                 onClick={loadHouses}
                 className="btn-secondary text-sm"

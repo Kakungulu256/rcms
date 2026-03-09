@@ -17,7 +17,17 @@ export default function RequireBillingAccess({ children }: RequireBillingAccessP
   }
 
   if (billing?.accessState === "locked") {
-    return <Navigate to="/app/billing-lock" replace />;
+    return (
+      <Navigate
+        to="/app/upgrade"
+        replace
+        state={{
+          message:
+            billing.bannerMessage ||
+            "Billing is inactive. Upgrade or restore billing to continue.",
+        }}
+      />
+    );
   }
 
   return <>{children}</>;

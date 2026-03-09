@@ -10,53 +10,74 @@ export default function AppShell() {
   const billingLocked = billing?.accessState === "locked";
 
   const navItems = [
-    { to: "/app", label: "Dashboard", visible: true, end: true, premium: false },
+    {
+      to: "/app",
+      label: "Dashboard",
+      visible: true,
+      end: true,
+      premium: false,
+    },
     {
       to: "/app/houses",
       label: "Houses",
-      visible: permissions.canManageHouses && canAccessFeature("houses.manage").allowed,
+      visible: permissions.canManageHouses,
       premium: true,
+      featureKey: "houses.manage",
     },
     {
       to: "/app/tenants",
       label: "Tenants",
-      visible: permissions.canViewTenants && canAccessFeature("tenants.view").allowed,
+      visible: permissions.canViewTenants,
       premium: true,
+      featureKey: "tenants.view",
     },
     {
       to: "/app/payments",
       label: "Payments",
-      visible: permissions.canViewPayments && canAccessFeature("payments.view").allowed,
+      visible: permissions.canViewPayments,
       premium: true,
+      featureKey: "payments.view",
     },
     {
       to: "/app/security-deposits",
       label: "Security Deposits",
-      visible:
-        permissions.canViewReports &&
-        canAccessFeature("security_deposits.view").allowed,
+      visible: permissions.canViewReports,
       premium: true,
+      featureKey: "security_deposits.view",
     },
     {
       to: "/app/expenses",
       label: "Expenses",
-      visible: permissions.canRecordExpenses && canAccessFeature("expenses.manage").allowed,
+      visible: permissions.canRecordExpenses,
       premium: true,
+      featureKey: "expenses.manage",
     },
     {
       to: "/app/migration",
       label: "Old Records",
-      visible: permissions.canUseMigration && canAccessFeature("migration.use").allowed,
+      visible: permissions.canUseMigration,
       premium: true,
+      featureKey: "migration.use",
     },
     {
       to: "/app/reports",
       label: "Reports",
-      visible: permissions.canViewReports && canAccessFeature("reports.view").allowed,
+      visible: permissions.canViewReports,
       premium: true,
+      featureKey: "reports.view",
     },
-    { to: "/app/settings", label: "Settings", visible: permissions.canAccessSettings, premium: false },
-    { to: "/app/billing-lock", label: "Billing", visible: billingLocked, premium: false },
+    {
+      to: "/app/settings",
+      label: "Settings",
+      visible: permissions.canAccessSettings,
+      premium: false,
+    },
+    {
+      to: "/app/billing-lock",
+      label: "Billing",
+      visible: billingLocked,
+      premium: false,
+    },
   ].filter((item) => item.visible);
 
   return (
@@ -122,31 +143,62 @@ export default function AppShell() {
           </div>
 
           <nav className="space-y-1 text-sm">
-            {navItems.map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.end}
-                onClick={() => setMobileNavOpen(false)}
-                className={({ isActive }) =>
-                  [
-                    "sidebar-link block rounded-lg px-3 py-2 transition",
-                    isActive ? "sidebar-link-active font-semibold" : "",
-                  ].join(" ")
-                }
-                title={compactSidebar ? item.label : undefined}
-                aria-label={item.label}
-              >
-                <span className={["flex items-center", compactSidebar ? "justify-center" : "gap-2"].join(" ")}>
-                  <span className="text-xs font-semibold">
-                    {compactSidebar ? item.label.charAt(0) : item.label}
+            {navItems.map((item) => {
+              const decision = item.featureKey ? canAccessFeature(item.featureKey) : { allowed: true };
+              const locked = item.premium && !decision.allowed;
+              const labelWithState = locked ? `${item.label} (Locked)` : item.label;
+              if (locked) {
+                return (
+                  <Link
+                    key={item.to}
+                    to="/app/upgrade"
+                    state={{ featureKey: item.featureKey, reason: decision.reason }}
+                    onClick={() => setMobileNavOpen(false)}
+                    className="sidebar-link block rounded-lg border border-dashed border-amber-400/60 px-3 py-2 text-amber-200 opacity-85 transition hover:opacity-100"
+                    title={compactSidebar ? labelWithState : decision.reason ?? labelWithState}
+                    aria-label={labelWithState}
+                  >
+                    <span className={["flex items-center", compactSidebar ? "justify-center" : "justify-between gap-2"].join(" ")}>
+                      <span className="text-xs font-semibold">
+                        {compactSidebar ? item.label.charAt(0) : item.label}
+                      </span>
+                      {!compactSidebar ? (
+                        <span className="rounded-full border border-amber-500/60 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-100">
+                          Locked
+                        </span>
+                      ) : null}
+                      {compactSidebar && <span className="nav-tooltip">{labelWithState}</span>}
+                    </span>
+                  </Link>
+                );
+              }
+
+              return (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  end={item.end}
+                  onClick={() => setMobileNavOpen(false)}
+                  className={({ isActive }) =>
+                    [
+                      "sidebar-link block rounded-lg px-3 py-2 transition",
+                      isActive ? "sidebar-link-active font-semibold" : "",
+                    ].join(" ")
+                  }
+                  title={compactSidebar ? item.label : undefined}
+                  aria-label={item.label}
+                >
+                  <span className={["flex items-center", compactSidebar ? "justify-center" : "gap-2"].join(" ")}>
+                    <span className="text-xs font-semibold">
+                      {compactSidebar ? item.label.charAt(0) : item.label}
+                    </span>
+                    {compactSidebar && (
+                      <span className="nav-tooltip">{item.label}</span>
+                    )}
                   </span>
-                  {compactSidebar && (
-                    <span className="nav-tooltip">{item.label}</span>
-                  )}
-                </span>
-              </NavLink>
-            ))}
+                </NavLink>
+              );
+            })}
           </nav>
         </aside>
 
@@ -208,11 +260,16 @@ export default function AppShell() {
                 <div className="font-semibold">{billing.bannerTitle}</div>
                 <div className="mt-1 flex flex-wrap items-center justify-between gap-3">
                   <span className="text-xs md:text-sm">{billing.bannerMessage}</span>
-                  {permissions.canAccessSettings ? (
-                    <Link to="/app/settings" className="btn-secondary text-xs md:text-sm">
-                      Manage Billing
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Link to="/app/upgrade" className="btn-secondary text-xs md:text-sm">
+                      View Plans
                     </Link>
-                  ) : null}
+                    {permissions.canAccessSettings ? (
+                      <Link to="/app/settings" className="btn-secondary text-xs md:text-sm">
+                        Manage Billing
+                      </Link>
+                    ) : null}
+                  </div>
                 </div>
               </div>
             )}

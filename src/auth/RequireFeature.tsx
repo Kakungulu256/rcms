@@ -21,9 +21,12 @@ export default function RequireFeature({ featureKey, children }: RequireFeatureP
   if (!decision.allowed) {
     return (
       <Navigate
-        to="/app/billing-lock"
+        to="/app/upgrade"
         replace
-        state={{ message: decision.reason ?? "This feature is locked on your plan." }}
+        state={{
+          message: decision.reason ?? "This feature is locked on your plan.",
+          featureKey,
+        }}
       />
     );
   }
