@@ -214,6 +214,13 @@ export type Workspace = {
   subscriptionState?: SubscriptionState;
   trialStartDate?: string;
   trialEndDate?: string;
+  logoFileId?: string;
+  logoBucketId?: string;
+  logoFileName?: string;
+  wmEnabled?: boolean;
+  wmPosition?: "center" | "top_left" | "top_right" | "bottom_left" | "bottom_right";
+  wmOpacity?: number;
+  wmScale?: number;
   notes?: string;
 };
 

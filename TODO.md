@@ -247,7 +247,7 @@ Use this list in order. Complete and verify each item before moving to the next.
 - payment method management
 - upgrade/downgrade/cancel/reactivate actions.
 
-48. [ ] Add workspace branding (company logo) for exports
+48. [x] Add workspace branding (company logo) for exports
 - Allow workspace admin to upload/manage company logo (storage + validation).
 - Add option to include logo as watermark on exported reports (PDF/XLSX where applicable).
 - Provide controls for watermark style/opacity/position and preview before export.

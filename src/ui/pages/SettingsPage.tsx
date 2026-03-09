@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
-import { Query } from "appwrite";
+import { ID, Query } from "appwrite";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   account,
@@ -8,7 +8,9 @@ import {
   databases,
   functions,
   listAllDocuments,
+  rcmsReceiptsBucketId,
   rcmsDatabaseId,
+  storage,
 } from "../../lib/appwrite";
 import { useToast } from "../ToastContext";
 import { useAuth } from "../../auth/AuthContext";
@@ -22,12 +24,23 @@ import {
   type Invoice,
   type Plan,
   type Subscription,
+  type Workspace,
   type WorkspaceMembership,
 } from "../../lib/schema";
 import { formatLimitValue, getLimitStatus } from "../../lib/planLimits";
+import {
+  ALLOWED_BRANDING_MIME_TYPES,
+  MAX_BRANDING_FILE_SIZE_BYTES,
+  WATERMARK_POSITIONS,
+  type WatermarkPosition,
+  type WorkspaceBranding,
+  clampWatermarkOpacity,
+  clampWatermarkScale,
+  normalizeWorkspaceBranding,
+} from "../../lib/branding";
 
 type AppRole = "admin" | "clerk" | "viewer";
-type SettingsTab = "billing" | "team";
+type SettingsTab = "billing" | "branding" | "team";
 type BillingAction = "cancel" | "reactivate";
 
 type ManageUserSuccess = {
@@ -60,6 +73,19 @@ function formatMoney(amount: number | undefined, currency = "UGX") {
   const value = Number(amount ?? 0);
   if (!Number.isFinite(value)) return `0 ${currency}`;
   return `${value.toLocaleString()} ${currency}`;
+}
+
+function getFileViewUrl(bucketId: string, fileId: string) {
+  try {
+    const result = storage.getFileView(bucketId, fileId) as unknown;
+    if (typeof result === "string") return result;
+    if (result && typeof (result as URL).toString === "function") {
+      return (result as URL).toString();
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 async function executeManageUsersFunction(
@@ -125,6 +151,14 @@ export default function SettingsPage() {
   const [billingError, setBillingError] = useState<string | null>(null);
   const [billingActionLoading, setBillingActionLoading] =
     useState<BillingAction | null>(null);
+  const [workspaceDoc, setWorkspaceDoc] = useState<Workspace | null>(null);
+  const [branding, setBranding] = useState<WorkspaceBranding>(() =>
+    normalizeWorkspaceBranding(null)
+  );
+  const [brandingPreviewUrl, setBrandingPreviewUrl] = useState<string | null>(null);
+  const [brandingLoading, setBrandingLoading] = useState(false);
+  const [brandingSaving, setBrandingSaving] = useState(false);
+  const [brandingFile, setBrandingFile] = useState<File | null>(null);
 
   const activeWorkspaceId = getActiveWorkspaceId();
   const manageUsersFunctionId = import.meta.env.VITE_MANAGE_USERS_FUNCTION_ID as
@@ -134,7 +168,8 @@ export default function SettingsPage() {
   const teamMemberLimitStatus = getLimitStatus(planLimits.maxTeamMembers, teamMemberCount);
 
   const currentTab = (searchParams.get("tab") || "billing").toLowerCase();
-  const activeTab: SettingsTab = currentTab === "team" ? "team" : "billing";
+  const activeTab: SettingsTab =
+    currentTab === "team" ? "team" : currentTab === "branding" ? "branding" : "billing";
 
   const latestPayment = useMemo(() => {
     const preferred =
@@ -175,8 +210,9 @@ export default function SettingsPage() {
   const loadBillingData = async () => {
     setBillingLoading(true);
     setBillingError(null);
+    setBrandingLoading(true);
     try {
-      const [subscriptionRows, invoiceRows, paymentRows] = await Promise.all([
+      const [subscriptionRows, invoiceRows, paymentRows, workspace] = await Promise.all([
         listAllDocuments<Subscription>({
           databaseId: rcmsDatabaseId,
           collectionId: COLLECTIONS.subscriptions,
@@ -192,19 +228,40 @@ export default function SettingsPage() {
           collectionId: COLLECTIONS.paymentsBilling,
           queries: [Query.orderDesc("$updatedAt")],
         }),
+        databases
+          .getDocument(rcmsDatabaseId, COLLECTIONS.workspaces, activeWorkspaceId)
+          .then((doc) => doc as unknown as Workspace)
+          .catch(() => null),
       ]);
       const latestSubscription = subscriptionRows[0] ?? null;
       setSubscription(latestSubscription);
       setInvoices(invoiceRows.slice(0, 25));
       setBillingPayments(paymentRows.slice(0, 25));
       setPlanCode((current) => current || latestSubscription?.planCode || "");
+      setWorkspaceDoc(workspace);
+      const normalizedBranding = normalizeWorkspaceBranding(workspace);
+      setBranding(normalizedBranding);
+      if (normalizedBranding.logoFileId) {
+        setBrandingPreviewUrl(
+          getFileViewUrl(
+            normalizedBranding.logoBucketId || rcmsReceiptsBucketId,
+            normalizedBranding.logoFileId
+          )
+        );
+      } else {
+        setBrandingPreviewUrl(null);
+      }
     } catch (loadError) {
       setBillingError("Failed to load billing settings.");
       setSubscription(null);
       setInvoices([]);
       setBillingPayments([]);
+      setWorkspaceDoc(null);
+      setBranding(normalizeWorkspaceBranding(null));
+      setBrandingPreviewUrl(null);
     } finally {
       setBillingLoading(false);
+      setBrandingLoading(false);
     }
   };
 
@@ -415,6 +472,154 @@ export default function SettingsPage() {
     }
   };
 
+  const handleSaveBranding = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!workspaceDoc) {
+      toast.push("warning", "Workspace record not found.");
+      return;
+    }
+
+    setBrandingSaving(true);
+    try {
+      let nextLogoFileId = branding.logoFileId;
+      let nextLogoFileName = branding.logoFileName;
+      let nextLogoBucketId = branding.logoBucketId || rcmsReceiptsBucketId;
+      const previousLogoFileId = workspaceDoc.logoFileId?.trim() || null;
+      const previousLogoBucketId =
+        workspaceDoc.logoBucketId?.trim() || rcmsReceiptsBucketId;
+
+      if (brandingFile) {
+        if (!ALLOWED_BRANDING_MIME_TYPES.has(brandingFile.type)) {
+          throw new Error("Logo must be PNG, JPG, or WEBP.");
+        }
+        if (brandingFile.size > MAX_BRANDING_FILE_SIZE_BYTES) {
+          throw new Error("Logo file must be 2MB or smaller.");
+        }
+
+        const uploaded = await storage.createFile(
+          rcmsReceiptsBucketId,
+          ID.unique(),
+          brandingFile
+        );
+        nextLogoFileId = uploaded.$id;
+        nextLogoFileName = uploaded.name || brandingFile.name;
+        nextLogoBucketId = rcmsReceiptsBucketId;
+      }
+
+      const payload = {
+        logoFileId: nextLogoFileId,
+        logoBucketId: nextLogoFileId ? nextLogoBucketId : null,
+        logoFileName: nextLogoFileId ? nextLogoFileName : null,
+        wmEnabled: Boolean(branding.wmEnabled),
+        wmPosition: branding.wmPosition,
+        wmOpacity: clampWatermarkOpacity(branding.wmOpacity),
+        wmScale: clampWatermarkScale(branding.wmScale),
+      };
+
+      const updatedWorkspace = (await databases.updateDocument(
+        rcmsDatabaseId,
+        COLLECTIONS.workspaces,
+        workspaceDoc.$id,
+        payload
+      )) as unknown as Workspace;
+
+      if (
+        previousLogoFileId &&
+        previousLogoFileId !== payload.logoFileId &&
+        previousLogoBucketId
+      ) {
+        await storage.deleteFile(previousLogoBucketId, previousLogoFileId).catch(() => null);
+      }
+
+      setWorkspaceDoc(updatedWorkspace);
+      setBranding(normalizeWorkspaceBranding(updatedWorkspace));
+      setBrandingFile(null);
+      if (updatedWorkspace.logoFileId) {
+        setBrandingPreviewUrl(
+          getFileViewUrl(
+            updatedWorkspace.logoBucketId || rcmsReceiptsBucketId,
+            updatedWorkspace.logoFileId
+          )
+        );
+      } else {
+        setBrandingPreviewUrl(null);
+      }
+
+      if (user) {
+        void logAudit({
+          entityType: "workspace_branding",
+          entityId: workspaceDoc.$id,
+          action: "update",
+          actorId: user.id,
+          details: payload,
+        });
+      }
+      toast.push("success", "Workspace branding saved.");
+    } catch (saveError) {
+      toast.push(
+        "error",
+        saveError instanceof Error ? saveError.message : "Failed to save branding."
+      );
+    } finally {
+      setBrandingSaving(false);
+    }
+  };
+
+  const handleRemoveLogo = async () => {
+    if (!workspaceDoc || !workspaceDoc.logoFileId) {
+      setBranding((prev) => ({
+        ...prev,
+        logoFileId: null,
+        logoBucketId: null,
+        logoFileName: null,
+        wmEnabled: false,
+      }));
+      setBrandingFile(null);
+      setBrandingPreviewUrl(null);
+      return;
+    }
+
+    if (!window.confirm("Remove the current company logo?")) {
+      return;
+    }
+
+    setBrandingSaving(true);
+    try {
+      await databases.updateDocument(
+        rcmsDatabaseId,
+        COLLECTIONS.workspaces,
+        workspaceDoc.$id,
+        {
+          logoFileId: null,
+          logoBucketId: null,
+          logoFileName: null,
+          wmEnabled: false,
+        }
+      );
+      await storage
+        .deleteFile(
+          workspaceDoc.logoBucketId || rcmsReceiptsBucketId,
+          workspaceDoc.logoFileId
+        )
+        .catch(() => null);
+      setBranding((prev) => ({
+        ...prev,
+        logoFileId: null,
+        logoBucketId: null,
+        logoFileName: null,
+        wmEnabled: false,
+      }));
+      setBrandingFile(null);
+      setBrandingPreviewUrl(null);
+      await loadBillingData();
+      toast.push("success", "Company logo removed.");
+    } catch {
+      toast.push("error", "Failed to remove company logo.");
+    } finally {
+      setBrandingSaving(false);
+    }
+  };
+
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError(null);
@@ -528,6 +733,19 @@ export default function SettingsPage() {
             style={activeTab === "billing" ? undefined : { borderColor: "var(--border)" }}
           >
             Billing
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("branding")}
+            className={[
+              "rounded-xl px-4 py-2 text-sm transition",
+              activeTab === "branding"
+                ? "bg-blue-600 text-white"
+                : "border text-slate-300 hover:bg-slate-900/50",
+            ].join(" ")}
+            style={activeTab === "branding" ? undefined : { borderColor: "var(--border)" }}
+          >
+            Branding
           </button>
           <button
             type="button"
@@ -739,6 +957,203 @@ export default function SettingsPage() {
               </table>
             </div>
           </div>
+        </div>
+      )}
+
+      {activeTab === "branding" && (
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6">
+          <div className="text-sm font-semibold text-slate-100">Workspace Branding</div>
+          <p className="mt-2 text-xs text-slate-500">
+            Upload company logo and default watermark settings for report exports.
+          </p>
+
+          {brandingLoading ? (
+            <div className="mt-4 text-sm text-slate-500">Loading branding settings...</div>
+          ) : null}
+
+          <form className="mt-5 space-y-5" onSubmit={handleSaveBranding}>
+            <div className="grid gap-5 lg:grid-cols-[1.2fr_1fr]">
+              <div className="space-y-4">
+                <label className="block text-sm text-slate-300">
+                  Company Logo (PNG/JPG/WEBP, max 2MB)
+                  <input
+                    type="file"
+                    accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
+                    className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0] ?? null;
+                      setBrandingFile(file);
+                      if (file) {
+                        setBrandingPreviewUrl(URL.createObjectURL(file));
+                      } else if (branding.logoFileId) {
+                        setBrandingPreviewUrl(
+                          getFileViewUrl(
+                            branding.logoBucketId || rcmsReceiptsBucketId,
+                            branding.logoFileId
+                          )
+                        );
+                      } else {
+                        setBrandingPreviewUrl(null);
+                      }
+                    }}
+                    disabled={brandingSaving}
+                  />
+                </label>
+                <div className="text-xs text-slate-500">
+                  Current file: {branding.logoFileName || "No logo uploaded"}
+                </div>
+                <label className="flex items-center gap-2 text-sm text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={branding.wmEnabled}
+                    onChange={(event) =>
+                      setBranding((prev) => ({ ...prev, wmEnabled: event.target.checked }))
+                    }
+                    disabled={brandingSaving || (!branding.logoFileId && !brandingFile)}
+                  />
+                  Enable watermark by default
+                </label>
+
+                <div className="grid gap-4 md:grid-cols-3">
+                  <label className="block text-sm text-slate-300">
+                    Position
+                    <select
+                      value={branding.wmPosition}
+                      onChange={(event) =>
+                        setBranding((prev) => ({
+                          ...prev,
+                          wmPosition: event.target.value as WatermarkPosition,
+                        }))
+                      }
+                      className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                      disabled={brandingSaving}
+                    >
+                      {WATERMARK_POSITIONS.map((position) => (
+                        <option key={position} value={position}>
+                          {position.replace("_", " ")}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block text-sm text-slate-300">
+                    Opacity ({Math.round(branding.wmOpacity * 100)}%)
+                    <input
+                      type="range"
+                      min={5}
+                      max={95}
+                      step={1}
+                      value={Math.round(branding.wmOpacity * 100)}
+                      onChange={(event) =>
+                        setBranding((prev) => ({
+                          ...prev,
+                          wmOpacity: clampWatermarkOpacity(Number(event.target.value) / 100),
+                        }))
+                      }
+                      className="mt-2 w-full"
+                      disabled={brandingSaving}
+                    />
+                  </label>
+                  <label className="block text-sm text-slate-300">
+                    Size ({branding.wmScale}%)
+                    <input
+                      type="range"
+                      min={10}
+                      max={80}
+                      step={1}
+                      value={branding.wmScale}
+                      onChange={(event) =>
+                        setBranding((prev) => ({
+                          ...prev,
+                          wmScale: clampWatermarkScale(Number(event.target.value)),
+                        }))
+                      }
+                      className="mt-2 w-full"
+                      disabled={brandingSaving}
+                    />
+                  </label>
+                </div>
+
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    type="submit"
+                    disabled={brandingSaving}
+                    className="btn-primary text-sm disabled:opacity-60"
+                  >
+                    {brandingSaving ? "Saving..." : "Save Branding"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleRemoveLogo}
+                    disabled={brandingSaving || (!branding.logoFileId && !brandingFile)}
+                    className="btn-secondary text-sm disabled:opacity-60"
+                  >
+                    Remove Logo
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div className="text-xs uppercase tracking-[0.2em] text-slate-500">
+                  Watermark Preview
+                </div>
+                <div
+                  className="relative h-64 overflow-hidden rounded-2xl border"
+                  style={{ borderColor: "var(--border)", backgroundColor: "#f8fafc" }}
+                >
+                  <div className="absolute inset-0 p-5 text-[11px] text-slate-500">
+                    <div className="font-semibold text-slate-700">RCMS Sample Report</div>
+                    <div className="mt-2 space-y-1">
+                      <div>Summary of Tenants&apos; Payment Status</div>
+                      <div>Range: 01/03/26 to 31/03/26</div>
+                      <div>Total Rent Collected: 4,500,000</div>
+                    </div>
+                  </div>
+                  {brandingPreviewUrl && branding.wmEnabled ? (
+                    <img
+                      src={brandingPreviewUrl}
+                      alt="Watermark preview"
+                      className="pointer-events-none absolute select-none object-contain"
+                      style={{
+                        width: `${branding.wmScale}%`,
+                        opacity: branding.wmOpacity,
+                        left:
+                          branding.wmPosition === "top_left" || branding.wmPosition === "bottom_left"
+                            ? "10px"
+                            : branding.wmPosition === "top_right" || branding.wmPosition === "bottom_right"
+                              ? "auto"
+                              : "50%",
+                        right:
+                          branding.wmPosition === "top_right" || branding.wmPosition === "bottom_right"
+                            ? "10px"
+                            : "auto",
+                        top:
+                          branding.wmPosition === "top_left" || branding.wmPosition === "top_right"
+                            ? "10px"
+                            : branding.wmPosition === "bottom_left" || branding.wmPosition === "bottom_right"
+                              ? "auto"
+                              : "50%",
+                        bottom:
+                          branding.wmPosition === "bottom_left" || branding.wmPosition === "bottom_right"
+                            ? "10px"
+                            : "auto",
+                        transform:
+                          branding.wmPosition === "center" ? "translate(-50%, -50%)" : undefined,
+                      }}
+                    />
+                  ) : (
+                    <div className="absolute inset-0 flex items-center justify-center text-xs text-slate-500">
+                      {brandingPreviewUrl
+                        ? "Enable watermark to preview placement."
+                        : "Upload a logo to preview watermark."}
+                    </div>
+                  )}
+                </div>
+                <div className="text-xs text-slate-500">
+                  These are default settings. Reports page allows per-export overrides.
+                </div>
+              </div>
+            </div>
+          </form>
         </div>
       )}
 

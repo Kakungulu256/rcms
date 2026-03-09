@@ -839,6 +839,33 @@ async function setupWorkspaces() {
     databases.createDatetimeAttribute(databaseId, collectionId, "trialEndDate", false)
   );
   await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "logoFileId", 64, false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "logoBucketId", 64, false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "logoFileName", 256, false)
+  );
+  await ensureAttribute(() =>
+    databases.createBooleanAttribute(databaseId, collectionId, "wmEnabled", false)
+  );
+  await ensureAttribute(() =>
+    databases.createEnumAttribute(
+      databaseId,
+      collectionId,
+      "wmPosition",
+      ["center", "top_left", "top_right", "bottom_left", "bottom_right"],
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(databaseId, collectionId, "wmOpacity", false)
+  );
+  await ensureAttribute(() =>
+    databases.createFloatAttribute(databaseId, collectionId, "wmScale", false)
+  );
+  await ensureAttribute(() =>
     databases.createStringAttribute(databaseId, collectionId, "notes", 512, false)
   );
   await ensureIndex(() =>
