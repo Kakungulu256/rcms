@@ -1,9 +1,12 @@
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
 
 export default function BillingLockedPage() {
   const { billing, role } = useAuth();
+  const location = useLocation();
   const isAdmin = role === "admin";
+  const featureMessage =
+    (location.state as { message?: string } | null)?.message ?? null;
 
   return (
     <section className="space-y-6">
@@ -11,7 +14,8 @@ export default function BillingLockedPage() {
         <div className="text-xs uppercase tracking-[0.35em] text-slate-500">Billing</div>
         <h3 className="mt-3 text-2xl font-semibold text-white">Access Locked</h3>
         <p className="mt-2 text-sm text-slate-400">
-          {billing?.bannerMessage ||
+          {featureMessage ||
+            billing?.bannerMessage ||
             "Subscription is inactive. Upgrade or restore billing to continue using premium features."}
         </p>
       </header>

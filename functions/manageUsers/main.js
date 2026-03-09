@@ -1,4 +1,4 @@
-import { Account, Client, ID, Query, Teams, Users } from "node-appwrite";
+import { Account, Client, Databases, ID, Query, Teams, Users } from "node-appwrite";
 
 const ALLOWED_ROLES = ["admin", "clerk", "viewer"];
 
@@ -69,6 +69,134 @@ function hasAllRoleTeamIds(roleTeamIds) {
 
 function buildClient(endpoint, projectId) {
   return new Client().setEndpoint(endpoint).setProject(projectId);
+}
+
+function parseDateSafe(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function isBillingLocked({ workspace, subscription }) {
+  const now = new Date();
+  const rawState = subscription?.state || workspace?.subscriptionState || "trialing";
+
+  if (rawState === "active") return false;
+  if (rawState === "trialing") {
+    const trialEnd = parseDateSafe(subscription?.trialEndDate || workspace?.trialEndDate);
+    return trialEnd ? trialEnd.getTime() <= now.getTime() : false;
+  }
+  if (rawState === "past_due") {
+    const graceEndsAt = parseDateSafe(subscription?.graceEndsAt);
+    return !graceEndsAt || graceEndsAt.getTime() <= now.getTime();
+  }
+  if (rawState === "canceled") {
+    const periodEnd = parseDateSafe(subscription?.currentPeriodEnd);
+    return !periodEnd || periodEnd.getTime() <= now.getTime();
+  }
+
+  return true;
+}
+
+function parseEntitlementsJson(value) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object") return null;
+    if (parsed.features && typeof parsed.features === "object") {
+      return parsed.features;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function resolvePlanFeatureRule(plan, featureKey) {
+  const entitlements = parseEntitlementsJson(plan?.entitlementsJson);
+  if (!entitlements || typeof entitlements !== "object") {
+    return null;
+  }
+  const raw = entitlements[featureKey];
+  if (typeof raw === "boolean") {
+    return { enabled: raw };
+  }
+  if (raw && typeof raw === "object") {
+    const enabled = typeof raw.enabled === "boolean" ? raw.enabled : true;
+    return { enabled };
+  }
+  return null;
+}
+
+async function getLatestSubscription(databases, databaseId, workspaceId) {
+  const page = await databases.listDocuments(databaseId, "subscriptions", [
+    Query.equal("workspaceId", [workspaceId]),
+    Query.orderDesc("$updatedAt"),
+    Query.limit(1),
+  ]);
+  return page.documents?.[0] ?? null;
+}
+
+async function getPlanByCode(databases, databaseId, planCode) {
+  if (!planCode) return null;
+  const page = await databases.listDocuments(databaseId, "plans", [
+    Query.equal("code", [planCode]),
+    Query.limit(1),
+  ]);
+  return page.documents?.[0] ?? null;
+}
+
+async function getFeatureEntitlement(databases, databaseId, planCode, featureKey) {
+  if (!planCode) return null;
+  try {
+    const page = await databases.listDocuments(databaseId, "feature_entitlements", [
+      Query.equal("planCode", [planCode]),
+      Query.equal("featureKey", [featureKey]),
+      Query.limit(1),
+    ]);
+    return page.documents?.[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function assertFeatureEnabled({
+  databases,
+  databaseId,
+  workspaceId,
+  featureKey,
+}) {
+  const workspace = await databases.getDocument(databaseId, "workspaces", workspaceId);
+  const subscription = await getLatestSubscription(databases, databaseId, workspaceId);
+  if (isBillingLocked({ workspace, subscription })) {
+    const error = new Error(
+      "Billing is inactive for this workspace. Upgrade or renew to continue."
+    );
+    error.code = 402;
+    throw error;
+  }
+
+  const plan = await getPlanByCode(databases, databaseId, subscription?.planCode ?? null);
+  const row = await getFeatureEntitlement(
+    databases,
+    databaseId,
+    subscription?.planCode ?? null,
+    featureKey
+  );
+
+  const fromPlan = resolvePlanFeatureRule(plan, featureKey);
+  const enabled =
+    typeof row?.enabled === "boolean"
+      ? Boolean(row.enabled)
+      : fromPlan?.enabled ?? true;
+
+  if (!enabled) {
+    const error = new Error(
+      `Feature "${featureKey}" is locked by your current plan. Upgrade in Settings to continue.`
+    );
+    error.code = 402;
+    throw error;
+  }
 }
 
 async function ensureCallerIsAdmin({ endpoint, projectId, jwt, adminTeamId }) {
@@ -196,6 +324,7 @@ export default async (context) => {
     "APPWRITE_API_KEY",
     "APPWRITE_FUNCTION_API_KEY"
   );
+  const databaseId = getEnv("RCMS_APPWRITE_DATABASE_ID", "APPWRITE_DATABASE_ID") || "rcms";
   const roleTeamIds = getRoleTeamIds();
 
   if (!endpoint || !projectId || !apiKey) {
@@ -245,8 +374,16 @@ export default async (context) => {
     });
 
     const adminClient = buildClient(endpoint, projectId).setKey(apiKey);
+    const databases = new Databases(adminClient);
     const users = new Users(adminClient);
     const teams = new Teams(adminClient);
+
+    await assertFeatureEnabled({
+      databases,
+      databaseId,
+      workspaceId,
+      featureKey: "settings.manage_users",
+    });
 
     let user = await findUserByEmail(users, email);
     let created = false;

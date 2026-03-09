@@ -78,7 +78,7 @@ async function executeManageUsersFunction(
 }
 
 export default function SettingsPage() {
-  const { user, billing } = useAuth();
+  const { user, billing, canAccessFeature } = useAuth();
   const toast = useToast();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -94,6 +94,7 @@ export default function SettingsPage() {
   const manageUsersFunctionId = import.meta.env.VITE_MANAGE_USERS_FUNCTION_ID as
     | string
     | undefined;
+  const manageUsersAccess = canAccessFeature("settings.manage_users");
 
   useEffect(() => {
     let active = true;
@@ -159,6 +160,14 @@ export default function SettingsPage() {
     event.preventDefault();
     setError(null);
     setResult(null);
+    if (!manageUsersAccess.allowed) {
+      const reason =
+        manageUsersAccess.reason ||
+        "User management is locked on your current plan.";
+      setError(reason);
+      toast.push("warning", reason);
+      return;
+    }
 
     if (!manageUsersFunctionId) {
       setError("Manage users function ID is missing.");
@@ -334,6 +343,12 @@ export default function SettingsPage() {
         <p className="mt-2 text-xs text-slate-500">
           For existing users, leave password empty to only update role assignment.
         </p>
+        {!manageUsersAccess.allowed ? (
+          <div className="mt-4 rounded-xl border border-amber-600/40 bg-amber-950/30 p-4 text-sm text-amber-100">
+            {manageUsersAccess.reason ||
+              "User management is locked on your current plan. Upgrade to continue."}
+          </div>
+        ) : null}
 
         <form className="mt-5 space-y-4" onSubmit={handleSubmit}>
           <div className="grid gap-4 md:grid-cols-2">
@@ -344,6 +359,7 @@ export default function SettingsPage() {
                 value={name}
                 onChange={(event) => setName(event.target.value)}
                 placeholder="Jane Doe"
+                disabled={!manageUsersAccess.allowed}
                 className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
               />
             </label>
@@ -355,6 +371,7 @@ export default function SettingsPage() {
                 onChange={(event) => setEmail(event.target.value)}
                 placeholder="jane@example.com"
                 required
+                disabled={!manageUsersAccess.allowed}
                 className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
               />
             </label>
@@ -368,6 +385,7 @@ export default function SettingsPage() {
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 placeholder="At least 8 characters"
+                disabled={!manageUsersAccess.allowed}
                 className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
               />
             </label>
@@ -376,6 +394,7 @@ export default function SettingsPage() {
               <select
                 value={role}
                 onChange={(event) => setRole(event.target.value as AppRole)}
+                disabled={!manageUsersAccess.allowed}
                 className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
               >
                 <option value="viewer">Viewer</option>
@@ -386,13 +405,17 @@ export default function SettingsPage() {
           </div>
 
           <div className="flex flex-wrap gap-3">
-            <button type="submit" disabled={submitting} className="btn-primary text-sm disabled:opacity-60">
+            <button
+              type="submit"
+              disabled={submitting || !manageUsersAccess.allowed}
+              className="btn-primary text-sm disabled:opacity-60"
+            >
               {submitting ? "Saving..." : "Create / Update User"}
             </button>
             <button
               type="button"
               onClick={resetForm}
-              disabled={submitting}
+              disabled={submitting || !manageUsersAccess.allowed}
               className="btn-secondary text-sm disabled:opacity-60"
             >
               Clear

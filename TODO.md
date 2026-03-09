@@ -219,7 +219,7 @@ Use this list in order. Complete and verify each item before moving to the next.
 - After trial expiry without payment, lock premium features and show upgrade prompts.
 - Add grace period and retry/dunning behavior for failed renewals.
 
-43. [ ] Build feature gating and entitlement enforcement layer
+43. [x] Build feature gating and entitlement enforcement layer
 - Centralize checks like `canAccessFeature(user, workspace, featureKey)`.
 - Gate both frontend UI and backend function actions.
 - Return clear messages when a feature is locked by plan.

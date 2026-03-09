@@ -3,7 +3,7 @@ import { Link, NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 
 export default function AppShell() {
-  const { user, permissions, signOut, billing } = useAuth();
+  const { user, permissions, signOut, billing, canAccessFeature } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const compactSidebar = collapsed && !mobileNavOpen;
@@ -11,13 +11,50 @@ export default function AppShell() {
 
   const navItems = [
     { to: "/app", label: "Dashboard", visible: true, end: true, premium: false },
-    { to: "/app/houses", label: "Houses", visible: permissions.canManageHouses && !billingLocked, premium: true },
-    { to: "/app/tenants", label: "Tenants", visible: permissions.canViewTenants && !billingLocked, premium: true },
-    { to: "/app/payments", label: "Payments", visible: permissions.canViewPayments && !billingLocked, premium: true },
-    { to: "/app/security-deposits", label: "Security Deposits", visible: permissions.canViewReports && !billingLocked, premium: true },
-    { to: "/app/expenses", label: "Expenses", visible: permissions.canRecordExpenses && !billingLocked, premium: true },
-    { to: "/app/migration", label: "Old Records", visible: permissions.canUseMigration && !billingLocked, premium: true },
-    { to: "/app/reports", label: "Reports", visible: permissions.canViewReports && !billingLocked, premium: true },
+    {
+      to: "/app/houses",
+      label: "Houses",
+      visible: permissions.canManageHouses && canAccessFeature("houses.manage").allowed,
+      premium: true,
+    },
+    {
+      to: "/app/tenants",
+      label: "Tenants",
+      visible: permissions.canViewTenants && canAccessFeature("tenants.view").allowed,
+      premium: true,
+    },
+    {
+      to: "/app/payments",
+      label: "Payments",
+      visible: permissions.canViewPayments && canAccessFeature("payments.view").allowed,
+      premium: true,
+    },
+    {
+      to: "/app/security-deposits",
+      label: "Security Deposits",
+      visible:
+        permissions.canViewReports &&
+        canAccessFeature("security_deposits.view").allowed,
+      premium: true,
+    },
+    {
+      to: "/app/expenses",
+      label: "Expenses",
+      visible: permissions.canRecordExpenses && canAccessFeature("expenses.manage").allowed,
+      premium: true,
+    },
+    {
+      to: "/app/migration",
+      label: "Old Records",
+      visible: permissions.canUseMigration && canAccessFeature("migration.use").allowed,
+      premium: true,
+    },
+    {
+      to: "/app/reports",
+      label: "Reports",
+      visible: permissions.canViewReports && canAccessFeature("reports.view").allowed,
+      premium: true,
+    },
     { to: "/app/settings", label: "Settings", visible: permissions.canAccessSettings, premium: false },
     { to: "/app/billing-lock", label: "Billing", visible: billingLocked, premium: false },
   ].filter((item) => item.visible);

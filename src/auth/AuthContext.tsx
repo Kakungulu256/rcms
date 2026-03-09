@@ -1,14 +1,20 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { Query } from "appwrite";
-import { account, teams } from "../lib/appwrite";
+import { account, listAllDocuments, teams } from "../lib/appwrite";
 import { getRolePermissions, resolveRoleFromTeams, type AppRole, type RolePermissions } from "./rbac";
 import {
   resolveWorkspaceIdFromAccount,
   setActiveWorkspaceId,
 } from "../lib/workspace";
-import { COLLECTIONS, type Subscription, type Workspace } from "../lib/schema";
+import { COLLECTIONS, type FeatureEntitlement, type Plan, type Subscription, type Workspace } from "../lib/schema";
 import { databases, rcmsDatabaseId } from "../lib/appwrite";
 import { evaluateBillingSnapshot, type BillingSnapshot } from "../lib/subscriptionLifecycle";
+import {
+  buildFeatureEntitlements,
+  evaluateFeatureAccess,
+  type FeatureAccessDecision,
+  type FeatureEntitlementMap,
+} from "../lib/entitlements";
 
 type AuthUser = {
   id: string;
@@ -19,6 +25,7 @@ type AuthUser = {
   workspaceId: string;
   hasWorkspace: boolean;
   billing: BillingSnapshot | null;
+  featureEntitlements: FeatureEntitlementMap;
 };
 
 type AuthState = {
@@ -26,6 +33,8 @@ type AuthState = {
   role: AppRole | null;
   permissions: RolePermissions;
   billing: BillingSnapshot | null;
+  featureEntitlements: FeatureEntitlementMap;
+  canAccessFeature: (featureKey: string) => FeatureAccessDecision;
   loading: boolean;
   error: string | null;
   signIn: (email: string, password: string) => Promise<boolean>;
@@ -41,7 +50,8 @@ function mapUser(
   teamIds: string[],
   workspaceId: string,
   hasWorkspace: boolean,
-  billing: BillingSnapshot | null
+  billing: BillingSnapshot | null,
+  featureEntitlements: FeatureEntitlementMap
 ): AuthUser {
   return {
     id: user.$id,
@@ -52,6 +62,7 @@ function mapUser(
     workspaceId,
     hasWorkspace,
     billing,
+    featureEntitlements,
   };
 }
 
@@ -72,6 +83,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       let role: AppRole = "viewer";
       let teamIds: string[] = [];
       let billing: BillingSnapshot | null = null;
+      let featureEntitlements = buildFeatureEntitlements({});
       try {
         const teamResult = await teams.list();
         const teamList = teamResult.teams ?? [];
@@ -95,16 +107,48 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           );
           const subscriptionDoc =
             (subscriptionResult.documents?.[0] as unknown as Subscription | undefined) ?? null;
+          let planDoc: Plan | null = null;
+          if (subscriptionDoc?.planCode) {
+            const planResult = await databases.listDocuments(rcmsDatabaseId, COLLECTIONS.plans, [
+              Query.equal("code", [subscriptionDoc.planCode]),
+              Query.limit(1),
+            ]);
+            planDoc = (planResult.documents?.[0] as unknown as Plan | undefined) ?? null;
+          }
+          let featureRows: FeatureEntitlement[] = [];
+          if (subscriptionDoc?.planCode) {
+            featureRows = await listAllDocuments<FeatureEntitlement>({
+              databaseId: rcmsDatabaseId,
+              collectionId: COLLECTIONS.featureEntitlements,
+              queries: [Query.equal("planCode", [subscriptionDoc.planCode])],
+              skipWorkspaceScope: true,
+            }).catch(() => []);
+          }
+          featureEntitlements = buildFeatureEntitlements({
+            plan: planDoc,
+            featureRows,
+          });
           billing = evaluateBillingSnapshot({
             workspace: workspaceDoc,
             subscription: subscriptionDoc,
           });
         } catch {
           billing = null;
+          featureEntitlements = buildFeatureEntitlements({});
         }
       }
 
-      setUser(mapUser(result, role, teamIds, workspaceId, hasWorkspace, billing));
+      setUser(
+        mapUser(
+          result,
+          role,
+          teamIds,
+          workspaceId,
+          hasWorkspace,
+          billing,
+          featureEntitlements
+        )
+      );
       setError(null);
     } catch (err) {
       setUser(null);
@@ -146,6 +190,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const role = user?.role ?? null;
   const permissions = getRolePermissions(role);
   const billing = user?.billing ?? null;
+  const featureEntitlements = user?.featureEntitlements ?? buildFeatureEntitlements({});
+  const canAccessFeature = useCallback(
+    (featureKey: string) =>
+      evaluateFeatureAccess({
+        featureKey,
+        billing,
+        entitlements: featureEntitlements,
+      }),
+    [billing, featureEntitlements]
+  );
 
   const value = useMemo(
     () => ({
@@ -153,13 +207,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       role,
       permissions,
       billing,
+      featureEntitlements,
+      canAccessFeature,
       loading,
       error,
       signIn,
       signOut,
       refresh: refreshUser,
     }),
-    [user, role, permissions, billing, loading, error, signIn, signOut, refreshUser]
+    [
+      user,
+      role,
+      permissions,
+      billing,
+      featureEntitlements,
+      canAccessFeature,
+      loading,
+      error,
+      signIn,
+      signOut,
+      refreshUser,
+    ]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -117,6 +117,15 @@ function getCollectionPermissions(collectionId) {
         Permission.delete(Role.team(teamIds.admin)),
       ];
     }
+    if (collectionId === "feature_entitlements") {
+      return [
+        Permission.read(Role.any()),
+        Permission.read(Role.team(teamIds.admin)),
+        Permission.create(Role.team(teamIds.admin)),
+        Permission.update(Role.team(teamIds.admin)),
+        Permission.delete(Role.team(teamIds.admin)),
+      ];
+    }
 
     return [
       Permission.read(Role.team(teamIds.admin)),
