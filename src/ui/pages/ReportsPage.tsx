@@ -14,6 +14,7 @@ import * as XLSX from "xlsx";
 import { listAllDocuments, rcmsDatabaseId } from "../../lib/appwrite";
 import { COLLECTIONS } from "../../lib/schema";
 import type {
+  AuditLog,
   Expense,
   House,
   Payment,
@@ -21,6 +22,9 @@ import type {
   Tenant,
 } from "../../lib/schema";
 import { useToast } from "../ToastContext";
+import { useAuth } from "../../auth/AuthContext";
+import { logAudit } from "../../lib/audit";
+import { formatLimitValue, getLimitStatus } from "../../lib/planLimits";
 import {
   buildPaidByMonth,
   buildPaymentSummaryByMonth,
@@ -192,6 +196,7 @@ function invertIntervals(
 
 export default function ReportsPage() {
   const toast = useToast();
+  const { user, planLimits } = useAuth();
   const [payments, setPayments] = useState<Payment[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [tenants, setTenants] = useState<Tenant[]>([]);
@@ -214,6 +219,11 @@ export default function ReportsPage() {
   const [personalReportNote, setPersonalReportNote] = useState("");
   const [exportingPdf, setExportingPdf] = useState(false);
   const [exportingXlsx, setExportingXlsx] = useState(false);
+  const [exportsThisMonth, setExportsThisMonth] = useState(0);
+  const exportLimitStatus = useMemo(
+    () => getLimitStatus(planLimits.exportsPerMonth, exportsThisMonth),
+    [exportsThisMonth, planLimits.exportsPerMonth]
+  );
 
   const tenantLookup = useMemo(
     () => new Map(tenants.map((tenant) => [tenant.$id, tenant])),
@@ -253,7 +263,15 @@ export default function ReportsPage() {
     setLoading(true);
     setError(null);
     try {
-      const [paymentResult, expenseResult, tenantResult, houseResult, deductionResult] =
+      const currentMonthStart = format(startOfMonth(new Date()), "yyyy-MM-dd");
+      const [
+        paymentResult,
+        expenseResult,
+        tenantResult,
+        houseResult,
+        deductionResult,
+        exportAuditResult,
+      ] =
         await Promise.all([
         listAllDocuments<Payment>({
           databaseId: rcmsDatabaseId,
@@ -288,12 +306,23 @@ export default function ReportsPage() {
           collectionId: COLLECTIONS.securityDepositDeductions,
           queries: [Query.orderAsc("deductionDate")],
         }).catch(() => []),
+        listAllDocuments<AuditLog>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.auditLogs,
+          queries: [
+            Query.equal("entityType", ["report_export"]),
+            Query.equal("action", ["create"]),
+            Query.greaterThanEqual("timestamp", [currentMonthStart]),
+            Query.orderDesc("timestamp"),
+          ],
+        }).catch(() => []),
         ]);
       setPayments(paymentResult);
       setExpenses(expenseResult);
       setTenants(tenantResult);
       setHouses(houseResult);
       setSecurityDepositDeductions(deductionResult);
+      setExportsThisMonth(exportAuditResult.length);
     } catch (err) {
       setError("Failed to load report data.");
     } finally {
@@ -304,6 +333,31 @@ export default function ReportsPage() {
   useEffect(() => {
     loadData();
   }, []);
+
+  const ensureExportAllowed = () => {
+    if (!exportLimitStatus.reached) return true;
+    const message =
+      "Monthly export limit reached on your current plan. Upgrade in Settings to continue exporting.";
+    toast.push("warning", message);
+    return false;
+  };
+
+  const recordExportAudit = (formatType: "pdf" | "xlsx", reportName: string) => {
+    if (!user) return;
+    void logAudit({
+      entityType: "report_export",
+      entityId: `${reportType}_${Date.now()}`,
+      action: "create",
+      actorId: user.id,
+      details: {
+        format: formatType,
+        reportType,
+        reportName,
+      },
+    })
+      .then(() => setExportsThisMonth((prev) => prev + 1))
+      .catch(() => undefined);
+  };
 
   const summary = useMemo(() => {
     const rawRange = (() => {
@@ -1090,6 +1144,9 @@ export default function ReportsPage() {
   const exportXlsx = () => {
     setExportingXlsx(true);
     try {
+      if (!ensureExportAllowed()) {
+        return;
+      }
       if (reportType === "tenantDetail" && !summary.selectedTenant) {
         toast.push("warning", "Select a tenant first.");
         return;
@@ -1439,6 +1496,7 @@ export default function ReportsPage() {
         )}.xlsx`
       );
       toast.push("success", "Report exported as XLSX.");
+      recordExportAudit("xlsx", fileSuffix ? `report${fileSuffix}` : "report");
     } catch (err) {
       toast.push("error", "Failed to export XLSX report.");
     } finally {
@@ -1449,6 +1507,9 @@ export default function ReportsPage() {
   const exportPdf = () => {
     setExportingPdf(true);
     try {
+      if (!ensureExportAllowed()) {
+        return;
+      }
       if (reportType === "tenantDetail" && !summary.selectedTenant) {
         toast.push("warning", "Select a tenant first.");
         return;
@@ -1883,6 +1944,7 @@ export default function ReportsPage() {
           `RCMS_Monthly_Tenancy_Report${fileSuffix}_${startFileKey}_${endFileKey}.pdf`
         );
         toast.push("success", "Report exported as PDF.");
+        recordExportAudit("pdf", `monthly_tenancy${fileSuffix}`);
         return;
       }
 
@@ -1935,6 +1997,7 @@ export default function ReportsPage() {
         )}.pdf`
       );
       toast.push("success", "Report exported as PDF.");
+      recordExportAudit("pdf", fileSuffix ? `report${fileSuffix}` : "report");
     } catch (err) {
       toast.push("error", "Failed to export PDF report.");
     } finally {
@@ -2076,17 +2139,24 @@ export default function ReportsPage() {
         <button
           onClick={exportXlsx}
           className="btn-primary text-sm"
-          disabled={loading || exportingXlsx}
+          disabled={loading || exportingXlsx || exportLimitStatus.reached}
         >
           {exportingXlsx ? "Exporting..." : "Export XLSX"}
         </button>
         <button
           onClick={exportPdf}
           className="btn-secondary text-sm"
-          disabled={loading || exportingPdf}
+          disabled={loading || exportingPdf || exportLimitStatus.reached}
         >
           {exportingPdf ? "Exporting..." : "Export PDF"}
         </button>
+        {planLimits.exportsPerMonth != null && (
+          <div className="text-xs text-amber-300">
+            Exports this month: {exportLimitStatus.used.toLocaleString()} /{" "}
+            {formatLimitValue(exportLimitStatus.limit)}
+            {exportLimitStatus.reached ? " (limit reached)" : ""}
+          </div>
+        )}
       </div>
 
       {noteEditorOpen && (

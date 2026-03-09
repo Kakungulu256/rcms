@@ -229,7 +229,7 @@ Use this list in order. Complete and verify each item before moving to the next.
 - Allow an admin to invite/manage users only inside their workspace.
 - Ensure role checks always include workspace context.
 
-45. [ ] Enforce plan limits (quota controls)
+45. [x] Enforce plan limits (quota controls)
 - Add limits by plan (examples: max properties, max landlords, max houses, max active tenants, max team members, exports/month).
 - Block create actions at limit with upgrade CTA.
 - Add usage counters and a usage dashboard card.

@@ -11,7 +11,16 @@ import {
   isTenantInactiveAtDate,
 } from "../../lib/tenancyDates";
 import { formatDisplayDate, formatShortMonth } from "../../lib/dateDisplay";
-import type { Expense, House, Payment, Tenant } from "../../lib/schema";
+import type {
+  AuditLog,
+  Expense,
+  House,
+  Payment,
+  Tenant,
+  WorkspaceMembership,
+} from "../../lib/schema";
+import { useAuth } from "../../auth/AuthContext";
+import { formatLimitValue, getLimitStatus } from "../../lib/planLimits";
 
 type SummaryCard = {
   label: string;
@@ -90,10 +99,13 @@ function buildOverviewPeriod(mode: OverviewMode, month: string, year: string): O
 }
 
 export default function DashboardPage() {
+  const { planLimits } = useAuth();
   const [houses, setHouses] = useState<House[]>([]);
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [workspaceMemberships, setWorkspaceMemberships] = useState<WorkspaceMembership[]>([]);
+  const [reportExportAudits, setReportExportAudits] = useState<AuditLog[]>([]);
   const [overviewMode, setOverviewMode] = useState<OverviewMode>("month");
   const [selectedMonth, setSelectedMonth] = useState(() => format(new Date(), "yyyy-MM"));
   const [selectedYear, setSelectedYear] = useState(() => format(new Date(), "yyyy"));
@@ -104,7 +116,15 @@ export default function DashboardPage() {
     setLoading(true);
     setError(null);
     try {
-      const [houseResult, tenantResult, paymentResult, expenseResult] =
+      const currentMonthStart = format(startOfMonth(new Date()), "yyyy-MM-dd");
+      const [
+        houseResult,
+        tenantResult,
+        paymentResult,
+        expenseResult,
+        membershipResult,
+        exportAuditResult,
+      ] =
         await Promise.all([
           listAllDocuments<House>({
             databaseId: rcmsDatabaseId,
@@ -126,11 +146,28 @@ export default function DashboardPage() {
             collectionId: COLLECTIONS.expenses,
             queries: [Query.orderDesc("expenseDate")],
           }),
+          listAllDocuments<WorkspaceMembership>({
+            databaseId: rcmsDatabaseId,
+            collectionId: COLLECTIONS.workspaceMemberships,
+            queries: [Query.equal("status", ["active"]), Query.orderAsc("$createdAt")],
+          }),
+          listAllDocuments<AuditLog>({
+            databaseId: rcmsDatabaseId,
+            collectionId: COLLECTIONS.auditLogs,
+            queries: [
+              Query.equal("entityType", ["report_export"]),
+              Query.equal("action", ["create"]),
+              Query.greaterThanEqual("timestamp", [currentMonthStart]),
+              Query.orderDesc("timestamp"),
+            ],
+          }),
         ]);
       setHouses(houseResult);
       setTenants(tenantResult);
       setPayments(paymentResult);
       setExpenses(expenseResult);
+      setWorkspaceMemberships(membershipResult);
+      setReportExportAudits(exportAuditResult);
     } catch (err) {
       setError("Failed to load dashboard data.");
     } finally {
@@ -359,6 +396,47 @@ export default function DashboardPage() {
     return { cards, periodLabel };
   }, [expenses, houses, overviewMode, payments, selectedMonth, selectedYear, tenants]);
 
+  const usageSummary = useMemo(() => {
+    const housesStatus = getLimitStatus(planLimits.maxHouses, houses.length);
+    const activeTenantCount = tenants.filter(
+      (tenant) => tenant.status === "active" && !tenant.moveOutDate
+    ).length;
+    const activeTenantsStatus = getLimitStatus(
+      planLimits.maxActiveTenants,
+      activeTenantCount
+    );
+    const teamMembersStatus = getLimitStatus(
+      planLimits.maxTeamMembers,
+      workspaceMemberships.length
+    );
+    const exportsStatus = getLimitStatus(
+      planLimits.exportsPerMonth,
+      reportExportAudits.length
+    );
+    const reachedAny =
+      housesStatus.reached ||
+      activeTenantsStatus.reached ||
+      teamMembersStatus.reached ||
+      exportsStatus.reached;
+
+    return {
+      housesStatus,
+      activeTenantsStatus,
+      teamMembersStatus,
+      exportsStatus,
+      reachedAny,
+    };
+  }, [
+    houses.length,
+    planLimits.exportsPerMonth,
+    planLimits.maxActiveTenants,
+    planLimits.maxHouses,
+    planLimits.maxTeamMembers,
+    reportExportAudits.length,
+    tenants,
+    workspaceMemberships.length,
+  ]);
+
   return (
     <section className="space-y-6">
       <div
@@ -436,6 +514,59 @@ export default function DashboardPage() {
             </div>
           </div>
         ))}
+      </div>
+
+      <div
+        className="rounded-2xl border p-5"
+        style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
+      >
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold" style={{ color: "var(--text)" }}>
+              Plan Usage
+            </div>
+            <div className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
+              Usage against plan quotas. Upgrade in Settings when limits are reached.
+            </div>
+          </div>
+          {usageSummary.reachedAny && (
+            <div className="text-xs text-amber-300">Some limits are reached.</div>
+          )}
+        </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          {[
+            {
+              label: "Houses",
+              status: usageSummary.housesStatus,
+            },
+            {
+              label: "Active Tenants",
+              status: usageSummary.activeTenantsStatus,
+            },
+            {
+              label: "Team Members",
+              status: usageSummary.teamMembersStatus,
+            },
+            {
+              label: "Exports This Month",
+              status: usageSummary.exportsStatus,
+            },
+          ].map((item) => (
+            <div
+              key={item.label}
+              className="rounded-xl border px-4 py-3 text-sm"
+              style={{ borderColor: "var(--border)", backgroundColor: "var(--surface-strong)" }}
+            >
+              <div style={{ color: "var(--muted)" }}>{item.label}</div>
+              <div className="mt-1 font-semibold" style={{ color: "var(--text)" }}>
+                {item.status.used.toLocaleString()} / {formatLimitValue(item.status.limit)}
+              </div>
+              {item.status.reached && (
+                <div className="mt-1 text-xs text-amber-300">Limit reached</div>
+              )}
+            </div>
+          ))}
+        </div>
       </div>
     </section>
   );

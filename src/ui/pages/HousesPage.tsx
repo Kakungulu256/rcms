@@ -18,6 +18,7 @@ import { logAudit } from "../../lib/audit";
 import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../ToastContext";
 import { appendRentHistory } from "../../lib/rentHistory";
+import { formatLimitValue, getLimitStatus } from "../../lib/planLimits";
 
 type PanelMode = "list" | "create" | "edit";
 type HouseStatusFilter = "all" | "occupied" | "vacant" | "inactive";
@@ -27,7 +28,7 @@ type HouseFormWithEffectiveDate = HouseFormValues & {
 };
 
 export default function HousesPage() {
-  const { user, permissions } = useAuth();
+  const { user, permissions, planLimits } = useAuth();
   const canManageHouses = permissions.canManageHouses;
   const toast = useToast();
   const [houses, setHouses] = useState<House[]>([]);
@@ -96,6 +97,10 @@ export default function HousesPage() {
     const start = (housePage - 1) * housePageSize;
     return filteredHouses.slice(start, start + housePageSize);
   }, [filteredHouses, housePage, housePageSize]);
+  const houseLimitStatus = useMemo(
+    () => getLimitStatus(planLimits.maxHouses, houses.length),
+    [houses.length, planLimits.maxHouses]
+  );
 
   const loadHouses = async () => {
     setLoading(true);
@@ -137,6 +142,13 @@ export default function HousesPage() {
   const handleCreate = async (values: HouseFormWithEffectiveDate) => {
     if (!canManageHouses) {
       toast.push("warning", "You do not have permission to create houses.");
+      return;
+    }
+    if (houseLimitStatus.reached) {
+      const message =
+        "House limit reached on your current plan. Upgrade in Settings to add more houses.";
+      setError(message);
+      toast.push("warning", message);
       return;
     }
     setLoading(true);
@@ -283,6 +295,13 @@ export default function HousesPage() {
                   ? "Loading..."
                   : `${filteredHouses.length} of ${housesMatchingSearch.length} houses`}
               </div>
+              {planLimits.maxHouses != null && (
+                <div className="mt-1 text-xs text-amber-300">
+                  Plan usage: {houseLimitStatus.used.toLocaleString()} /{" "}
+                  {formatLimitValue(houseLimitStatus.limit)} houses
+                  {houseLimitStatus.reached ? " (limit reached)" : ""}
+                </div>
+              )}
             </div>
             <div className="flex flex-wrap gap-2">
               {canManageHouses && (
@@ -291,7 +310,8 @@ export default function HousesPage() {
                     setMode("create");
                     setModalOpen(true);
                   }}
-                  className="btn-primary text-sm"
+                  disabled={houseLimitStatus.reached}
+                  className="btn-primary text-sm disabled:opacity-60"
                 >
                   Add House
                 </button>

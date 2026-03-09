@@ -21,6 +21,7 @@ import {
 } from "../lib/schema";
 import { databases, rcmsDatabaseId } from "../lib/appwrite";
 import { evaluateBillingSnapshot, type BillingSnapshot } from "../lib/subscriptionLifecycle";
+import { parsePlanLimits, type PlanLimits } from "../lib/planLimits";
 import {
   buildFeatureEntitlements,
   evaluateFeatureAccess,
@@ -37,6 +38,8 @@ type AuthUser = {
   workspaceId: string;
   hasWorkspace: boolean;
   billing: BillingSnapshot | null;
+  planCode: string | null;
+  planLimits: PlanLimits;
   featureEntitlements: FeatureEntitlementMap;
 };
 
@@ -45,6 +48,8 @@ type AuthState = {
   role: AppRole | null;
   permissions: RolePermissions;
   billing: BillingSnapshot | null;
+  planCode: string | null;
+  planLimits: PlanLimits;
   featureEntitlements: FeatureEntitlementMap;
   canAccessFeature: (featureKey: string) => FeatureAccessDecision;
   loading: boolean;
@@ -63,6 +68,8 @@ function mapUser(
   workspaceId: string,
   hasWorkspace: boolean,
   billing: BillingSnapshot | null,
+  planCode: string | null,
+  planLimits: PlanLimits,
   featureEntitlements: FeatureEntitlementMap
 ): AuthUser {
   return {
@@ -74,6 +81,8 @@ function mapUser(
     workspaceId,
     hasWorkspace,
     billing,
+    planCode,
+    planLimits,
     featureEntitlements,
   };
 }
@@ -95,6 +104,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       let role: AppRole = "viewer";
       const teamIds: string[] = [];
       let billing: BillingSnapshot | null = null;
+      let planCode: string | null = null;
+      let planLimits = parsePlanLimits(null);
       let featureEntitlements = buildFeatureEntitlements({});
 
       if (hasWorkspace) {
@@ -119,6 +130,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             ]);
             planDoc = (planResult.documents?.[0] as unknown as Plan | undefined) ?? null;
           }
+          planCode = subscriptionDoc?.planCode ?? planDoc?.code ?? null;
+          planLimits = parsePlanLimits(planDoc);
           const membershipResult = await databases
             .listDocuments(rcmsDatabaseId, COLLECTIONS.workspaceMemberships, [
               Query.equal("workspaceId", [workspaceId]),
@@ -155,6 +168,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         } catch {
           role = "viewer";
           billing = null;
+          planCode = null;
+          planLimits = parsePlanLimits(null);
           featureEntitlements = buildFeatureEntitlements({});
         }
       }
@@ -167,6 +182,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           workspaceId,
           hasWorkspace,
           billing,
+          planCode,
+          planLimits,
           featureEntitlements
         )
       );
@@ -211,6 +228,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const role = user?.role ?? null;
   const permissions = getRolePermissions(role);
   const billing = user?.billing ?? null;
+  const planCode = user?.planCode ?? null;
+  const planLimits = user?.planLimits ?? parsePlanLimits(null);
   const featureEntitlements = user?.featureEntitlements ?? buildFeatureEntitlements({});
   const canAccessFeature = useCallback(
     (featureKey: string) =>
@@ -228,6 +247,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       role,
       permissions,
       billing,
+      planCode,
+      planLimits,
       featureEntitlements,
       canAccessFeature,
       loading,
@@ -241,6 +262,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       role,
       permissions,
       billing,
+      planCode,
+      planLimits,
       featureEntitlements,
       canAccessFeature,
       loading,

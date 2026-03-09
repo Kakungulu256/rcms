@@ -25,6 +25,7 @@ import { logAudit } from "../../lib/audit";
 import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../ToastContext";
 import { appendRentHistory, buildRentByMonth } from "../../lib/rentHistory";
+import { formatLimitValue, getLimitStatus } from "../../lib/planLimits";
 
 type PanelMode = "list" | "create" | "edit";
 
@@ -33,7 +34,7 @@ type TenantFormWithEffectiveDate = TenantFormValues & {
 };
 
 export default function TenantsPage() {
-  const { user, permissions } = useAuth();
+  const { user, permissions, planLimits } = useAuth();
   const canManageTenants = permissions.canManageTenants;
   const toast = useToast();
   const [tenants, setTenants] = useState<Tenant[]>([]);
@@ -144,6 +145,14 @@ export default function TenantsPage() {
     });
     return Array.from(values);
   }, [houseLookup, sortedTenants]);
+  const activeTenantCount = useMemo(
+    () => tenants.filter((tenant) => tenant.status === "active" && !tenant.moveOutDate).length,
+    [tenants]
+  );
+  const activeTenantLimitStatus = useMemo(
+    () => getLimitStatus(planLimits.maxActiveTenants, activeTenantCount),
+    [activeTenantCount, planLimits.maxActiveTenants]
+  );
 
   const loadData = async () => {
     setLoading(true);
@@ -311,6 +320,14 @@ export default function TenantsPage() {
     try {
       const { rentEffectiveDate, ...rest } = values;
       const normalized = normalizeTenantPayload(rest);
+      if (normalized.status === "active" && activeTenantLimitStatus.reached) {
+        const message =
+          "Active tenant limit reached on your current plan. Upgrade in Settings to add more active tenants.";
+        setError(message);
+        toast.push("warning", message);
+        setLoading(false);
+        return;
+      }
       const houseId = normalized.house;
       const assignable = ensureAssignableHouse(houseId);
       if (!assignable.ok) {
@@ -391,6 +408,18 @@ export default function TenantsPage() {
     try {
       const { rentEffectiveDate, ...rest } = values;
       const normalized = normalizeTenantPayload(rest);
+      const selectedIsActive =
+        selected.status === "active" && !selected.moveOutDate;
+      const nextIsActive =
+        normalized.status === "active" && !normalized.moveOutDate;
+      if (!selectedIsActive && nextIsActive && activeTenantLimitStatus.reached) {
+        const message =
+          "Active tenant limit reached on your current plan. Upgrade in Settings to activate more tenants.";
+        setError(message);
+        toast.push("warning", message);
+        setLoading(false);
+        return;
+      }
       const houseId = normalized.house;
       const assignable = ensureAssignableHouse(houseId, selected);
       if (!assignable.ok) {
@@ -534,6 +563,13 @@ export default function TenantsPage() {
                   ? "Loading..."
                   : `${filteredTenants.length} of ${tenants.length} tenants`}
               </div>
+              {planLimits.maxActiveTenants != null && (
+                <div className="mt-1 text-xs text-amber-300">
+                  Active tenant usage: {activeTenantLimitStatus.used.toLocaleString()} /{" "}
+                  {formatLimitValue(activeTenantLimitStatus.limit)}
+                  {activeTenantLimitStatus.reached ? " (limit reached)" : ""}
+                </div>
+              )}
             </div>
             <div className="flex flex-wrap gap-2">
               {canManageTenants && (
@@ -542,7 +578,8 @@ export default function TenantsPage() {
                     setMode("create");
                     setModalOpen(true);
                   }}
-                  className="btn-primary text-sm"
+                  disabled={activeTenantLimitStatus.reached}
+                  className="btn-primary text-sm disabled:opacity-60"
                 >
                   Add Tenant
                 </button>

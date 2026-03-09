@@ -112,6 +112,32 @@ function resolvePlanFeatureRule(plan, featureKey) {
   return null;
 }
 
+function parseLimitsJson(value) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object") return null;
+    if (parsed.limits && typeof parsed.limits === "object") {
+      return parsed.limits;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function resolvePlanLimit(plan, keys) {
+  const limits = parseLimitsJson(plan?.limitsJson);
+  if (!limits || typeof limits !== "object") return null;
+  for (const key of keys) {
+    const value = Number(limits[key]);
+    if (Number.isFinite(value) && value > 0) {
+      return Math.floor(value);
+    }
+  }
+  return null;
+}
+
 async function getLatestSubscription(databases, databaseId, workspaceId) {
   const page = await databases.listDocuments(databaseId, "subscriptions", [
     Query.equal("workspaceId", [workspaceId]),
@@ -181,6 +207,15 @@ async function assertFeatureEnabled({
     error.code = 402;
     throw error;
   }
+}
+
+async function countActiveWorkspaceMembers(databases, databaseId, workspaceId) {
+  const page = await databases.listDocuments(databaseId, "workspace_memberships", [
+    Query.equal("workspaceId", [workspaceId]),
+    Query.equal("status", ["active"]),
+    Query.limit(1),
+  ]);
+  return Number(page.total ?? 0);
 }
 
 async function findUserByEmail(users, email) {
@@ -408,6 +443,42 @@ export default async (context) => {
           workspaceId,
         },
       });
+    }
+
+    const existingMembership = await findWorkspaceMembership(
+      databases,
+      databaseId,
+      workspaceId,
+      user.$id
+    );
+    const existingMembershipActive =
+      String(existingMembership?.status ?? "").trim().toLowerCase() === "active";
+    const willIncreaseActiveMembers = !existingMembershipActive;
+    if (willIncreaseActiveMembers) {
+      const subscription = await getLatestSubscription(databases, databaseId, workspaceId);
+      const plan = await getPlanByCode(databases, databaseId, subscription?.planCode ?? null);
+      const maxTeamMembers = resolvePlanLimit(plan, [
+        "maxTeamMembers",
+        "teamMembers",
+        "max_team_members",
+      ]);
+      if (maxTeamMembers != null) {
+        const activeMembers = await countActiveWorkspaceMembers(
+          databases,
+          databaseId,
+          workspaceId
+        );
+        if (activeMembers >= maxTeamMembers) {
+          return res.json(
+            {
+              ok: false,
+              error:
+                "Team member limit reached on your current plan. Upgrade in Settings to add more users.",
+            },
+            402
+          );
+        }
+      }
     }
 
     const membershipResult = await upsertWorkspaceMembership({

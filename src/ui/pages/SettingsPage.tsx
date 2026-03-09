@@ -1,13 +1,20 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { Query } from "appwrite";
-import { account, databases, functions, rcmsDatabaseId } from "../../lib/appwrite";
+import {
+  account,
+  databases,
+  functions,
+  listAllDocuments,
+  rcmsDatabaseId,
+} from "../../lib/appwrite";
 import { useToast } from "../ToastContext";
 import { useAuth } from "../../auth/AuthContext";
 import { logAudit } from "../../lib/audit";
 import { getActiveWorkspaceId } from "../../lib/workspace";
 import { createBillingCheckoutSession } from "../../lib/billing";
-import { COLLECTIONS, type Plan } from "../../lib/schema";
+import { COLLECTIONS, type Plan, type WorkspaceMembership } from "../../lib/schema";
+import { formatLimitValue, getLimitStatus } from "../../lib/planLimits";
 
 type AppRole = "admin" | "clerk" | "viewer";
 
@@ -78,7 +85,7 @@ async function executeManageUsersFunction(
 }
 
 export default function SettingsPage() {
-  const { user, billing, canAccessFeature } = useAuth();
+  const { user, billing, canAccessFeature, planLimits } = useAuth();
   const toast = useToast();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -91,10 +98,12 @@ export default function SettingsPage() {
   const [planCode, setPlanCode] = useState("");
   const [couponCode, setCouponCode] = useState("");
   const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [teamMemberCount, setTeamMemberCount] = useState(0);
   const manageUsersFunctionId = import.meta.env.VITE_MANAGE_USERS_FUNCTION_ID as
     | string
     | undefined;
   const manageUsersAccess = canAccessFeature("settings.manage_users");
+  const teamMemberLimitStatus = getLimitStatus(planLimits.maxTeamMembers, teamMemberCount);
 
   useEffect(() => {
     let active = true;
@@ -116,6 +125,29 @@ export default function SettingsPage() {
       }
     };
     void loadPlans();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const loadTeamUsage = async () => {
+      try {
+        const rows = await listAllDocuments<WorkspaceMembership>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.workspaceMemberships,
+          queries: [Query.equal("status", ["active"])],
+        });
+        if (!active) return;
+        setTeamMemberCount(rows.length);
+      } catch {
+        if (active) {
+          setTeamMemberCount(0);
+        }
+      }
+    };
+    void loadTeamUsage();
     return () => {
       active = false;
     };
@@ -207,6 +239,9 @@ export default function SettingsPage() {
       setResult(parsed);
       setPassword("");
       resetForm();
+      if (parsed.created) {
+        setTeamMemberCount((prev) => prev + 1);
+      }
       toast.push(
         "success",
         parsed.created
@@ -343,6 +378,15 @@ export default function SettingsPage() {
         <p className="mt-2 text-xs text-slate-500">
           For existing users, leave password empty to only update role assignment.
         </p>
+        {planLimits.maxTeamMembers != null ? (
+          <div className="mt-3 text-xs text-amber-300">
+            Team member usage: {teamMemberLimitStatus.used.toLocaleString()} /{" "}
+            {formatLimitValue(teamMemberLimitStatus.limit)}
+            {teamMemberLimitStatus.reached
+              ? " (limit reached - upgrade to add more users)"
+              : ""}
+          </div>
+        ) : null}
         {!manageUsersAccess.allowed ? (
           <div className="mt-4 rounded-xl border border-amber-600/40 bg-amber-950/30 p-4 text-sm text-amber-100">
             {manageUsersAccess.reason ||
