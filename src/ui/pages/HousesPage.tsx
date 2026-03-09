@@ -6,7 +6,12 @@ import HouseList from "../houses/HouseList";
 import Modal from "../Modal";
 import PaginationControls from "../PaginationControls";
 import TypeaheadSearch from "../TypeaheadSearch";
-import { databases, listAllDocuments, rcmsDatabaseId } from "../../lib/appwrite";
+import {
+  createWorkspaceDocument,
+  databases,
+  listAllDocuments,
+  rcmsDatabaseId,
+} from "../../lib/appwrite";
 import { COLLECTIONS } from "../../lib/schema";
 import type { House, HouseForm as HouseFormValues, Tenant } from "../../lib/schema";
 import { logAudit } from "../../lib/audit";
@@ -141,11 +146,11 @@ export default function HousesPage() {
       const effectiveDate =
         rentEffectiveDate ?? new Date().toISOString().slice(0, 10);
       const manualStatus = rest.status === "inactive" ? "inactive" : "vacant";
-      const created = await databases.createDocument(
-        rcmsDatabaseId,
-        COLLECTIONS.houses,
-        ID.unique(),
-        {
+      const created = await createWorkspaceDocument({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.houses,
+        documentId: ID.unique(),
+        data: {
           ...rest,
           status: manualStatus,
           currentTenantId: null,
@@ -154,8 +159,8 @@ export default function HousesPage() {
             amount: rest.monthlyRent,
             source: "house",
           }),
-        }
-      );
+        },
+      });
       setHouses((prev) => [...prev, created as unknown as House]);
       setSelected(created as unknown as House);
       setMode("list");

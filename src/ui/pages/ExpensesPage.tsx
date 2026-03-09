@@ -5,6 +5,7 @@ import ExpenseList from "../expenses/ExpenseList";
 import Modal from "../Modal";
 import TypeaheadSearch from "../TypeaheadSearch";
 import {
+  createWorkspaceDocument,
   databases,
   listAllDocuments,
   rcmsDatabaseId,
@@ -263,12 +264,12 @@ export default function ExpensesPage() {
       return;
     }
 
-    await databases.createDocument(
-      rcmsDatabaseId,
-      COLLECTIONS.securityDepositDeductions,
-      ID.unique(),
-      deductionPayload
-    );
+    await createWorkspaceDocument({
+      databaseId: rcmsDatabaseId,
+      collectionId: COLLECTIONS.securityDepositDeductions,
+      documentId: ID.unique(),
+      data: deductionPayload,
+    });
   };
 
   const handleSave = async (values: ExpenseFormValues) => {
@@ -357,12 +358,12 @@ export default function ExpensesPage() {
           }
         }
       } else {
-        const created = await databases.createDocument(
-          rcmsDatabaseId,
-          COLLECTIONS.expenses,
-          ID.unique(),
-          payload
-        );
+        const created = await createWorkspaceDocument({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.expenses,
+          documentId: ID.unique(),
+          data: payload,
+        });
         savedExpense = created as unknown as Expense;
         setExpenses((prev) => [savedExpense as Expense, ...prev]);
         toast.push("success", "Expense recorded.");

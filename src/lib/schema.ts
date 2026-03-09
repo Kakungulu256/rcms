@@ -1,4 +1,5 @@
 export const COLLECTIONS = {
+  workspaces: "workspaces",
   houses: "houses",
   tenants: "tenants",
   payments: "payments",
@@ -25,6 +26,7 @@ export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
 export type House = {
   $id: string;
+  workspaceId?: string;
   code: string;
   name?: string;
   monthlyRent: number;
@@ -44,6 +46,7 @@ export type HouseForm = {
 
 export type Tenant = {
   $id: string;
+  workspaceId?: string;
   fullName: string;
   phone?: string;
   house: string | { $id: string; code?: string; name?: string };
@@ -78,6 +81,7 @@ export type PaymentAllocation = Record<string, number>;
 
 export type Payment = {
   $id: string;
+  workspaceId?: string;
   tenant: string | { $id?: string; fullName?: string };
   amount: number;
   securityDepositApplied?: number;
@@ -110,6 +114,7 @@ export type PaymentForm = {
 
 export type Expense = {
   $id: string;
+  workspaceId?: string;
   category: ExpenseCategory;
   description: string;
   amount: number;
@@ -145,6 +150,7 @@ export type ExpenseForm = {
 
 export type SecurityDepositDeduction = {
   $id: string;
+  workspaceId?: string;
   tenantId: string;
   expenseId: string;
   houseId: string;
@@ -157,12 +163,21 @@ export type SecurityDepositDeduction = {
 
 export type AuditLog = {
   $id: string;
+  workspaceId?: string;
   entityType: string;
   entityId: string;
   action: AuditAction;
   actorId: string;
   timestamp: string;
   detailsJson?: string;
+};
+
+export type Workspace = {
+  $id: string;
+  name: string;
+  ownerUserId?: string;
+  status: "active" | "inactive";
+  notes?: string;
 };
 
 export function encodeJson(value: unknown): string {

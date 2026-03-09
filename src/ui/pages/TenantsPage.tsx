@@ -7,7 +7,12 @@ import TenantList from "../tenants/TenantList";
 import Modal from "../Modal";
 import PaginationControls from "../PaginationControls";
 import TypeaheadSearch from "../TypeaheadSearch";
-import { databases, listAllDocuments, rcmsDatabaseId } from "../../lib/appwrite";
+import {
+  createWorkspaceDocument,
+  databases,
+  listAllDocuments,
+  rcmsDatabaseId,
+} from "../../lib/appwrite";
 import { COLLECTIONS } from "../../lib/schema";
 import type {
   House,
@@ -334,12 +339,12 @@ export default function TenantsPage() {
               })
             : null,
       };
-      const created = await databases.createDocument(
-        rcmsDatabaseId,
-        COLLECTIONS.tenants,
-        ID.unique(),
-        payload
-      );
+      const created = await createWorkspaceDocument({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.tenants,
+        documentId: ID.unique(),
+        data: payload,
+      });
       const createdTenant = created as unknown as Tenant;
       const createdHouseId =
         typeof createdTenant.house === "string"

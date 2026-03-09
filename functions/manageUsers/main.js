@@ -28,6 +28,19 @@ function normalizeString(value) {
   return next.length > 0 ? next : null;
 }
 
+function normalizeWorkspaceId(value) {
+  const next = normalizeString(value);
+  return next ?? null;
+}
+
+function resolveWorkspaceId(body) {
+  return (
+    normalizeWorkspaceId(body?.workspaceId) ||
+    normalizeWorkspaceId(getEnv("RCMS_DEFAULT_WORKSPACE_ID")) ||
+    "default"
+  );
+}
+
 function normalizeEmail(value) {
   const next = normalizeString(value);
   return next ? next.toLowerCase() : null;
@@ -207,6 +220,7 @@ export default async (context) => {
   }
 
   const jwt = normalizeString(body.jwt);
+  const workspaceId = resolveWorkspaceId(body);
   const email = normalizeEmail(body.email);
   const name = normalizeString(body.name) ?? "Team User";
   const role = normalizeRole(body.role);
@@ -258,6 +272,27 @@ export default async (context) => {
       user = await users.updateName({ userId: user.$id, name });
     }
 
+    const existingWorkspaceId = normalizeWorkspaceId(user?.prefs?.workspaceId);
+    if (existingWorkspaceId && existingWorkspaceId !== workspaceId) {
+      return res.json(
+        {
+          ok: false,
+          error:
+            "User already belongs to another workspace and cannot be assigned here.",
+        },
+        409
+      );
+    }
+    if (!existingWorkspaceId) {
+      user = await users.updatePrefs({
+        userId: user.$id,
+        prefs: {
+          ...(user.prefs ?? {}),
+          workspaceId,
+        },
+      });
+    }
+
     const membershipResult = await assignExclusiveRoleMembership({
       teams,
       roleTeamIds,
@@ -273,6 +308,7 @@ export default async (context) => {
         id: user.$id,
         email: user.email ?? email,
         name: user.name ?? name,
+        workspaceId,
       },
       membership: membershipResult,
     });

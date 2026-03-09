@@ -266,6 +266,7 @@ async function ensureIndex(fn) {
 async function setupHouses() {
   const collectionId = "houses";
   await ensureCollection(collectionId, "Houses");
+  await ensureWorkspaceScope(collectionId);
 
   await ensureAttribute(() =>
     databases.createStringAttribute(databaseId, collectionId, "code", 32, true)
@@ -315,6 +316,7 @@ async function setupHouses() {
 async function setupTenants() {
   const collectionId = "tenants";
   await ensureCollection(collectionId, "Tenants");
+  await ensureWorkspaceScope(collectionId);
 
   await ensureAttribute(() =>
     databases.createStringAttribute(databaseId, collectionId, "fullName", 128, true)
@@ -435,6 +437,7 @@ async function setupTenants() {
 async function setupPayments() {
   const collectionId = "payments";
   await ensureCollection(collectionId, "Payments");
+  await ensureWorkspaceScope(collectionId);
 
   await ensureRelationship(() =>
     databases.createRelationshipAttribute(
@@ -535,6 +538,7 @@ async function setupPayments() {
 async function setupExpenses() {
   const collectionId = "expenses";
   await ensureCollection(collectionId, "Expenses");
+  await ensureWorkspaceScope(collectionId);
 
   await ensureAttribute(() =>
     databases.createEnumAttribute(
@@ -641,6 +645,7 @@ async function setupExpenses() {
 async function setupSecurityDepositDeductions() {
   const collectionId = "security_deposit_deductions";
   await ensureCollection(collectionId, "Security Deposit Deductions");
+  await ensureWorkspaceScope(collectionId);
 
   await ensureAttribute(() =>
     databases.createStringAttribute(databaseId, collectionId, "tenantId", 64, true)
@@ -687,6 +692,7 @@ async function setupSecurityDepositDeductions() {
 async function setupAuditLogs() {
   const collectionId = "audit_logs";
   await ensureCollection(collectionId, "Audit Logs");
+  await ensureWorkspaceScope(collectionId);
 
   await ensureAttribute(() =>
     databases.createStringAttribute(databaseId, collectionId, "entityType", 64, true)
@@ -730,9 +736,43 @@ async function setupAuditLogs() {
   );
 }
 
+async function ensureWorkspaceScope(collectionId) {
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "workspaceId", 64, true)
+  );
+  await ensureIndex(() =>
+    databases.createIndex(databaseId, collectionId, "idx_workspace", "key", ["workspaceId"])
+  );
+}
+
+async function setupWorkspaces() {
+  const collectionId = "workspaces";
+  await ensureCollection(collectionId, "Workspaces");
+
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "name", 128, true)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "ownerUserId", 64, false)
+  );
+  await ensureAttribute(() =>
+    databases.createEnumAttribute(
+      databaseId,
+      collectionId,
+      "status",
+      ["active", "inactive"],
+      true
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "notes", 512, false)
+  );
+}
+
 async function main() {
   await ensureDatabase();
   await ensureReceiptsBucket();
+  await setupWorkspaces();
   await setupHouses();
   await setupTenants();
   await setupPayments();

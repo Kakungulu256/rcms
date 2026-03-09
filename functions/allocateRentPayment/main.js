@@ -6,6 +6,28 @@ function getEnv(name, fallback) {
   return process.env[name] ?? fallback;
 }
 
+function normalizeWorkspaceId(value) {
+  const normalized = String(value ?? "").trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function resolveWorkspaceId(body) {
+  return (
+    normalizeWorkspaceId(body?.workspaceId) ||
+    normalizeWorkspaceId(getEnv("RCMS_DEFAULT_WORKSPACE_ID")) ||
+    "default"
+  );
+}
+
+function assertWorkspaceAccess(document, workspaceId, label) {
+  const documentWorkspaceId = normalizeWorkspaceId(document?.workspaceId);
+  if (documentWorkspaceId && documentWorkspaceId !== workspaceId) {
+    const error = new Error(`${label} does not belong to this workspace.`);
+    error.code = 403;
+    throw error;
+  }
+}
+
 async function callerHasAdminRole({ endpoint, projectId, jwt, adminTeamId }) {
   if (!jwt) return true;
   const callerClient = new Client().setEndpoint(endpoint).setProject(projectId).setJWT(jwt);
@@ -333,27 +355,44 @@ function allocatePayment({ amount, months, paidByMonth, rentByMonth }) {
   return { allocation, remaining };
 }
 
-async function listAllTenantPayments(databases, databaseId, tenantId) {
-  const documents = [];
-  let cursor = null;
-  const pageSize = 100;
+async function listAllTenantPayments(databases, databaseId, tenantId, workspaceId) {
+  const listWithQueries = async (baseQueries) => {
+    const documents = [];
+    let cursor = null;
+    const pageSize = 100;
 
-  while (true) {
-    const queries = [
-      Query.equal("tenant", [tenantId]),
-      Query.orderAsc("paymentDate"),
-      Query.limit(pageSize),
-    ];
-    if (cursor) {
-      queries.push(Query.cursorAfter(cursor));
+    while (true) {
+      const queries = [...baseQueries, Query.limit(pageSize)];
+      if (cursor) {
+        queries.push(Query.cursorAfter(cursor));
+      }
+      const page = await databases.listDocuments(databaseId, "payments", queries);
+      documents.push(...page.documents);
+      if (page.documents.length < pageSize) break;
+      cursor = page.documents[page.documents.length - 1].$id;
     }
-    const page = await databases.listDocuments(databaseId, "payments", queries);
-    documents.push(...page.documents);
-    if (page.documents.length < pageSize) break;
-    cursor = page.documents[page.documents.length - 1].$id;
+
+    return documents;
+  };
+
+  const scoped = await listWithQueries([
+    Query.equal("tenant", [tenantId]),
+    Query.equal("workspaceId", [workspaceId]),
+    Query.orderAsc("paymentDate"),
+  ]);
+  if (scoped.length > 0) {
+    return scoped;
   }
 
-  return documents;
+  // Transitional fallback for legacy records missing workspaceId.
+  const legacy = await listWithQueries([
+    Query.equal("tenant", [tenantId]),
+    Query.orderAsc("paymentDate"),
+  ]);
+  return legacy.filter((payment) => {
+    const paymentWorkspaceId = normalizeWorkspaceId(payment?.workspaceId);
+    return !paymentWorkspaceId || paymentWorkspaceId === workspaceId;
+  });
 }
 
 export default async (context) => {
@@ -400,6 +439,7 @@ export default async (context) => {
 
   const {
     jwt,
+    workspaceId: payloadWorkspaceId,
     tenantId,
     amount,
     method,
@@ -413,6 +453,7 @@ export default async (context) => {
     receiptFileSize,
     reversePaymentId,
   } = body;
+  const workspaceId = resolveWorkspaceId({ workspaceId: payloadWorkspaceId });
   const normalizedNotes = normalizeNote(notes);
   const normalizedReceiptFileId = normalizeOptionalString(receiptFileId);
   const normalizedReceiptBucketId = normalizeOptionalString(receiptBucketId);
@@ -455,11 +496,13 @@ export default async (context) => {
       log?.(`Reversing payment ${reversePaymentId}`);
       log?.("Fetching original payment...");
       const original = await databases.getDocument(databaseId, "payments", reversePaymentId);
+      assertWorkspaceAccess(original, workspaceId, "Payment");
       if (original.isReversal) {
         return res.json({ ok: false, error: "Reversal entries cannot be reversed." }, 400);
       }
       const existingReversals = await databases.listDocuments(databaseId, "payments", [
         Query.equal("reversedPaymentId", [original.$id]),
+        Query.equal("workspaceId", [workspaceId]),
         Query.limit(1),
       ]);
       if (existingReversals.total > 0) {
@@ -474,10 +517,12 @@ export default async (context) => {
         return res.json({ ok: false, error: "Original payment has no tenant." }, 400);
       }
       const tenant = await databases.getDocument(databaseId, "tenants", originalTenantId);
+      assertWorkspaceAccess(tenant, workspaceId, "Tenant");
       const tenantPayments = await listAllTenantPayments(
         databases,
         databaseId,
-        originalTenantId
+        originalTenantId,
+        workspaceId
       );
       const paidByMonth = buildPaidByMonth(tenantPayments);
       const originalDepositApplied = roundMoney(
@@ -517,6 +562,7 @@ export default async (context) => {
       const recordedBy = req.headers["x-appwrite-user-id"] ?? null;
       log?.("Creating reversal document...");
       const reversal = await databases.createDocument(databaseId, "payments", ID.unique(), {
+        workspaceId,
         tenant: originalTenantId,
         amount: -totalReversalAmount,
         securityDepositApplied: depositToReverse > 0 ? -depositToReverse : 0,
@@ -575,18 +621,27 @@ export default async (context) => {
       return res.json({ ok: false, error: "Invalid payment date." }, 400);
     }
     const tenant = await databases.getDocument(databaseId, "tenants", tenantId);
+    assertWorkspaceAccess(tenant, workspaceId, "Tenant");
     const houseId =
       typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? null;
     const house = houseId
       ? await databases.getDocument(databaseId, "houses", houseId)
       : null;
+    if (house) {
+      assertWorkspaceAccess(house, workspaceId, "House");
+    }
     const rent = roundMoney(tenant.rentOverride ?? house?.monthlyRent ?? 0);
     const amountValue = roundMoney(Math.max(Number(amount) || 0, 0));
     if (amountValue <= 0) {
       return res.json({ ok: false, error: "Amount must be greater than zero." }, 400);
     }
 
-    const paymentList = await listAllTenantPayments(databases, databaseId, tenantId);
+    const paymentList = await listAllTenantPayments(
+      databases,
+      databaseId,
+      tenantId,
+      workspaceId
+    );
     const activeRentPayments = getActiveRentPayments(paymentList);
     const isInitialActivePayment = activeRentPayments.length === 0;
     const depositState = resolveDepositState(tenant, rent);
@@ -646,6 +701,7 @@ export default async (context) => {
       "payments",
       ID.unique(),
       {
+        workspaceId,
         tenant: tenantId,
         amount: amountValue,
         securityDepositApplied,

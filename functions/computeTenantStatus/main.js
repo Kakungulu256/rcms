@@ -4,6 +4,28 @@ function getEnv(name, fallback) {
   return process.env[name] ?? fallback;
 }
 
+function normalizeWorkspaceId(value) {
+  const normalized = String(value ?? "").trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function resolveWorkspaceId(body) {
+  return (
+    normalizeWorkspaceId(body?.workspaceId) ||
+    normalizeWorkspaceId(getEnv("RCMS_DEFAULT_WORKSPACE_ID")) ||
+    "default"
+  );
+}
+
+function assertWorkspaceAccess(document, workspaceId, label) {
+  const documentWorkspaceId = normalizeWorkspaceId(document?.workspaceId);
+  if (documentWorkspaceId && documentWorkspaceId !== workspaceId) {
+    const error = new Error(`${label} does not belong to this workspace.`);
+    error.code = 403;
+    throw error;
+  }
+}
+
 function parseJson(body) {
   if (!body) return null;
   try {
@@ -179,27 +201,44 @@ function resolveRentForMonth(
   });
 }
 
-async function listAllTenantPayments(databases, databaseId, tenantId) {
-  const documents = [];
-  let cursor = null;
-  const pageSize = 100;
+async function listAllTenantPayments(databases, databaseId, tenantId, workspaceId) {
+  const listWithQueries = async (baseQueries) => {
+    const documents = [];
+    let cursor = null;
+    const pageSize = 100;
 
-  while (true) {
-    const queries = [
-      Query.equal("tenant", [tenantId]),
-      Query.orderAsc("paymentDate"),
-      Query.limit(pageSize),
-    ];
-    if (cursor) {
-      queries.push(Query.cursorAfter(cursor));
+    while (true) {
+      const queries = [...baseQueries, Query.limit(pageSize)];
+      if (cursor) {
+        queries.push(Query.cursorAfter(cursor));
+      }
+      const page = await databases.listDocuments(databaseId, "payments", queries);
+      documents.push(...page.documents);
+      if (page.documents.length < pageSize) break;
+      cursor = page.documents[page.documents.length - 1].$id;
     }
-    const page = await databases.listDocuments(databaseId, "payments", queries);
-    documents.push(...page.documents);
-    if (page.documents.length < pageSize) break;
-    cursor = page.documents[page.documents.length - 1].$id;
+
+    return documents;
+  };
+
+  const scoped = await listWithQueries([
+    Query.equal("tenant", [tenantId]),
+    Query.equal("workspaceId", [workspaceId]),
+    Query.orderAsc("paymentDate"),
+  ]);
+  if (scoped.length > 0) {
+    return scoped;
   }
 
-  return documents;
+  // Transitional fallback for legacy records missing workspaceId.
+  const legacy = await listWithQueries([
+    Query.equal("tenant", [tenantId]),
+    Query.orderAsc("paymentDate"),
+  ]);
+  return legacy.filter((payment) => {
+    const paymentWorkspaceId = normalizeWorkspaceId(payment?.workspaceId);
+    return !paymentWorkspaceId || paymentWorkspaceId === workspaceId;
+  });
 }
 
 export default async (context) => {
@@ -209,6 +248,7 @@ export default async (context) => {
     log?.("Missing tenantId in request.");
     return res.json({ ok: false, error: "tenantId is required." }, 400);
   }
+  const workspaceId = resolveWorkspaceId(body);
 
   const endpoint =
     getEnv("RCMS_APPWRITE_ENDPOINT") ||
@@ -241,14 +281,23 @@ export default async (context) => {
 
   try {
     const tenant = await databases.getDocument(databaseId, "tenants", body.tenantId);
+    assertWorkspaceAccess(tenant, workspaceId, "Tenant");
     const houseId =
       typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? null;
     const house = houseId
       ? await databases.getDocument(databaseId, "houses", houseId)
       : null;
+    if (house) {
+      assertWorkspaceAccess(house, workspaceId, "House");
+    }
     const rent = tenant.rentOverride ?? house?.monthlyRent ?? 0;
 
-    const paymentList = await listAllTenantPayments(databases, databaseId, body.tenantId);
+    const paymentList = await listAllTenantPayments(
+      databases,
+      databaseId,
+      body.tenantId,
+      workspaceId
+    );
     const paidByMonth = buildPaidByMonth(paymentList);
     const currentMonth = monthKey(new Date());
     const today = new Date();

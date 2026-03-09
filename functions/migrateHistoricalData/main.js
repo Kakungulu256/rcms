@@ -25,6 +25,28 @@ function normalize(value) {
   return String(value).trim();
 }
 
+function normalizeWorkspaceId(value) {
+  const normalized = String(value ?? "").trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function resolveWorkspaceId(body) {
+  return (
+    normalizeWorkspaceId(body?.workspaceId) ||
+    normalizeWorkspaceId(getEnv("RCMS_DEFAULT_WORKSPACE_ID")) ||
+    "default"
+  );
+}
+
+function assertWorkspaceAccess(document, workspaceId, label) {
+  const documentWorkspaceId = normalizeWorkspaceId(document?.workspaceId);
+  if (documentWorkspaceId && documentWorkspaceId !== workspaceId) {
+    const error = new Error(`${label} does not belong to this workspace.`);
+    error.code = 403;
+    throw error;
+  }
+}
+
 function parseNumber(value) {
   if (typeof value === "number") return value;
   if (!value) return 0;
@@ -305,18 +327,41 @@ function findOccupyingTenantForHouse(tenants, houseId, expenseDate) {
   );
 }
 
-async function listAllDocuments(databases, databaseId, collectionId, baseQueries = []) {
-  const documents = [];
-  let cursor = null;
-  while (true) {
-    const queries = [...baseQueries, Query.limit(100)];
-    if (cursor) queries.push(Query.cursorAfter(cursor));
-    const page = await databases.listDocuments(databaseId, collectionId, queries);
-    documents.push(...page.documents);
-    if (page.documents.length < 100) break;
-    cursor = page.documents[page.documents.length - 1].$id;
+async function listAllDocuments(
+  databases,
+  databaseId,
+  collectionId,
+  baseQueries = [],
+  workspaceId = null
+) {
+  const fetchWithQueries = async (queriesWithoutLimit) => {
+    const documents = [];
+    let cursor = null;
+    while (true) {
+      const queries = [...queriesWithoutLimit, Query.limit(100)];
+      if (cursor) queries.push(Query.cursorAfter(cursor));
+      const page = await databases.listDocuments(databaseId, collectionId, queries);
+      documents.push(...page.documents);
+      if (page.documents.length < 100) break;
+      cursor = page.documents[page.documents.length - 1].$id;
+    }
+    return documents;
+  };
+
+  const scopedQueries = workspaceId
+    ? [Query.equal("workspaceId", [workspaceId]), ...baseQueries]
+    : [...baseQueries];
+  const scopedDocuments = await fetchWithQueries(scopedQueries);
+  if (scopedDocuments.length > 0 || !workspaceId) {
+    return scopedDocuments;
   }
-  return documents;
+
+  // Transitional fallback for legacy records missing workspaceId.
+  const legacyDocuments = await fetchWithQueries(baseQueries);
+  return legacyDocuments.filter((document) => {
+    const documentWorkspaceId = normalizeWorkspaceId(document?.workspaceId);
+    return !documentWorkspaceId || documentWorkspaceId === workspaceId;
+  });
 }
 
 function isMigrationDataShape(data) {
@@ -398,6 +443,7 @@ export default async (context) => {
   }
 
   const jwt = normalize(body.jwt);
+  const workspaceId = resolveWorkspaceId(body);
   const data = body.data;
   if (!isMigrationDataShape(data)) {
     return res.json(
@@ -433,9 +479,13 @@ export default async (context) => {
       housesUpdated: 0,
     };
 
-    const existingHouses = await listAllDocuments(databases, databaseId, "houses", [
-      Query.orderAsc("code"),
-    ]);
+    const existingHouses = await listAllDocuments(
+      databases,
+      databaseId,
+      "houses",
+      [Query.orderAsc("code")],
+      workspaceId
+    );
     const houseByCode = new Map(existingHouses.map((house) => [house.code, house]));
     const houseById = new Map(existingHouses.map((house) => [house.$id, house]));
 
@@ -449,6 +499,7 @@ export default async (context) => {
       const monthlyRent = parseNumber(row.MonthlyRent);
       const effectiveDate = normalize(row.RentEffectiveDate) || new Date().toISOString().slice(0, 10);
       const created = await databases.createDocument(databaseId, "houses", ID.unique(), {
+        workspaceId,
         code,
         name: normalize(row.HouseName) || null,
         monthlyRent,
@@ -465,9 +516,13 @@ export default async (context) => {
       counters.housesCreated += 1;
     }
 
-    const existingTenants = await listAllDocuments(databases, databaseId, "tenants", [
-      Query.orderAsc("fullName"),
-    ]);
+    const existingTenants = await listAllDocuments(
+      databases,
+      databaseId,
+      "tenants",
+      [Query.orderAsc("fullName")],
+      workspaceId
+    );
     const tenantByKey = new Map(existingTenants.map((tenant) => [buildTenantKey(tenant), tenant]));
 
     for (const row of data.tenants) {
@@ -488,6 +543,7 @@ export default async (context) => {
       const moveOutDate = normalize(row.MoveOutDate) || null;
       const status = moveOutDate ? "inactive" : normalizeStatus(row.Status, "active");
       const created = await databases.createDocument(databaseId, "tenants", ID.unique(), {
+        workspaceId,
         fullName,
         phone: normalize(row.Phone) || null,
         house: house.$id,
@@ -508,10 +564,13 @@ export default async (context) => {
     }
 
     for (const [houseCode, house] of houseByCode.entries()) {
-      const tenantsForHouse = await listAllDocuments(databases, databaseId, "tenants", [
-        Query.equal("house", [house.$id]),
-        Query.orderAsc("fullName"),
-      ]);
+      const tenantsForHouse = await listAllDocuments(
+        databases,
+        databaseId,
+        "tenants",
+        [Query.equal("house", [house.$id]), Query.orderAsc("fullName")],
+        workspaceId
+      );
       const occupant =
         tenantsForHouse.find((tenant) => tenant.status === "active" && !tenant.moveOutDate) ??
         null;
@@ -541,10 +600,13 @@ export default async (context) => {
 
     const paymentsByTenant = new Map();
     for (const tenant of tenantByKey.values()) {
-      const existingPayments = await listAllDocuments(databases, databaseId, "payments", [
-        Query.equal("tenant", [tenant.$id]),
-        Query.orderAsc("paymentDate"),
-      ]);
+      const existingPayments = await listAllDocuments(
+        databases,
+        databaseId,
+        "payments",
+        [Query.equal("tenant", [tenant.$id]), Query.orderAsc("paymentDate")],
+        workspaceId
+      );
       paymentsByTenant.set(tenant.$id, existingPayments);
     }
 
@@ -594,6 +656,7 @@ export default async (context) => {
       );
 
       const created = await databases.createDocument(databaseId, "payments", ID.unique(), {
+        workspaceId,
         tenant: tenant.$id,
         amount: parseNumber(row.Amount),
         method: normalizeMethod(row.Method),
@@ -623,6 +686,7 @@ export default async (context) => {
       const affectsSecurityDeposit =
         category === "maintenance" && parseBooleanLike(row.AffectsSecurityDeposit);
       const createdExpense = await databases.createDocument(databaseId, "expenses", ID.unique(), {
+        workspaceId,
         category,
         description: normalize(row.Description),
         amount: parseNumber(row.Amount),
@@ -654,6 +718,7 @@ export default async (context) => {
             "security_deposit_deductions",
             ID.unique(),
             {
+              workspaceId,
               tenantId: occupyingTenant.$id,
               expenseId: createdExpense.$id,
               houseId,

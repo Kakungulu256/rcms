@@ -36,6 +36,7 @@ import { normalizePaymentNote } from "../../lib/paymentNotes";
 import { formatDisplayDate, formatShortMonth } from "../../lib/dateDisplay";
 import { getTenantEffectiveEndDate } from "../../lib/tenancyDates";
 import { formatAmount } from "../../lib/numberFormat";
+import { getActiveWorkspaceId } from "../../lib/workspace";
 
 type PreviewState = {
   form: PaymentFormValues;
@@ -502,6 +503,7 @@ export default function PaymentsPage() {
       const jwt = await account.createJWT();
       const { parsed, latest, body } = await executeAllocationFunction({
         jwt: jwt.jwt,
+        workspaceId: getActiveWorkspaceId(),
         tenantId: previewState.form.tenant,
         amount: previewState.form.amount,
         method: previewState.form.method,
@@ -591,6 +593,7 @@ export default function PaymentsPage() {
       const jwt = await account.createJWT();
       const { parsed, latest, body } = await executeAllocationFunction({
         jwt: jwt.jwt,
+        workspaceId: getActiveWorkspaceId(),
         reversePaymentId: reverseTarget.$id,
         paymentDate: new Date().toISOString().slice(0, 10),
         notes: `Reversal of ${reverseTarget.$id}`,

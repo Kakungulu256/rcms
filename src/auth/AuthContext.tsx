@@ -1,6 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { account, teams } from "../lib/appwrite";
 import { getRolePermissions, resolveRoleFromTeams, type AppRole, type RolePermissions } from "./rbac";
+import {
+  resolveWorkspaceIdFromAccount,
+  setActiveWorkspaceId,
+} from "../lib/workspace";
 
 type AuthUser = {
   id: string;
@@ -8,6 +12,7 @@ type AuthUser = {
   email?: string;
   role: AppRole;
   teamIds: string[];
+  workspaceId: string;
 };
 
 type AuthState = {
@@ -25,7 +30,8 @@ const AuthContext = createContext<AuthState | null>(null);
 function mapUser(
   user: { $id: string; name?: string; email?: string },
   role: AppRole,
-  teamIds: string[]
+  teamIds: string[],
+  workspaceId: string
 ): AuthUser {
   return {
     id: user.$id,
@@ -33,6 +39,7 @@ function mapUser(
     email: user.email,
     role,
     teamIds,
+    workspaceId,
   };
 }
 
@@ -45,6 +52,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setLoading(true);
     try {
       const result = await account.get();
+      const workspaceFromPrefs = resolveWorkspaceIdFromAccount(
+        result as unknown as { prefs?: Record<string, unknown> }
+      );
+      const workspaceId = setActiveWorkspaceId(workspaceFromPrefs);
       let role: AppRole = "viewer";
       let teamIds: string[] = [];
       try {
@@ -55,7 +66,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } catch {
         role = "viewer";
       }
-      setUser(mapUser(result, role, teamIds));
+      setUser(mapUser(result, role, teamIds, workspaceId));
       setError(null);
     } catch (err) {
       setUser(null);

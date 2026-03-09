@@ -4,6 +4,7 @@ import { account, functions } from "../../lib/appwrite";
 import { useToast } from "../ToastContext";
 import { useAuth } from "../../auth/AuthContext";
 import { logAudit } from "../../lib/audit";
+import { getActiveWorkspaceId } from "../../lib/workspace";
 
 type AppRole = "admin" | "clerk" | "viewer";
 
@@ -123,6 +124,7 @@ export default function SettingsPage() {
       const jwt = await account.createJWT();
       const { parsed, latest } = await executeManageUsersFunction(manageUsersFunctionId, {
         jwt: jwt.jwt,
+        workspaceId: getActiveWorkspaceId(),
         name: name.trim() || null,
         email: normalizedEmail,
         password: password.trim() || null,

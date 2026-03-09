@@ -173,7 +173,7 @@ Use this list in order. Complete and verify each item before moving to the next.
 
 ## Phase 10: SaaS Onboarding, Billing, and Plan-Based Access (Next)
 
-37. [ ] Introduce platform tenancy model (workspace/account per customer)
+37. [x] Introduce platform tenancy model (workspace/account per customer)
 - Add a top-level `workspace` model so each signup gets isolated data.
 - Scope all houses, tenants, payments, expenses, reports, and users to `workspaceId`.
 - Prevent cross-workspace access by query filters + backend checks.
@@ -199,14 +199,19 @@ Use this list in order. Complete and verify each item before moving to the next.
 - `invoices`
 - `payments_billing`
 - `feature_entitlements` (or plan JSON entitlements)
+- `coupons`
+- `coupon_redemptions`
 - Track trial, active, past_due, canceled, expired states.
 - Keep plan pricing and trial settings editable by platform owner (no hardcoded prices in code).
+- Support coupon rules with percentage discounts per plan/package, validity windows, usage limits, and active/inactive state.
 
-41. [ ] Implement billing integration + webhook processing
-- Integrate payment provider (Stripe recommended; Flutterwave/Pesapal optional).
+41. [ ] Implement payment gateway abstraction + Flutterwave integration + webhook processing
+- Add gateway adapter interface/service so provider can be swapped without rewriting billing flows.
+- Implement Flutterwave adapter as the initial provider.
 - Create checkout session for plan purchase/upgrade.
 - Process provider webhooks to activate/suspend subscriptions.
 - Make webhook handler idempotent and audit-logged.
+- Keep gateway configuration environment-driven (`provider`, keys, webhook secret, callback URLs).
 
 42. [ ] Implement trial period and lifecycle rules
 - Configure trial duration to `5 days` (editable in plan catalog/settings).
@@ -252,6 +257,7 @@ Use this list in order. Complete and verify each item before moving to the next.
 - Add owner-only dashboard to monitor all subscribers/workspaces.
 - Include: total signups, trialing, active paid, past due, churned, MRR/collections, plan distribution, and recent activity by workspace.
 - Include controls to edit plan prices/trial days and activate/deactivate plans globally.
+- Include coupon management (create/edit/activate/deactivate percentage coupons, plan targeting, usage limits, expiry windows).
 
 50. [ ] Add team invitations and acceptance flow
 - Admin sends invite by email with target role.
@@ -273,6 +279,7 @@ Use this list in order. Complete and verify each item before moving to the next.
 - trial -> paid
 - paid -> expired/past_due
 - plan upgrades/downgrades
+- coupon flows (valid coupon, expired coupon, max-usage reached, plan-mismatch coupon)
 - role + plan combined permissions
 - workspace data isolation.
 - Add rollback plan and billing reconciliation checks.
