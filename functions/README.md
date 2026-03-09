@@ -10,6 +10,7 @@ This folder contains Appwrite Function handlers for RCMS backend workflows.
 - `bootstrapWorkspace`
 - `billingCheckout`
 - `billingWebhook`
+- `workspaceInvitations`
 
 ## Deploying (manual)
 1. Create a new Function in Appwrite Console.
@@ -90,3 +91,17 @@ Set these env vars in the Appwrite Function:
 
 Additional frontend env var:
 - `VITE_BILLING_CHECKOUT_FUNCTION_ID=<your-billingCheckout-function-id>`
+
+## workspaceInvitations Environment
+Set these env vars in the Appwrite Function:
+- `RCMS_APPWRITE_ENDPOINT`
+- `RCMS_APPWRITE_PROJECT_ID`
+- `RCMS_APPWRITE_API_KEY`
+- `RCMS_APPWRITE_DATABASE_ID` (optional, defaults to `rcms`)
+- `RCMS_DEFAULT_WORKSPACE_ID` (optional, defaults to `default`)
+- `RCMS_INVITE_EXPIRES_DAYS` (optional, defaults to `7`)
+- `RCMS_APP_BASE_URL` (optional, used to generate `/accept-invite` URLs)
+- `RCMS_INVITE_WEBHOOK_URL` (optional, receives invite payload for email delivery)
+
+Additional frontend env var:
+- `VITE_WORKSPACE_INVITATIONS_FUNCTION_ID=<your-workspaceInvitations-function-id>`

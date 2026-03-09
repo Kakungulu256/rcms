@@ -1,6 +1,7 @@
 export const COLLECTIONS = {
   workspaces: "workspaces",
   workspaceMemberships: "workspace_memberships",
+  workspaceInvitations: "workspace_invitations",
   houses: "houses",
   tenants: "tenants",
   payments: "payments",
@@ -45,6 +46,12 @@ export const COUPON_REDEMPTION_STATUSES = [
   "expired",
   "invalid",
 ] as const;
+export const WORKSPACE_INVITATION_STATUSES = [
+  "pending",
+  "accepted",
+  "revoked",
+  "expired",
+] as const;
 
 export type HouseStatus = (typeof HOUSE_STATUS)[number];
 export type TenantStatus = (typeof TENANT_STATUS)[number];
@@ -57,6 +64,7 @@ export type SubscriptionState = (typeof SUBSCRIPTION_STATES)[number];
 export type InvoiceStatus = (typeof INVOICE_STATUSES)[number];
 export type BillingPaymentStatus = (typeof BILLING_PAYMENT_STATUSES)[number];
 export type CouponRedemptionStatus = (typeof COUPON_REDEMPTION_STATUSES)[number];
+export type WorkspaceInvitationStatus = (typeof WORKSPACE_INVITATION_STATUSES)[number];
 
 export type House = {
   $id: string;
@@ -233,6 +241,21 @@ export type WorkspaceMembership = {
   status: "active" | "inactive";
   invitedByUserId?: string;
   notes?: string;
+};
+
+export type WorkspaceInvitation = {
+  $id: string;
+  workspaceId?: string;
+  email: string;
+  role: "admin" | "clerk" | "viewer";
+  status: WorkspaceInvitationStatus;
+  token: string;
+  invitedByUserId?: string;
+  expiresAt?: string;
+  acceptedAt?: string;
+  acceptedByUserId?: string;
+  revokedAt?: string;
+  note?: string;
 };
 
 export type Plan = {

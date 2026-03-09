@@ -28,6 +28,7 @@ export const rcmsDatabaseId = databaseId ?? "rcms";
 export const rcmsReceiptsBucketId = receiptsBucketId ?? "rcms_receipts";
 export const WORKSPACE_SCOPED_COLLECTION_IDS = new Set<string>([
   COLLECTIONS.workspaceMemberships,
+  COLLECTIONS.workspaceInvitations,
   COLLECTIONS.houses,
   COLLECTIONS.tenants,
   COLLECTIONS.payments,

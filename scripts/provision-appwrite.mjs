@@ -169,6 +169,15 @@ function getCollectionPermissions(collectionId) {
     ];
   }
 
+  if (collectionId === "workspace_invitations") {
+    return [
+      Permission.read(Role.team(teamIds.admin)),
+      Permission.create(Role.team(teamIds.admin)),
+      Permission.update(Role.team(teamIds.admin)),
+      Permission.delete(Role.team(teamIds.admin)),
+    ];
+  }
+
   return [
     ...rolePermissions.adminCrud,
     ...rolePermissions.clerkReadCreateUpdate,
@@ -953,6 +962,89 @@ async function setupWorkspaceMemberships() {
   );
 }
 
+async function setupWorkspaceInvitations() {
+  const collectionId = "workspace_invitations";
+  await ensureCollection(collectionId, "Workspace Invitations");
+  await ensureWorkspaceScope(collectionId);
+
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "email", 256, true)
+  );
+  await ensureAttribute(() =>
+    databases.createEnumAttribute(
+      databaseId,
+      collectionId,
+      "role",
+      ["admin", "clerk", "viewer"],
+      true
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createEnumAttribute(
+      databaseId,
+      collectionId,
+      "status",
+      ["pending", "accepted", "revoked", "expired"],
+      true
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "token", 128, true)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(
+      databaseId,
+      collectionId,
+      "invitedByUserId",
+      64,
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "expiresAt", false)
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "acceptedAt", false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(
+      databaseId,
+      collectionId,
+      "acceptedByUserId",
+      64,
+      false
+    )
+  );
+  await ensureAttribute(() =>
+    databases.createDatetimeAttribute(databaseId, collectionId, "revokedAt", false)
+  );
+  await ensureAttribute(() =>
+    databases.createStringAttribute(databaseId, collectionId, "note", 1024, false)
+  );
+
+  await ensureIndex(() =>
+    databases.createIndex(
+      databaseId,
+      collectionId,
+      "idx_workspace_invite_email",
+      "key",
+      ["workspaceId", "email"]
+    )
+  );
+  await ensureIndex(() =>
+    databases.createIndex(
+      databaseId,
+      collectionId,
+      "idx_workspace_invite_status",
+      "key",
+      ["workspaceId", "status"]
+    )
+  );
+  await ensureIndex(() =>
+    databases.createIndex(databaseId, collectionId, "idx_workspace_invite_token", "key", ["token"])
+  );
+}
+
 async function setupPlans() {
   const collectionId = "plans";
   await ensureCollection(collectionId, "Plans");
@@ -1535,6 +1627,7 @@ async function main() {
   await ensureReceiptsBucket();
   await setupWorkspaces();
   await setupWorkspaceMemberships();
+  await setupWorkspaceInvitations();
   await setupPlans();
   await setupFeatureEntitlements();
   await setupCoupons();

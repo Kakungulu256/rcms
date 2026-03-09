@@ -38,6 +38,7 @@ import {
   clampWatermarkScale,
   normalizeWorkspaceBranding,
 } from "../../lib/branding";
+import WorkspaceInvitationsPanel from "../settings/WorkspaceInvitationsPanel";
 
 type AppRole = "admin" | "clerk" | "viewer";
 type SettingsTab = "billing" | "branding" | "team";
@@ -1274,6 +1275,8 @@ export default function SettingsPage() {
               </div>
             </div>
           )}
+
+          <WorkspaceInvitationsPanel />
         </div>
       )}
     </section>

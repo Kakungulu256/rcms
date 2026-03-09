@@ -4,6 +4,7 @@ import DashboardPage from "./ui/pages/DashboardPage";
 import ExpensesPage from "./ui/pages/ExpensesPage";
 import HousesPage from "./ui/pages/HousesPage";
 import LandingPage from "./ui/pages/LandingPage";
+import AcceptInvitePage from "./ui/pages/AcceptInvitePage";
 import LoginPage from "./ui/pages/LoginPage";
 import MigrationPage from "./ui/pages/MigrationPage";
 import PaymentsPage from "./ui/pages/PaymentsPage";
@@ -24,6 +25,7 @@ import PlatformOwnerPage from "./ui/pages/PlatformOwnerPage";
 
 export const router = createBrowserRouter([
   { path: "/", element: <LandingPage /> },
+  { path: "/accept-invite", element: <AcceptInvitePage /> },
   { path: "/login", element: <LoginPage /> },
   { path: "/signup", element: <SignupPage /> },
   { path: "/reset-password", element: <ResetPasswordPage /> },

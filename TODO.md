@@ -259,7 +259,7 @@ Use this list in order. Complete and verify each item before moving to the next.
 - Include controls to edit plan prices/trial days and activate/deactivate plans globally.
 - Include coupon management (create/edit/activate/deactivate percentage coupons, plan targeting, usage limits, expiry windows).
 
-50. [ ] Add team invitations and acceptance flow
+50. [x] Add team invitations and acceptance flow
 - Admin sends invite by email with target role.
 - Invite acceptance creates membership in the correct workspace and role.
 - Prevent duplicate conflicting memberships.
