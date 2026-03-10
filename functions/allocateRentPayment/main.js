@@ -236,6 +236,11 @@ async function assertFeatureEnabled({
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const PRORATE_ROUNDING_UNIT = 1000;
+const FIXED_PRORATION_DAYS = 30;
+
+function normalizeProrationMode(value) {
+  return value === "fixed_30" ? "fixed_30" : "actual_days";
+}
 
 function parseDateOnlyUtc(value) {
   if (!value) return null;
@@ -257,11 +262,19 @@ function diffDaysInclusive(start, end) {
   return Math.floor((end.getTime() - start.getTime()) / MS_PER_DAY) + 1;
 }
 
+function isSameMonthUtc(left, right) {
+  return (
+    left.getUTCFullYear() === right.getUTCFullYear() &&
+    left.getUTCMonth() === right.getUTCMonth()
+  );
+}
+
 function prorateMonthlyRent({
   baseRent,
   month,
   occupancyStartDate,
   occupancyEndDate,
+  prorationMode,
 }) {
   const normalizedRent = Number(baseRent) || 0;
   if (normalizedRent <= 0) return 0;
@@ -272,17 +285,30 @@ function prorateMonthlyRent({
   const occupancyStart = parseDateOnlyUtc(occupancyStartDate);
   const occupancyEnd = parseDateOnlyUtc(occupancyEndDate);
 
+  if (!occupancyStart) return roundMoney(normalizedRent);
+
+  const isMoveInMonth = isSameMonthUtc(occupancyStart, monthStart);
+  if (!isMoveInMonth) {
+    return roundMoney(normalizedRent);
+  }
+
+  if (occupancyEnd && isSameMonthUtc(occupancyEnd, monthStart)) {
+    return roundMoney(normalizedRent);
+  }
+
   const effectiveStart =
     occupancyStart && occupancyStart > monthStart ? occupancyStart : monthStart;
-  const effectiveEnd = occupancyEnd && occupancyEnd < monthEnd ? occupancyEnd : monthEnd;
+  const effectiveEnd = monthEnd;
   if (effectiveEnd < effectiveStart) return 0;
 
   const occupiedDays = diffDaysInclusive(effectiveStart, effectiveEnd);
   const totalDaysInMonth = diffDaysInclusive(monthStart, monthEnd);
-  if (occupiedDays >= totalDaysInMonth) {
+  const mode = normalizeProrationMode(prorationMode);
+  const denominator = mode === "fixed_30" ? FIXED_PRORATION_DAYS : totalDaysInMonth;
+  if (occupiedDays >= denominator) {
     return roundMoney(normalizedRent);
   }
-  return roundProratedRent((normalizedRent * occupiedDays) / totalDaysInMonth);
+  return roundProratedRent((normalizedRent * occupiedDays) / denominator);
 }
 
 function getTenantUpdatedAt(tenant) {
@@ -471,7 +497,8 @@ function buildRentByMonth(
   houseHistoryJson,
   fallbackRent,
   occupancyStartDate = null,
-  occupancyEndDate = null
+  occupancyEndDate = null,
+  prorationMode = "actual_days"
 ) {
   const tenantHistory = parseHistory(tenantHistoryJson);
   const houseHistory = parseHistory(houseHistoryJson);
@@ -486,6 +513,7 @@ function buildRentByMonth(
       month,
       occupancyStartDate,
       occupancyEndDate,
+      prorationMode,
     });
   });
   return rentByMonth;
@@ -794,6 +822,7 @@ export default async (context) => {
     }
     const tenant = await databases.getDocument(databaseId, "tenants", tenantId);
     assertWorkspaceAccess(tenant, workspaceId, "Tenant");
+    const workspace = await databases.getDocument(databaseId, "workspaces", workspaceId);
     const houseId =
       typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? null;
     const house = houseId
@@ -851,7 +880,8 @@ export default async (context) => {
       house?.rentHistoryJson ?? null,
       rent,
       tenant.moveInDate,
-      occupancyEndDate
+      occupancyEndDate,
+      normalizeProrationMode(workspace?.prorationMode)
     );
     const { allocation, remaining } = allocatePayment({
       amount: allocatableAmount,

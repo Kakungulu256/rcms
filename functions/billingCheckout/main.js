@@ -143,10 +143,10 @@ function resolveBillingConfig(body) {
   const appBaseUrl = getEnv("RCMS_BILLING_APP_BASE_URL");
   const fallbackReturnUrl =
     getEnv("RCMS_BILLING_SUCCESS_URL", "RCMS_BILLING_RETURN_URL") ||
-    (appBaseUrl ? `${appBaseUrl}/settings?tab=billing` : null);
+    (appBaseUrl ? `${appBaseUrl}/app/billing` : null);
   const fallbackCancelUrl =
     getEnv("RCMS_BILLING_CANCEL_URL") ||
-    (appBaseUrl ? `${appBaseUrl}/settings?tab=billing` : null);
+    (appBaseUrl ? `${appBaseUrl}/app/billing` : null);
 
   return {
     provider,
@@ -164,9 +164,14 @@ function resolveBillingConfig(body) {
       normalizeString(getEnv("RCMS_BILLING_DEFAULT_CURRENCY")) || "UGX",
     flutterwave: {
       baseUrl: getEnv("RCMS_FLUTTERWAVE_BASE_URL") || "https://api.flutterwave.com/v3",
-      secretKey: getEnv("RCMS_FLUTTERWAVE_SECRET_KEY"),
+      secretKey: getEnv(
+        "RCMS_FLUTTERWAVE_SECRET_KEY",
+        "RCMS_FLUTTERWAVE_CLIENT_SECRET",
+        "FLW_SECRET_KEY"
+      ),
       productName: getEnv("RCMS_BILLING_PRODUCT_NAME") || "RCMS Subscription",
       logoUrl: getEnv("RCMS_BILLING_LOGO_URL"),
+      paymentOptions: getEnv("RCMS_FLUTTERWAVE_PAYMENT_OPTIONS"),
     },
   };
 }
@@ -190,9 +195,9 @@ function buildGatewayAdapter(config) {
     });
   }
 
-  const { baseUrl, secretKey, productName, logoUrl } = config.flutterwave;
+  const { baseUrl, secretKey, productName, logoUrl, paymentOptions } = config.flutterwave;
   if (!secretKey) {
-    throw Object.assign(new Error("Missing RCMS_FLUTTERWAVE_SECRET_KEY."), { code: 500 });
+    throw Object.assign(new Error("Missing Flutterwave secret key."), { code: 500 });
   }
 
   return {
@@ -212,6 +217,7 @@ function buildGatewayAdapter(config) {
           description: params.description,
           logo: logoUrl || undefined,
         },
+        ...(paymentOptions ? { payment_options: paymentOptions } : null),
         meta: {
           ...params.metadata,
           cancelUrl: params.cancelUrl || undefined,
@@ -418,7 +424,14 @@ async function writeSubscriptionEvent(databases, databaseId, payload) {
 }
 
 export default async (context) => {
-  const { req, res, error: logError } = context;
+  const { req, res, error: logError, log: ctxLog } = context;
+  const log = (...args) => {
+    if (typeof ctxLog === "function") {
+      ctxLog(...args);
+    } else {
+      console.log(...args);
+    }
+  };
   const body = parseJson(req.body);
   if (!body) {
     return res.json({ ok: false, error: "Invalid JSON body." }, 400);
@@ -440,6 +453,14 @@ export default async (context) => {
     "APPWRITE_FUNCTION_API_KEY"
   );
   const databaseId = getEnv("RCMS_APPWRITE_DATABASE_ID", "APPWRITE_DATABASE_ID") || "rcms";
+
+  log("billingCheckout:init", {
+    hasEndpoint: Boolean(endpoint),
+    hasProjectId: Boolean(projectId),
+    hasApiKey: Boolean(apiKey),
+    databaseId,
+    provider: resolveBillingProvider(),
+  });
 
   if (!endpoint || !projectId || !apiKey) {
     return res.json(
@@ -466,6 +487,12 @@ export default async (context) => {
   }
   const couponCode = normalizeCouponCode(body.couponCode);
   const jwt = normalizeString(body.jwt);
+  log("billingCheckout:payload", {
+    planCode,
+    hasCoupon: Boolean(couponCode),
+    hasJwt: Boolean(jwt),
+    workspaceId: normalizeWorkspaceId(body?.workspaceId) || null,
+  });
   const checkoutRateLimit = resolveCheckoutRateLimit();
   const auditContext = {
     workspaceId: null,
@@ -705,6 +732,16 @@ export default async (context) => {
         currency,
         couponCode: discount.couponCode,
       },
+    });
+
+    log("billingCheckout:success", {
+      workspaceId,
+      planCode,
+      amountDue,
+      currency,
+      txRef: checkoutSession.providerReference || txRef,
+      invoiceId: invoice.$id,
+      paymentId: billingPayment.$id,
     });
 
     return res.json({

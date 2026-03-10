@@ -9,9 +9,9 @@ import PaginationControls from "../PaginationControls";
 import TypeaheadSearch from "../TypeaheadSearch";
 import {
   createWorkspaceDocument,
-  databases,
   listAllDocuments,
   rcmsDatabaseId,
+  updateScopedDocument,
 } from "../../lib/appwrite";
 import { COLLECTIONS } from "../../lib/schema";
 import type { House, HouseForm as HouseFormValues, Tenant } from "../../lib/schema";
@@ -147,7 +147,7 @@ export default function HousesPage() {
     }
     if (houseLimitStatus.reached) {
       const message =
-        "House limit reached on your current plan. Upgrade in Settings to add more houses.";
+        "House limit reached on your current plan. Open Billing to add more houses.";
       setError(message);
       toast.push("warning", message);
       return;
@@ -244,12 +244,12 @@ export default function HousesPage() {
             })
           : selected.rentHistoryJson ?? null,
       };
-      const updated = await databases.updateDocument(
-        rcmsDatabaseId,
-        COLLECTIONS.houses,
-        selected.$id,
-        updatedPayload
-      );
+      const updated = await updateScopedDocument<typeof updatedPayload, House>({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.houses,
+        documentId: selected.$id,
+        data: updatedPayload,
+      });
       setHouses((prev) =>
         prev.map((house) =>
           house.$id === selected.$id ? (updated as unknown as House) : house
@@ -318,8 +318,8 @@ export default function HousesPage() {
                 </button>
               )}
               {canManageHouses && houseLimitStatus.reached ? (
-                <Link to="/app/upgrade" className="btn-secondary text-sm">
-                  Upgrade Plan
+                <Link to="/app/billing" className="btn-secondary text-sm">
+                  Open Billing
                 </Link>
               ) : null}
               <button

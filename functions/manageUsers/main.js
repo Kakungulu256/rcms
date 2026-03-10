@@ -1,4 +1,4 @@
-import { Account, Client, Databases, ID, Query, Users } from "node-appwrite";
+import { Account, Client, Databases, ID, Query, Teams, Users } from "node-appwrite";
 
 const ALLOWED_ROLES = ["admin", "clerk", "viewer"];
 
@@ -53,6 +53,104 @@ function normalizeRole(value) {
 
 function buildClient(endpoint, projectId) {
   return new Client().setEndpoint(endpoint).setProject(projectId);
+}
+
+async function listAllTeamMemberships(teams, teamId) {
+  const memberships = [];
+  const pageSize = 100;
+  let offset = 0;
+
+  while (true) {
+    const page = await teams.listMemberships(teamId, [
+      Query.limit(pageSize),
+      Query.offset(offset),
+    ]);
+    const items = page.memberships ?? [];
+    memberships.push(...items);
+    if (items.length < pageSize) {
+      break;
+    }
+    offset += pageSize;
+  }
+
+  return memberships;
+}
+
+async function resolveRoleTeamId(teams, role) {
+  const normalizedRole = String(role ?? "").trim().toLowerCase();
+  const envKeys =
+    normalizedRole === "admin"
+      ? ["RCMS_APPWRITE_TEAM_ADMIN_ID", "APPWRITE_TEAM_ADMIN_ID"]
+      : normalizedRole === "clerk"
+        ? ["RCMS_APPWRITE_TEAM_CLERK_ID", "APPWRITE_TEAM_CLERK_ID"]
+        : normalizedRole === "viewer"
+          ? ["RCMS_APPWRITE_TEAM_VIEWER_ID", "APPWRITE_TEAM_VIEWER_ID"]
+          : [];
+
+  const explicitTeamId = getEnv(...envKeys);
+  if (explicitTeamId) {
+    try {
+      const team = await teams.get(explicitTeamId);
+      return team.$id;
+    } catch {
+      // Fall through to name-based lookup.
+    }
+  }
+
+  const expectedName =
+    normalizedRole === "admin" ? "Admin" : normalizedRole === "clerk" ? "Clerk" : "Viewer";
+  if (!expectedName) return null;
+
+  const page = await teams.list([Query.limit(100)]);
+  const match = (page.teams ?? []).find(
+    (team) => String(team.name ?? "").trim().toLowerCase() === expectedName.toLowerCase()
+  );
+  return match?.$id ?? null;
+}
+
+async function syncUserRoleTeam({ teams, userId, role, log }) {
+  const normalizedRole = String(role ?? "").trim().toLowerCase();
+  const targetTeamId = await resolveRoleTeamId(teams, normalizedRole);
+  if (!targetTeamId) {
+    log?.(`manageUsers team sync skipped: missing ${normalizedRole} team.`);
+    return { synced: false, reason: "missing_target_team" };
+  }
+
+  const roleTeamIds = new Map();
+  for (const candidateRole of ["admin", "clerk", "viewer"]) {
+    const teamId = await resolveRoleTeamId(teams, candidateRole);
+    if (teamId) {
+      roleTeamIds.set(candidateRole, teamId);
+    }
+  }
+
+  for (const [candidateRole, teamId] of roleTeamIds.entries()) {
+    const memberships = await listAllTeamMemberships(teams, teamId);
+    const membership = memberships.find(
+      (item) => String(item.userId ?? "").trim() === String(userId ?? "").trim()
+    );
+
+    if (candidateRole === normalizedRole) {
+      if (!membership) {
+        await teams.createMembership(
+          teamId,
+          ["member"],
+          undefined,
+          userId,
+          undefined,
+          undefined,
+          `${candidateRole.charAt(0).toUpperCase() + candidateRole.slice(1)} Workspace Access`
+        );
+      }
+      continue;
+    }
+
+    if (membership?.$id) {
+      await teams.deleteMembership(teamId, membership.$id);
+    }
+  }
+
+  return { synced: true, teamId: targetTeamId };
 }
 
 function parseDateSafe(value) {
@@ -383,6 +481,7 @@ export default async (context) => {
     const adminClient = buildClient(endpoint, projectId).setKey(apiKey);
     const databases = new Databases(adminClient);
     const users = new Users(adminClient);
+    const teams = new Teams(adminClient);
 
     const caller = await ensureCallerIsWorkspaceAdmin({
       endpoint,
@@ -413,15 +512,15 @@ export default async (context) => {
           400
         );
       }
-      user = await users.create({
-        userId: ID.unique(),
-        email,
-        password,
-        name,
-      });
+      user = await users.create(ID.unique(), email, undefined, password, name);
       created = true;
     } else if (name && user.name !== name) {
-      user = await users.updateName({ userId: user.$id, name });
+      user = await users.updateName(user.$id, name);
+    }
+
+    const userId = String(user?.$id ?? "").trim();
+    if (!userId) {
+      return res.json({ ok: false, error: "Created user is missing an ID." }, 500);
     }
 
     const existingWorkspaceId = normalizeWorkspaceId(user?.prefs?.workspaceId);
@@ -436,12 +535,9 @@ export default async (context) => {
       );
     }
     if (!existingWorkspaceId) {
-      user = await users.updatePrefs({
-        userId: user.$id,
-        prefs: {
-          ...(user.prefs ?? {}),
-          workspaceId,
-        },
+      user = await users.updatePrefs(userId, {
+        ...(user.prefs ?? {}),
+        workspaceId,
       });
     }
 
@@ -449,7 +545,7 @@ export default async (context) => {
       databases,
       databaseId,
       workspaceId,
-      user.$id
+      userId
     );
     const existingMembershipActive =
       String(existingMembership?.status ?? "").trim().toLowerCase() === "active";
@@ -485,18 +581,25 @@ export default async (context) => {
       databases,
       databaseId,
       workspaceId,
-      userId: user.$id,
+      userId,
       email: user.email ?? email,
       role,
       actorUserId: caller.$id,
     });
+
+    await syncUserRoleTeam({
+      teams,
+      userId,
+      role,
+      log: logError,
+    }).catch(() => null);
 
     return res.json({
       ok: true,
       created,
       role,
       user: {
-        id: user.$id,
+        id: userId,
         email: user.email ?? email,
         name: user.name ?? name,
         workspaceId,

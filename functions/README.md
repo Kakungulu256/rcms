@@ -9,6 +9,7 @@ This folder contains Appwrite Function handlers for RCMS backend workflows.
 - `manageUsers`
 - `bootstrapWorkspace`
 - `billingCheckout`
+- `billingVerify`
 - `billingWebhook`
 - `workspaceInvitations`
 
@@ -56,9 +57,11 @@ Set these env vars in the Appwrite Function:
 - `RCMS_DEFAULT_TRIAL_PLAN_CODE` (optional, defaults to `trial`)
 - `RCMS_SIGNUP_MAX_REQUESTS` (optional, defaults to `5`)
 - `RCMS_SIGNUP_WINDOW_MINUTES` (optional, defaults to `15`)
+- `RCMS_REQUIRE_VERIFIED_EMAIL_FOR_WORKSPACE_BOOTSTRAP` (optional, defaults to `false`)
+- `RCMS_APPWRITE_TEAM_ADMIN_ID` / `APPWRITE_TEAM_ADMIN_ID` (optional but recommended for owner team sync)
 
 Notes:
-- Caller account must be enabled and email-verified.
+- Caller account must be enabled. Email verification is optional unless `RCMS_REQUIRE_VERIFIED_EMAIL_FOR_WORKSPACE_BOOTSTRAP=true`.
 - One owner account maps to one workspace (existing owner workspace is reused).
 
 Frontend env var (in app `.env`):
@@ -80,9 +83,28 @@ Set these env vars in the Appwrite Function:
 - `RCMS_BILLING_PRODUCT_NAME` (optional; shown on provider checkout)
 - `RCMS_BILLING_LOGO_URL` (optional)
 - `RCMS_FLUTTERWAVE_SECRET_KEY` (required for Flutterwave)
+- `RCMS_FLUTTERWAVE_CLIENT_SECRET` (optional alias for secret key)
+- `RCMS_FLUTTERWAVE_CLIENT_ID` (optional, not used for hosted checkout)
+- `RCMS_FLUTTERWAVE_ENCRYPTION_KEY` (optional, not used for hosted checkout)
+- `RCMS_FLUTTERWAVE_PAYMENT_OPTIONS` (optional, e.g. `card,mobilemoneyuganda`)
 - `RCMS_FLUTTERWAVE_BASE_URL` (optional, defaults to `https://api.flutterwave.com/v3`)
 - `RCMS_CHECKOUT_MAX_REQUESTS` (optional, defaults to `8`)
 - `RCMS_CHECKOUT_WINDOW_MINUTES` (optional, defaults to `10`)
+
+## billingVerify Environment
+Set these env vars in the Appwrite Function:
+- `RCMS_APPWRITE_ENDPOINT`
+- `RCMS_APPWRITE_PROJECT_ID`
+- `RCMS_APPWRITE_API_KEY`
+- `RCMS_APPWRITE_DATABASE_ID` (optional, defaults to `rcms`)
+- `RCMS_BILLING_PROVIDER` (optional, defaults to `flutterwave`)
+- `RCMS_FLUTTERWAVE_SECRET_KEY` (required for Flutterwave)
+- `RCMS_FLUTTERWAVE_CLIENT_SECRET` (optional alias for secret key)
+- `RCMS_FLUTTERWAVE_BASE_URL` (optional, defaults to `https://api.flutterwave.com/v3`)
+- `RCMS_BILLING_PERIOD_DAYS` (optional, defaults to `30`)
+- `RCMS_BILLING_GRACE_DAYS` (optional, defaults to `7`)
+- `RCMS_BILLING_MAX_RETRIES` (optional, defaults to `3`)
+- `RCMS_BILLING_RETRY_INTERVAL_HOURS` (optional, defaults to `24`)
 
 ## billingWebhook Environment
 Set these env vars in the Appwrite Function:
@@ -103,6 +125,7 @@ Notes:
 
 Additional frontend env var:
 - `VITE_BILLING_CHECKOUT_FUNCTION_ID=<your-billingCheckout-function-id>`
+- `VITE_BILLING_VERIFY_FUNCTION_ID=<your-billingVerify-function-id>`
 
 ## workspaceInvitations Environment
 Set these env vars in the Appwrite Function:

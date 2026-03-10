@@ -10,9 +10,9 @@ import PaginationControls from "../PaginationControls";
 import TypeaheadSearch from "../TypeaheadSearch";
 import {
   createWorkspaceDocument,
-  databases,
   listAllDocuments,
   rcmsDatabaseId,
+  updateScopedDocument,
 } from "../../lib/appwrite";
 import { COLLECTIONS } from "../../lib/schema";
 import type {
@@ -269,15 +269,18 @@ export default function TenantsPage() {
       return;
     }
 
-    const updatedHouse = await databases.updateDocument(
-      rcmsDatabaseId,
-      COLLECTIONS.houses,
-      houseId,
-      {
+    const updatedHouse = await updateScopedDocument<
+      { status: string; currentTenantId: string | null },
+      House
+    >({
+      databaseId: rcmsDatabaseId,
+      collectionId: COLLECTIONS.houses,
+      documentId: houseId,
+      data: {
         status: nextStatus,
         currentTenantId: nextCurrentTenantId,
-      }
-    );
+      },
+    });
     setHouses((prev) =>
       prev.map((item) =>
         item.$id === houseId ? (updatedHouse as unknown as House) : item
@@ -323,7 +326,7 @@ export default function TenantsPage() {
       const normalized = normalizeTenantPayload(rest);
       if (normalized.status === "active" && activeTenantLimitStatus.reached) {
         const message =
-          "Active tenant limit reached on your current plan. Upgrade in Settings to add more active tenants.";
+          "Active tenant limit reached on your current plan. Open Billing to add more active tenants.";
         setError(message);
         toast.push("warning", message);
         setLoading(false);
@@ -415,7 +418,7 @@ export default function TenantsPage() {
         normalized.status === "active" && !normalized.moveOutDate;
       if (!selectedIsActive && nextIsActive && activeTenantLimitStatus.reached) {
         const message =
-          "Active tenant limit reached on your current plan. Upgrade in Settings to activate more tenants.";
+          "Active tenant limit reached on your current plan. Open Billing to activate more tenants.";
         setError(message);
         toast.push("warning", message);
         setLoading(false);
@@ -490,12 +493,12 @@ export default function TenantsPage() {
             : selected.rentHistoryJson ?? null
           : selected.rentHistoryJson ?? null,
       };
-      const updated = await databases.updateDocument(
-        rcmsDatabaseId,
-        COLLECTIONS.tenants,
-        selected.$id,
-        payload
-      );
+      const updated = await updateScopedDocument<typeof payload, Tenant>({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.tenants,
+        documentId: selected.$id,
+        data: payload,
+      });
       const updatedTenant = updated as unknown as Tenant;
       const updatedHouseId =
         typeof updatedTenant.house === "string"
@@ -586,8 +589,8 @@ export default function TenantsPage() {
                 </button>
               )}
               {canManageTenants && activeTenantLimitStatus.reached ? (
-                <Link to="/app/upgrade" className="btn-secondary text-sm">
-                  Upgrade Plan
+                <Link to="/app/billing" className="btn-secondary text-sm">
+                  Open Billing
                 </Link>
               ) : null}
               <button

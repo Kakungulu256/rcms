@@ -256,9 +256,13 @@ a:focus-visible .nav-tooltip {
 }
 
 .btn-secondary {
-  background-color: var(--surface);
-  color: var(--accent);
-  border: 1px solid var(--accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  background-color: #eef2ff;
+  color: #1e3a8a;
+  border: 1px solid #c7d2fe;
   border-radius: 10px;
   height: 44px;
   padding: 0 16px;
@@ -267,9 +271,9 @@ a:focus-visible .nav-tooltip {
 }
 
 .btn-secondary:hover {
-  background-color: #eff6ff;
-  border-color: var(--accent-strong);
-  color: var(--accent-strong);
+  background-color: #e0e7ff;
+  border-color: #a5b4fc;
+  color: #1e3a8a;
 }
 
 .btn-danger {
@@ -284,6 +288,48 @@ a:focus-visible .nav-tooltip {
 
 .btn-danger:hover {
   filter: brightness(0.9);
+}
+
+.billing-banner {
+  color: var(--text);
+}
+
+.billing-banner-warning {
+  color: #111827;
+}
+
+.billing-banner-warning .btn-secondary,
+.billing-banner-warning a.btn-secondary {
+  color: #111827;
+  border-color: rgba(0, 0, 0, 0.25);
+}
+
+.billing-banner-warning .btn-secondary:hover,
+.billing-banner-warning a.btn-secondary:hover {
+  color: #111827;
+  background-color: rgba(0, 0, 0, 0.06);
+  border-color: rgba(0, 0, 0, 0.45);
+}
+
+.billing-banner-warning a {
+  color: #111827;
+}
+
+.billing-banner-info .btn-secondary,
+.billing-banner-info a.btn-secondary {
+  color: #0f172a;
+  border-color: rgba(15, 23, 42, 0.28);
+}
+
+.billing-banner-info .btn-secondary:hover,
+.billing-banner-info a.btn-secondary:hover {
+  color: #0f172a;
+  background-color: rgba(15, 23, 42, 0.06);
+  border-color: rgba(15, 23, 42, 0.45);
+}
+
+.billing-banner-info a {
+  color: #0f172a;
 }
 
 table tbody tr:nth-child(even) {

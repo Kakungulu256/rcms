@@ -526,7 +526,7 @@ export default function DashboardPage() {
               Plan Usage
             </div>
             <div className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
-              Usage against plan quotas. Upgrade in Settings when limits are reached.
+              Usage against plan quotas. Open Billing when limits are reached.
             </div>
           </div>
           {usageSummary.reachedAny && (

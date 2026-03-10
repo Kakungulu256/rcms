@@ -21,7 +21,7 @@ export default function RequireFeature({ featureKey, children }: RequireFeatureP
   if (!decision.allowed) {
     return (
       <Navigate
-        to="/app/upgrade"
+        to="/app/billing"
         replace
         state={{
           message: decision.reason ?? "This feature is locked on your plan.",

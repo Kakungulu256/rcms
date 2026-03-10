@@ -26,16 +26,13 @@ export default function BillingLockedPage() {
         </div>
         <p className="mt-2 text-sm text-rose-100/80">
           {isAdmin
-            ? "Open settings to upgrade your plan or resolve overdue billing."
+            ? "Open the billing dashboard to upgrade your plan or resolve overdue billing."
             : "Contact your workspace admin to renew or upgrade billing."}
         </p>
         <div className="mt-4 flex flex-wrap gap-3">
-          <Link to="/app/upgrade" className="btn-primary text-sm">
-            View Plans
-          </Link>
           {isAdmin ? (
-            <Link to="/app/settings" className="btn-primary text-sm">
-              Open Billing Settings
+            <Link to="/app/billing" className="btn-primary text-sm">
+              Open Billing Dashboard
             </Link>
           ) : null}
           <Link to="/app" className="btn-secondary text-sm">

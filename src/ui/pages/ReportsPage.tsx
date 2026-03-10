@@ -13,7 +13,7 @@ import {
 import { jsPDF } from "jspdf";
 import * as XLSX from "xlsx";
 import {
-  databases,
+  getScopedDocument,
   listAllDocuments,
   rcmsDatabaseId,
   rcmsReceiptsBucketId,
@@ -57,7 +57,6 @@ import {
   clampWatermarkScale,
   normalizeWorkspaceBranding,
 } from "../../lib/branding";
-import { getActiveWorkspaceId } from "../../lib/workspace";
 
 type ArrearsRow = {
   tenantId: string;
@@ -408,8 +407,11 @@ export default function ReportsPage() {
             Query.orderDesc("timestamp"),
           ],
         }).catch(() => []),
-        databases
-          .getDocument(rcmsDatabaseId, COLLECTIONS.workspaces, getActiveWorkspaceId())
+        getScopedDocument<Workspace>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.workspaces,
+          documentId: user?.workspaceId ?? "",
+        })
           .then((doc) => doc as unknown as Workspace)
           .catch(() => null),
         ]);
@@ -480,7 +482,7 @@ export default function ReportsPage() {
   const ensureExportAllowed = () => {
     if (!exportLimitStatus.reached) return true;
     const message =
-      "Monthly export limit reached on your current plan. Upgrade in Settings to continue exporting.";
+      "Monthly export limit reached on your current plan. Open Billing to continue exporting.";
     toast.push("warning", message);
     return false;
   };
@@ -2385,8 +2387,8 @@ export default function ReportsPage() {
               : "Export PDF"}
         </button>
         {exportLimitStatus.reached ? (
-          <Link to="/app/upgrade" className="btn-secondary text-sm">
-            Upgrade Plan
+          <Link to="/app/billing" className="btn-secondary text-sm">
+            Open Billing
           </Link>
         ) : null}
         {planLimits.exportsPerMonth != null && (

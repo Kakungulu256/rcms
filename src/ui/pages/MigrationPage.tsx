@@ -4,13 +4,13 @@ import { ID, Query } from "appwrite";
 import {
   account,
   createWorkspaceDocument,
-  databases,
   functions as appwriteFunctions,
   getWorkspaceScopedQueries,
   listAllDocuments,
   rcmsDatabaseId,
+  updateScopedDocument,
 } from "../../lib/appwrite";
-import { getActiveWorkspaceId } from "../../lib/workspace";
+import { getRequiredActiveWorkspaceId } from "../../lib/workspace";
 import { COLLECTIONS } from "../../lib/schema";
 import {
   buildMonthSeries,
@@ -364,11 +364,12 @@ export default function MigrationPage() {
     if (migrateFunctionId) {
       try {
         const jwt = await account.createJWT();
+        const activeWorkspaceId = getRequiredActiveWorkspaceId();
         const { parsed: migrationResult, latest } = await executeMigrationFunction(
           migrateFunctionId,
           {
             jwt: jwt.jwt,
-            workspaceId: getActiveWorkspaceId(),
+            workspaceId: activeWorkspaceId,
             data: parsed,
           }
         );
@@ -531,15 +532,18 @@ export default function MigrationPage() {
         ) {
           continue;
         }
-        const updatedHouse = (await databases.updateDocument(
-          rcmsDatabaseId,
-          COLLECTIONS.houses,
-          house.$id,
-          {
+        const updatedHouse = await updateScopedDocument<
+          { status: string; currentTenantId: string | null },
+          House
+        >({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.houses,
+          documentId: house.$id,
+          data: {
             status: nextStatus,
             currentTenantId: nextCurrentTenantId,
-          }
-        )) as unknown as House;
+          },
+        });
         houseByCode.set(houseCode, updatedHouse);
         houseById.set(updatedHouse.$id, updatedHouse);
       }

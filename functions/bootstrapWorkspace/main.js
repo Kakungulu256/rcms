@@ -1,7 +1,12 @@
-import { Account, Client, Databases, ID, Query, Users } from "node-appwrite";
+import { Account, Client, Databases, ID, Query, Teams, Users } from "node-appwrite";
 
 const PLATFORM_SIGNUP_WORKSPACE_ID = "platform";
 const SIGNUP_AUDIT_ENTITY_TYPE = "workspace_signup";
+const ROLE_TEAM_NAMES = {
+  admin: "Admin",
+  clerk: "Clerk",
+  viewer: "Viewer",
+};
 
 function getEnv(...keys) {
   for (const key of keys) {
@@ -41,6 +46,14 @@ function parsePositiveInt(value, fallback, min, max) {
   return rounded;
 }
 
+function parseBooleanEnv(value, fallback = false) {
+  if (value === undefined || value === null) return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
 function parseDateSafe(value) {
   if (!value) return null;
   const parsed = new Date(value);
@@ -70,6 +83,16 @@ function resolveSignupRateLimit() {
     maxAttempts: parsePositiveInt(getEnv("RCMS_SIGNUP_MAX_REQUESTS"), 5, 1, 100),
     windowMinutes: parsePositiveInt(getEnv("RCMS_SIGNUP_WINDOW_MINUTES"), 15, 1, 1440),
   };
+}
+
+function requireVerifiedEmailForWorkspaceBootstrap() {
+  return parseBooleanEnv(
+    getEnv(
+      "RCMS_REQUIRE_VERIFIED_EMAIL_FOR_WORKSPACE_BOOTSTRAP",
+      "APPWRITE_REQUIRE_VERIFIED_EMAIL_FOR_WORKSPACE_BOOTSTRAP"
+    ),
+    false
+  );
 }
 
 function addDaysIso(baseDate, days) {
@@ -177,6 +200,103 @@ async function ensureWorkspaceMembership({
   return { created: true, membershipId: created.$id, document: created };
 }
 
+async function listAllTeamMemberships(teams, teamId) {
+  const memberships = [];
+  const pageSize = 100;
+  let offset = 0;
+
+  while (true) {
+    const page = await teams.listMemberships(teamId, [
+      Query.limit(pageSize),
+      Query.offset(offset),
+    ]);
+    const items = page.memberships ?? [];
+    memberships.push(...items);
+    if (items.length < pageSize) {
+      break;
+    }
+    offset += pageSize;
+  }
+
+  return memberships;
+}
+
+async function resolveRoleTeamId(teams, role) {
+  const normalizedRole = String(role ?? "").trim().toLowerCase();
+  const envKeys =
+    normalizedRole === "admin"
+      ? ["RCMS_APPWRITE_TEAM_ADMIN_ID", "APPWRITE_TEAM_ADMIN_ID"]
+      : normalizedRole === "clerk"
+        ? ["RCMS_APPWRITE_TEAM_CLERK_ID", "APPWRITE_TEAM_CLERK_ID"]
+        : normalizedRole === "viewer"
+          ? ["RCMS_APPWRITE_TEAM_VIEWER_ID", "APPWRITE_TEAM_VIEWER_ID"]
+          : [];
+
+  const explicitTeamId = getEnv(...envKeys);
+  if (explicitTeamId) {
+    try {
+      const team = await teams.get(explicitTeamId);
+      return team.$id;
+    } catch {
+      // Fall through to name-based lookup.
+    }
+  }
+
+  const expectedName = ROLE_TEAM_NAMES[normalizedRole];
+  if (!expectedName) return null;
+
+  const page = await teams.list([Query.limit(100)]);
+  const match = (page.teams ?? []).find(
+    (team) => String(team.name ?? "").trim().toLowerCase() === expectedName.toLowerCase()
+  );
+  return match?.$id ?? null;
+}
+
+async function syncUserRoleTeam({ teams, userId, role, log }) {
+  const normalizedRole = String(role ?? "").trim().toLowerCase();
+  const targetTeamId = await resolveRoleTeamId(teams, normalizedRole);
+  if (!targetTeamId) {
+    log?.(`bootstrapWorkspace team sync skipped: missing ${normalizedRole} team.`);
+    return { synced: false, reason: "missing_target_team" };
+  }
+
+  const roleTeamIds = new Map();
+  for (const candidateRole of ["admin", "clerk", "viewer"]) {
+    const teamId = await resolveRoleTeamId(teams, candidateRole);
+    if (teamId) {
+      roleTeamIds.set(candidateRole, teamId);
+    }
+  }
+
+  for (const [candidateRole, teamId] of roleTeamIds.entries()) {
+    const memberships = await listAllTeamMemberships(teams, teamId);
+    const membership = memberships.find(
+      (item) => String(item.userId ?? "").trim() === String(userId ?? "").trim()
+    );
+
+    if (candidateRole === normalizedRole) {
+      if (!membership) {
+        await teams.createMembership(
+          teamId,
+          ["member"],
+          undefined,
+          userId,
+          undefined,
+          undefined,
+          `${ROLE_TEAM_NAMES[normalizedRole]} Workspace Access`
+        );
+      }
+      continue;
+    }
+
+    if (membership?.$id) {
+      await teams.deleteMembership(teamId, membership.$id);
+    }
+  }
+
+  return { synced: true, teamId: targetTeamId };
+}
+
 async function findWorkspaceOwnedByUser(databases, databaseId, userId) {
   const page = await databases.listDocuments(databaseId, "workspaces", [
     Query.equal("ownerUserId", [userId]),
@@ -211,6 +331,7 @@ export default async (context) => {
   const databaseId = getEnv("RCMS_APPWRITE_DATABASE_ID", "APPWRITE_DATABASE_ID") || "rcms";
   const trialPlanCode = resolveDefaultTrialPlanCode();
   const signupRateLimit = resolveSignupRateLimit();
+  const requireVerifiedEmail = requireVerifiedEmailForWorkspaceBootstrap();
   const jwt = normalizeString(body.jwt);
   const workspaceName = normalizeString(body.workspaceName);
   const auditContext = {
@@ -244,7 +365,7 @@ export default async (context) => {
     if (caller?.status === false) {
       return res.json({ ok: false, error: "Caller account is disabled." }, 403);
     }
-    if (caller?.emailVerification === false) {
+    if (requireVerifiedEmail && caller?.emailVerification === false) {
       return res.json(
         { ok: false, error: "Verify your email before creating a workspace." },
         403
@@ -257,6 +378,7 @@ export default async (context) => {
 
     const adminClient = new Client().setEndpoint(endpoint).setProject(projectId).setKey(apiKey);
     const databases = new Databases(adminClient);
+    const teams = new Teams(adminClient);
     const users = new Users(adminClient);
     await assertSignupRateLimit({
       databases,
@@ -287,14 +409,17 @@ export default async (context) => {
           role: "admin",
           invitedByUserId: caller.$id,
         });
+        await syncUserRoleTeam({
+          teams,
+          userId: caller.$id,
+          role: "admin",
+          log: logError,
+        });
       }
       if (!existingWorkspaceId || existingWorkspaceId !== workspace.$id) {
-        await users.updatePrefs({
-          userId: caller.$id,
-          prefs: {
-            ...(caller.prefs ?? {}),
-            workspaceId: workspace.$id,
-          },
+        await users.updatePrefs(caller.$id, {
+          ...(caller.prefs ?? {}),
+          workspaceId: workspace.$id,
         });
       }
       let subscriptionDoc = null;
@@ -342,6 +467,7 @@ export default async (context) => {
       subscriptionState: "trialing",
       trialStartDate,
       trialEndDate,
+      prorationMode: "actual_days",
       notes: null,
     });
 
@@ -373,12 +499,9 @@ export default async (context) => {
       logError?.(`bootstrapWorkspace subscription warning: ${subscriptionMessage}`);
     }
 
-    await users.updatePrefs({
-      userId: caller.$id,
-      prefs: {
-        ...(caller.prefs ?? {}),
-        workspaceId: workspace.$id,
-      },
+    await users.updatePrefs(caller.$id, {
+      ...(caller.prefs ?? {}),
+      workspaceId: workspace.$id,
     });
 
     const membership = await ensureWorkspaceMembership({
@@ -389,6 +512,12 @@ export default async (context) => {
       email: caller.email ?? null,
       role: "admin",
       invitedByUserId: caller.$id,
+    });
+    await syncUserRoleTeam({
+      teams,
+      userId: caller.$id,
+      role: "admin",
+      log: logError,
     });
     await writeAuditLog(databases, databaseId, {
       workspaceId: PLATFORM_SIGNUP_WORKSPACE_ID,

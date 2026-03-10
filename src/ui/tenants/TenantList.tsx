@@ -14,9 +14,12 @@ type Props = {
 function resolveHouseLabel(tenant: Tenant, houses: House[]) {
   if (typeof tenant.house === "string") {
     const match = houses.find((house) => house.$id === tenant.house);
-    return match ? match.code : "--";
+    if (!match) return "--";
+    return [match.name, match.code].filter(Boolean).join(" - ");
   }
-  return tenant.house?.code ?? "--";
+  const name = tenant.house?.name;
+  const code = tenant.house?.code;
+  return [name, code].filter(Boolean).join(" - ") || "--";
 }
 
 export default function TenantList({

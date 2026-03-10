@@ -53,6 +53,8 @@ export const WORKSPACE_INVITATION_STATUSES = [
   "expired",
 ] as const;
 
+export const PRORATION_MODES = ["actual_days", "fixed_30"] as const;
+
 export type HouseStatus = (typeof HOUSE_STATUS)[number];
 export type TenantStatus = (typeof TENANT_STATUS)[number];
 export type TenantType = (typeof TENANT_TYPES)[number];
@@ -65,6 +67,7 @@ export type InvoiceStatus = (typeof INVOICE_STATUSES)[number];
 export type BillingPaymentStatus = (typeof BILLING_PAYMENT_STATUSES)[number];
 export type CouponRedemptionStatus = (typeof COUPON_REDEMPTION_STATUSES)[number];
 export type WorkspaceInvitationStatus = (typeof WORKSPACE_INVITATION_STATUSES)[number];
+export type ProrationMode = (typeof PRORATION_MODES)[number];
 
 export type House = {
   $id: string;
@@ -229,6 +232,7 @@ export type Workspace = {
   wmPosition?: "center" | "top_left" | "top_right" | "bottom_left" | "bottom_right";
   wmOpacity?: number;
   wmScale?: number;
+  prorationMode?: ProrationMode;
   notes?: string;
 };
 

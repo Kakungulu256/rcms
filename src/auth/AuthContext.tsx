@@ -28,6 +28,7 @@ import {
   type FeatureAccessDecision,
   type FeatureEntitlementMap,
 } from "../lib/entitlements";
+import { setDefaultProrationMode } from "../lib/rentHistory";
 
 type AuthUser = {
   id: string;
@@ -99,7 +100,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const workspaceFromPrefs = resolveWorkspaceIdFromAccount(
         result as unknown as { prefs?: Record<string, unknown> }
       );
-      const workspaceId = setActiveWorkspaceId(workspaceFromPrefs);
+      const workspaceId = setActiveWorkspaceId(workspaceFromPrefs) ?? "";
       const hasWorkspace = Boolean(workspaceFromPrefs);
       let role: AppRole = "viewer";
       const teamIds: string[] = [];
@@ -115,6 +116,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             COLLECTIONS.workspaces,
             workspaceId
           )) as unknown as Workspace;
+          setDefaultProrationMode(workspaceDoc?.prorationMode ?? null);
           const subscriptionResult = await databases.listDocuments(
             rcmsDatabaseId,
             COLLECTIONS.subscriptions,
@@ -171,6 +173,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           planCode = null;
           planLimits = parsePlanLimits(null);
           featureEntitlements = buildFeatureEntitlements({});
+          setDefaultProrationMode(null);
         }
       }
 
@@ -189,8 +192,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       );
       setError(null);
     } catch (err) {
+      setActiveWorkspaceId(null);
       setUser(null);
       setError(null);
+      setDefaultProrationMode(null);
     } finally {
       setLoading(false);
     }
@@ -220,6 +225,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       await account.deleteSession("current");
     } finally {
+      setActiveWorkspaceId(null);
       setUser(null);
       setLoading(false);
     }

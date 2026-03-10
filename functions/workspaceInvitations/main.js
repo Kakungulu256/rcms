@@ -798,12 +798,9 @@ export default async (context) => {
         invitedByUserId: invite.invitedByUserId ?? null,
       });
 
-      await users.updatePrefs({
-        userId: caller.$id,
-        prefs: {
-          ...(caller.prefs ?? {}),
-          workspaceId: invite.workspaceId,
-        },
+      await users.updatePrefs(caller.$id, {
+        ...(caller.prefs ?? {}),
+        workspaceId: invite.workspaceId,
       });
 
       const accepted = await databases.updateDocument(

@@ -3,12 +3,12 @@ import { ID, Query } from "appwrite";
 import { startOfMonth } from "date-fns";
 import {
   account,
-  databases,
   functions,
   listAllDocuments,
   rcmsDatabaseId,
   rcmsReceiptsBucketId,
   storage,
+  updateScopedDocument,
 } from "../../lib/appwrite";
 import { COLLECTIONS, decodeJson, PAYMENT_METHODS } from "../../lib/schema";
 import type {
@@ -36,7 +36,7 @@ import { normalizePaymentNote } from "../../lib/paymentNotes";
 import { formatDisplayDate, formatShortMonth } from "../../lib/dateDisplay";
 import { getTenantEffectiveEndDate } from "../../lib/tenancyDates";
 import { formatAmount } from "../../lib/numberFormat";
-import { getActiveWorkspaceId } from "../../lib/workspace";
+import { getRequiredActiveWorkspaceId } from "../../lib/workspace";
 
 type PreviewState = {
   form: PaymentFormValues;
@@ -501,9 +501,10 @@ export default function PaymentsPage() {
         uploadedReceipt = await uploadReceipt(selectedReceipt);
       }
       const jwt = await account.createJWT();
+      const activeWorkspaceId = getRequiredActiveWorkspaceId();
       const { parsed, latest, body } = await executeAllocationFunction({
         jwt: jwt.jwt,
-        workspaceId: getActiveWorkspaceId(),
+        workspaceId: activeWorkspaceId,
         tenantId: previewState.form.tenant,
         amount: previewState.form.amount,
         method: previewState.form.method,
@@ -591,9 +592,10 @@ export default function PaymentsPage() {
     setError(null);
     try {
       const jwt = await account.createJWT();
+      const activeWorkspaceId = getRequiredActiveWorkspaceId();
       const { parsed, latest, body } = await executeAllocationFunction({
         jwt: jwt.jwt,
-        workspaceId: getActiveWorkspaceId(),
+        workspaceId: activeWorkspaceId,
         reversePaymentId: reverseTarget.$id,
         paymentDate: new Date().toISOString().slice(0, 10),
         notes: `Reversal of ${reverseTarget.$id}`,
@@ -773,12 +775,12 @@ export default function PaymentsPage() {
         paymentUpdatePayload.receiptFileSize = null;
       }
 
-      await databases.updateDocument(
-        rcmsDatabaseId,
-        COLLECTIONS.payments,
-        editingPayment.$id,
-        paymentUpdatePayload
-      );
+      await updateScopedDocument<typeof paymentUpdatePayload>({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.payments,
+        documentId: editingPayment.$id,
+        data: paymentUpdatePayload,
+      });
 
       if (shouldDeleteOldReceipt && existingReceiptFileId) {
         try {

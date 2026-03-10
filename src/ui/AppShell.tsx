@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, NavLink, Outlet } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { isPlatformOwnerUser } from "../lib/platformOwner";
 
@@ -7,89 +7,118 @@ export default function AppShell() {
   const { user, permissions, signOut, billing, canAccessFeature } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const location = useLocation();
   const compactSidebar = collapsed && !mobileNavOpen;
   const billingLocked = billing?.accessState === "locked";
+  const billingTone = billing?.bannerTone ?? "info";
   const isPlatformOwner = isPlatformOwnerUser({
     id: user?.id || "",
     email: user?.email || "",
   });
+  const platformShell =
+    isPlatformOwner &&
+    (location.pathname.startsWith("/app/platform") || !user?.hasWorkspace);
+  const brandTitle = platformShell ? "Platform" : "Rent Collection";
+  const brandSubtitle = platformShell ? "Super admin controls" : "Operations & reporting";
+  const headerTitle = platformShell ? "Platform Administration" : "Rent Collection Management";
+  const headerSubtitle = platformShell
+    ? "Monitor subscriber workspaces and manage global billing controls."
+    : "Welcome back. Review today's collection status.";
 
-  const navItems = [
-    {
-      to: "/app",
-      label: "Dashboard",
-      visible: true,
-      end: true,
-      premium: false,
-    },
-    {
-      to: "/app/houses",
-      label: "Houses",
-      visible: permissions.canManageHouses,
-      premium: true,
-      featureKey: "houses.manage",
-    },
-    {
-      to: "/app/tenants",
-      label: "Tenants",
-      visible: permissions.canViewTenants,
-      premium: true,
-      featureKey: "tenants.view",
-    },
-    {
-      to: "/app/payments",
-      label: "Payments",
-      visible: permissions.canViewPayments,
-      premium: true,
-      featureKey: "payments.view",
-    },
-    {
-      to: "/app/security-deposits",
-      label: "Security Deposits",
-      visible: permissions.canViewReports,
-      premium: true,
-      featureKey: "security_deposits.view",
-    },
-    {
-      to: "/app/expenses",
-      label: "Expenses",
-      visible: permissions.canRecordExpenses,
-      premium: true,
-      featureKey: "expenses.manage",
-    },
-    {
-      to: "/app/migration",
-      label: "Old Records",
-      visible: permissions.canUseMigration,
-      premium: true,
-      featureKey: "migration.use",
-    },
-    {
-      to: "/app/reports",
-      label: "Reports",
-      visible: permissions.canViewReports,
-      premium: true,
-      featureKey: "reports.view",
-    },
-    {
-      to: "/app/settings",
-      label: "Settings",
-      visible: permissions.canAccessSettings,
-      premium: false,
-    },
-    {
-      to: "/app/platform",
-      label: "Platform",
-      visible: isPlatformOwner,
-      premium: false,
-    },
-    {
-      to: "/app/billing-lock",
-      label: "Billing",
-      visible: billingLocked,
-      premium: false,
-    },
-  ].filter((item) => item.visible);
+  const navItems = (
+    platformShell
+      ? [
+          {
+            to: "/app/platform",
+            label: "Platform",
+            visible: isPlatformOwner,
+            end: true,
+            premium: false,
+          },
+        ]
+      : [
+          {
+            to: "/app",
+            label: "Dashboard",
+            visible: true,
+            end: true,
+            premium: false,
+          },
+          {
+            to: "/app/houses",
+            label: "Houses",
+            visible: permissions.canManageHouses,
+            premium: true,
+            featureKey: "houses.manage",
+          },
+          {
+            to: "/app/tenants",
+            label: "Tenants",
+            visible: permissions.canViewTenants,
+            premium: true,
+            featureKey: "tenants.view",
+          },
+          {
+            to: "/app/payments",
+            label: "Payments",
+            visible: permissions.canViewPayments,
+            premium: true,
+            featureKey: "payments.view",
+          },
+          {
+            to: "/app/security-deposits",
+            label: "Security Deposits",
+            visible: permissions.canViewReports,
+            premium: true,
+            featureKey: "security_deposits.view",
+          },
+          {
+            to: "/app/expenses",
+            label: "Expenses",
+            visible: permissions.canRecordExpenses,
+            premium: true,
+            featureKey: "expenses.manage",
+          },
+          {
+            to: "/app/migration",
+            label: "Old Records",
+            visible: permissions.canUseMigration,
+            premium: true,
+            featureKey: "migration.use",
+          },
+          {
+            to: "/app/reports",
+            label: "Reports",
+            visible: permissions.canViewReports,
+            premium: true,
+            featureKey: "reports.view",
+          },
+          {
+            to: "/app/billing",
+            label: "Billing",
+            visible: permissions.canAccessSettings,
+            premium: false,
+          },
+          {
+            to: "/app/settings",
+            label: "Settings",
+            visible: permissions.canAccessSettings,
+            premium: false,
+          },
+          {
+            to: "/app/platform",
+            label: "Platform",
+            visible: isPlatformOwner,
+            premium: false,
+          },
+          {
+            to: "/app/billing-lock",
+            label: "Billing",
+            visible: billingLocked,
+            premium: false,
+          },
+        ]
+  ).filter((item) => item.visible);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
@@ -142,10 +171,10 @@ export default function AppShell() {
                 {!compactSidebar && (
                   <>
                     <h1 className="mt-2 text-xl font-semibold" style={{ color: "var(--sidebar-brand-text)" }}>
-                      Rent Collection
+                      {brandTitle}
                     </h1>
                     <p className="mt-1 text-sm" style={{ color: "var(--sidebar-brand-muted)" }}>
-                      Operations & reporting
+                      {brandSubtitle}
                     </p>
                   </>
                 )}
@@ -162,7 +191,7 @@ export default function AppShell() {
                 return (
                   <Link
                     key={item.to}
-                    to="/app/upgrade"
+                    to="/app/billing"
                     state={{ featureKey: item.featureKey, reason: decision.reason }}
                     onClick={() => setMobileNavOpen(false)}
                     className="sidebar-link block rounded-lg border border-dashed border-amber-400/60 px-3 py-2 text-amber-200 opacity-85 transition hover:opacity-100"
@@ -230,10 +259,10 @@ export default function AppShell() {
                 </button>
                 <div>
                 <h2 className="text-lg font-semibold" style={{ color: "var(--text)" }}>
-                  Rent Collection Management
+                  {headerTitle}
                 </h2>
                 <p className="mt-1 text-sm" style={{ color: "var(--muted)" }}>
-                  Welcome back. Review today's collection status.
+                  {headerSubtitle}
                 </p>
                 </div>
               </div>
@@ -249,9 +278,9 @@ export default function AppShell() {
                 </button>
               </div>
             </div>
-            {billing?.bannerTitle && billing?.bannerMessage && (
+            {!platformShell && billing?.bannerTitle && billing?.bannerMessage && (
               <div
-                className="mt-4 rounded-xl border px-4 py-3 text-sm"
+                className={`billing-banner mt-4 rounded-xl border px-4 py-3 text-sm billing-banner-${billingTone}`}
                 style={{
                   borderColor:
                     billing.bannerTone === "danger"
@@ -265,21 +294,19 @@ export default function AppShell() {
                       : billing.bannerTone === "warning"
                         ? "rgba(180, 83, 9, 0.15)"
                         : "rgba(14, 116, 144, 0.15)",
-                  color: "var(--text)",
+                  color:
+                    billing.bannerTone === "danger"
+                      ? "#f8fafc"
+                      : "#0f172a",
                 }}
               >
                 <div className="font-semibold">{billing.bannerTitle}</div>
                 <div className="mt-1 flex flex-wrap items-center justify-between gap-3">
                   <span className="text-xs md:text-sm">{billing.bannerMessage}</span>
                   <div className="flex flex-wrap items-center gap-2">
-                    <Link to="/app/upgrade" className="btn-secondary text-xs md:text-sm">
-                      View Plans
+                    <Link to="/app/billing" className="btn-secondary text-xs md:text-sm">
+                      Billing Dashboard
                     </Link>
-                    {permissions.canAccessSettings ? (
-                      <Link to="/app/settings" className="btn-secondary text-xs md:text-sm">
-                        Manage Billing
-                      </Link>
-                    ) : null}
                   </div>
                 </div>
               </div>

@@ -1,29 +1,23 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { ID, Query } from "appwrite";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   account,
-  createWorkspaceDocument,
-  databases,
   functions,
+  getScopedDocument,
   listAllDocuments,
   rcmsReceiptsBucketId,
   rcmsDatabaseId,
   storage,
+  updateScopedDocument,
 } from "../../lib/appwrite";
 import { useToast } from "../ToastContext";
 import { useAuth } from "../../auth/AuthContext";
 import { logAudit } from "../../lib/audit";
-import { getActiveWorkspaceId } from "../../lib/workspace";
-import { createBillingCheckoutSession } from "../../lib/billing";
-import { formatDisplayDate } from "../../lib/dateDisplay";
 import {
   COLLECTIONS,
-  type BillingPayment,
-  type Invoice,
-  type Plan,
-  type Subscription,
+  type ProrationMode,
   type Workspace,
   type WorkspaceMembership,
 } from "../../lib/schema";
@@ -41,8 +35,7 @@ import {
 import WorkspaceInvitationsPanel from "../settings/WorkspaceInvitationsPanel";
 
 type AppRole = "admin" | "clerk" | "viewer";
-type SettingsTab = "billing" | "branding" | "team";
-type BillingAction = "cancel" | "reactivate";
+type SettingsTab = "branding" | "team";
 
 type ManageUserSuccess = {
   ok: true;
@@ -68,12 +61,6 @@ function parseExecutionBody(response?: string) {
   } catch {
     return null;
   }
-}
-
-function formatMoney(amount: number | undefined, currency = "UGX") {
-  const value = Number(amount ?? 0);
-  if (!Number.isFinite(value)) return `0 ${currency}`;
-  return `${value.toLocaleString()} ${currency}`;
 }
 
 function getFileViewUrl(bucketId: string, fileId: string) {
@@ -130,7 +117,7 @@ async function executeManageUsersFunction(
 }
 
 export default function SettingsPage() {
-  const { user, billing, canAccessFeature, planLimits, refresh } = useAuth();
+  const { user, canAccessFeature, planLimits } = useAuth();
   const toast = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const [name, setName] = useState("");
@@ -140,19 +127,10 @@ export default function SettingsPage() {
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<ManageUserSuccess | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [plans, setPlans] = useState<Plan[]>([]);
-  const [planCode, setPlanCode] = useState("");
-  const [couponCode, setCouponCode] = useState("");
-  const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [teamMemberCount, setTeamMemberCount] = useState(0);
-  const [subscription, setSubscription] = useState<Subscription | null>(null);
-  const [invoices, setInvoices] = useState<Invoice[]>([]);
-  const [billingPayments, setBillingPayments] = useState<BillingPayment[]>([]);
-  const [billingLoading, setBillingLoading] = useState(false);
-  const [billingError, setBillingError] = useState<string | null>(null);
-  const [billingActionLoading, setBillingActionLoading] =
-    useState<BillingAction | null>(null);
   const [workspaceDoc, setWorkspaceDoc] = useState<Workspace | null>(null);
+  const [workspaceLoading, setWorkspaceLoading] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [branding, setBranding] = useState<WorkspaceBranding>(() =>
     normalizeWorkspaceBranding(null)
   );
@@ -160,47 +138,18 @@ export default function SettingsPage() {
   const [brandingLoading, setBrandingLoading] = useState(false);
   const [brandingSaving, setBrandingSaving] = useState(false);
   const [brandingFile, setBrandingFile] = useState<File | null>(null);
+  const [prorationMode, setProrationMode] = useState<ProrationMode>("actual_days");
+  const [prorationSaving, setProrationSaving] = useState(false);
 
-  const activeWorkspaceId = getActiveWorkspaceId();
+  const activeWorkspaceId = user?.hasWorkspace ? user.workspaceId : "";
   const manageUsersFunctionId = import.meta.env.VITE_MANAGE_USERS_FUNCTION_ID as
     | string
     | undefined;
   const manageUsersAccess = canAccessFeature("settings.manage_users");
   const teamMemberLimitStatus = getLimitStatus(planLimits.maxTeamMembers, teamMemberCount);
 
-  const currentTab = (searchParams.get("tab") || "billing").toLowerCase();
-  const activeTab: SettingsTab =
-    currentTab === "team" ? "team" : currentTab === "branding" ? "branding" : "billing";
-
-  const latestPayment = useMemo(() => {
-    const preferred =
-      billingPayments.find((entry) => entry.status === "succeeded") ?? null;
-    return preferred ?? billingPayments[0] ?? null;
-  }, [billingPayments]);
-
-  const selectedPlan = useMemo(
-    () => plans.find((plan) => plan.code === planCode) ?? null,
-    [plans, planCode]
-  );
-  const currentPlan = useMemo(
-    () => plans.find((plan) => plan.code === (subscription?.planCode ?? billing?.planCode)) ?? null,
-    [billing?.planCode, plans, subscription?.planCode]
-  );
-
-  const renewalDate =
-    subscription?.currentPeriodEnd ??
-    subscription?.trialEndDate ??
-    billing?.trialEndDate ??
-    null;
-
-  const canCancelSubscription = Boolean(
-    subscription &&
-      ["trialing", "active", "past_due"].includes(subscription.state) &&
-      !subscription.cancelAtPeriodEnd
-  );
-  const canReactivateSubscription = Boolean(
-    subscription && (subscription.cancelAtPeriodEnd || subscription.state === "canceled")
-  );
+  const currentTab = (searchParams.get("tab") || "branding").toLowerCase();
+  const activeTab: SettingsTab = currentTab === "team" ? "team" : "branding";
 
   const setTab = (tab: SettingsTab) => {
     const next = new URLSearchParams(searchParams);
@@ -208,38 +157,28 @@ export default function SettingsPage() {
     setSearchParams(next, { replace: true });
   };
 
-  const loadBillingData = async () => {
-    setBillingLoading(true);
-    setBillingError(null);
+  const loadWorkspaceSettings = async () => {
+    setWorkspaceLoading(true);
+    setWorkspaceError(null);
     setBrandingLoading(true);
     try {
-      const [subscriptionRows, invoiceRows, paymentRows, workspace] = await Promise.all([
-        listAllDocuments<Subscription>({
-          databaseId: rcmsDatabaseId,
-          collectionId: COLLECTIONS.subscriptions,
-          queries: [Query.orderDesc("$updatedAt")],
-        }),
-        listAllDocuments<Invoice>({
-          databaseId: rcmsDatabaseId,
-          collectionId: COLLECTIONS.invoices,
-          queries: [Query.orderDesc("$updatedAt")],
-        }),
-        listAllDocuments<BillingPayment>({
-          databaseId: rcmsDatabaseId,
-          collectionId: COLLECTIONS.paymentsBilling,
-          queries: [Query.orderDesc("$updatedAt")],
-        }),
-        databases
-          .getDocument(rcmsDatabaseId, COLLECTIONS.workspaces, activeWorkspaceId)
-          .then((doc) => doc as unknown as Workspace)
-          .catch(() => null),
-      ]);
-      const latestSubscription = subscriptionRows[0] ?? null;
-      setSubscription(latestSubscription);
-      setInvoices(invoiceRows.slice(0, 25));
-      setBillingPayments(paymentRows.slice(0, 25));
-      setPlanCode((current) => current || latestSubscription?.planCode || "");
+      const workspace = await getScopedDocument<Workspace>({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.workspaces,
+        documentId: activeWorkspaceId,
+      });
       setWorkspaceDoc(workspace);
+      const resolvedProrationMode =
+        workspace?.prorationMode === "fixed_30" ? "fixed_30" : "actual_days";
+      setProrationMode(resolvedProrationMode);
+      if (workspace && !workspace.prorationMode) {
+        updateScopedDocument({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.workspaces,
+          documentId: workspace.$id,
+          data: { prorationMode: "actual_days" },
+        }).catch(() => null);
+      }
       const normalizedBranding = normalizeWorkspaceBranding(workspace);
       setBranding(normalizedBranding);
       if (normalizedBranding.logoFileId) {
@@ -252,44 +191,17 @@ export default function SettingsPage() {
       } else {
         setBrandingPreviewUrl(null);
       }
-    } catch (loadError) {
-      setBillingError("Failed to load billing settings.");
-      setSubscription(null);
-      setInvoices([]);
-      setBillingPayments([]);
+    } catch {
+      setWorkspaceError("Failed to load workspace settings.");
       setWorkspaceDoc(null);
+      setProrationMode("actual_days");
       setBranding(normalizeWorkspaceBranding(null));
       setBrandingPreviewUrl(null);
     } finally {
-      setBillingLoading(false);
+      setWorkspaceLoading(false);
       setBrandingLoading(false);
     }
   };
-
-  useEffect(() => {
-    let active = true;
-    const loadPlans = async () => {
-      try {
-        const response = await databases.listDocuments(rcmsDatabaseId, COLLECTIONS.plans, [
-          Query.equal("isActive", [true]),
-          Query.orderAsc("sortOrder"),
-          Query.limit(20),
-        ]);
-        const docs = response.documents as unknown as Plan[];
-        if (!active) return;
-        setPlans(docs);
-        setPlanCode((current) => current || docs[0]?.code || "");
-      } catch {
-        if (active) {
-          setPlans([]);
-        }
-      }
-    };
-    void loadPlans();
-    return () => {
-      active = false;
-    };
-  }, []);
 
   useEffect(() => {
     let active = true;
@@ -315,7 +227,7 @@ export default function SettingsPage() {
   }, []);
 
   useEffect(() => {
-    void loadBillingData();
+    void loadWorkspaceSettings();
   }, []);
 
   const resetForm = () => {
@@ -325,151 +237,42 @@ export default function SettingsPage() {
     setRole("viewer");
   };
 
-  const handleStartCheckout = async (forcedPlanCode?: string) => {
-    const checkoutPlanCode = (forcedPlanCode || planCode).trim();
-    if (!checkoutPlanCode) {
-      toast.push("warning", "Select a plan before continuing.");
+  const handleSaveProrationMode = async () => {
+    if (!workspaceDoc) {
+      toast.push("warning", "Workspace record not found.");
       return;
     }
 
-    setCheckoutLoading(true);
+    setProrationSaving(true);
     try {
-      const result = await createBillingCheckoutSession({
-        workspaceId: activeWorkspaceId,
-        planCode: checkoutPlanCode,
-        couponCode: couponCode.trim() || undefined,
-      });
-      if (!result.ok) {
-        throw new Error(result.error || "Failed to start billing checkout.");
-      }
-      window.location.assign(result.checkoutUrl);
-    } catch (checkoutError) {
-      const message =
-        checkoutError instanceof Error
-          ? checkoutError.message
-          : "Failed to start billing checkout.";
-      toast.push("error", message);
-    } finally {
-      setCheckoutLoading(false);
-    }
-  };
-
-  const handleBillingAction = async (action: BillingAction) => {
-    if (!subscription) {
-      toast.push("warning", "No active subscription record found.");
-      return;
-    }
-
-    if (
-      action === "cancel" &&
-      !window.confirm(
-        "Cancel subscription at period end? Access stays until renewal date, then premium features lock."
-      )
-    ) {
-      return;
-    }
-
-    if (
-      action === "reactivate" &&
-      !window.confirm(
-        "Reactivate this subscription now and restore normal access state?"
-      )
-    ) {
-      return;
-    }
-
-    setBillingActionLoading(action);
-    try {
-      const nowIso = new Date().toISOString();
-      const previousState = subscription.state;
-      const patch =
-        action === "cancel"
-          ? {
-              state: "canceled" as const,
-              cancelAtPeriodEnd: true,
-              canceledAt: nowIso,
-              endedAt: null,
-              graceEndsAt: subscription.graceEndsAt ?? subscription.currentPeriodEnd ?? null,
-              notes: "Cancellation requested by workspace admin from settings.",
-            }
-          : {
-              state: "active" as const,
-              cancelAtPeriodEnd: false,
-              canceledAt: null,
-              endedAt: null,
-              graceEndsAt: null,
-              retryCount: 0,
-              nextRetryAt: null,
-              lastRetryAt: null,
-              dunningStage: null,
-              lastFailureReason: null,
-              notes: "Reactivated by workspace admin from settings.",
-            };
-
-      const updated = (await databases.updateDocument(
-        rcmsDatabaseId,
-        COLLECTIONS.subscriptions,
-        subscription.$id,
-        patch
-      )) as unknown as Subscription;
-
-      await databases
-        .updateDocument(rcmsDatabaseId, COLLECTIONS.workspaces, activeWorkspaceId, {
-          subscriptionState: updated.state,
-        })
-        .catch(() => null);
-
-      await createWorkspaceDocument({
+      const updated = await updateScopedDocument<{ prorationMode: ProrationMode }, Workspace>({
         databaseId: rcmsDatabaseId,
-        collectionId: COLLECTIONS.subscriptionEvents,
+        collectionId: COLLECTIONS.workspaces,
+        documentId: workspaceDoc.$id,
         data: {
-          subscriptionId: updated.$id,
-          eventType:
-            action === "cancel"
-              ? "subscription_cancel_requested"
-              : "subscription_reactivated",
-          eventSource: "settings_ui",
-          eventTime: nowIso,
-          stateFrom: previousState,
-          stateTo: updated.state,
-          idempotencyKey: `settings_${action}_${updated.$id}_${Date.now()}`,
-          payloadJson: JSON.stringify({ action, actorUserId: user?.id ?? null }),
-          actorUserId: user?.id ?? null,
-          reference: updated.$id,
+          prorationMode,
         },
-      }).catch(() => null);
-
+      });
+      setWorkspaceDoc(updated);
       if (user) {
         void logAudit({
-          entityType: "subscription",
-          entityId: updated.$id,
+          entityType: "workspace_proration",
+          entityId: workspaceDoc.$id,
           action: "update",
           actorId: user.id,
           details: {
-            action,
-            previousState,
-            nextState: updated.state,
-            cancelAtPeriodEnd: updated.cancelAtPeriodEnd ?? false,
+            prorationMode,
           },
         });
       }
-
+      toast.push("success", "Proration policy updated.");
+    } catch (saveError) {
       toast.push(
-        "success",
-        action === "cancel"
-          ? "Subscription marked to cancel at period end."
-          : "Subscription reactivated."
+        "error",
+        saveError instanceof Error ? saveError.message : "Failed to update proration policy."
       );
-      await loadBillingData();
-      await refresh();
-    } catch (actionError) {
-      const message =
-        actionError instanceof Error
-          ? actionError.message
-          : "Failed to update subscription.";
-      toast.push("error", message);
     } finally {
-      setBillingActionLoading(null);
+      setProrationSaving(false);
     }
   };
 
@@ -517,12 +320,12 @@ export default function SettingsPage() {
         wmScale: clampWatermarkScale(branding.wmScale),
       };
 
-      const updatedWorkspace = (await databases.updateDocument(
-        rcmsDatabaseId,
-        COLLECTIONS.workspaces,
-        workspaceDoc.$id,
-        payload
-      )) as unknown as Workspace;
+      const updatedWorkspace = await updateScopedDocument<typeof payload, Workspace>({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.workspaces,
+        documentId: workspaceDoc.$id,
+        data: payload,
+      });
 
       if (
         previousLogoFileId &&
@@ -586,17 +389,17 @@ export default function SettingsPage() {
 
     setBrandingSaving(true);
     try {
-      await databases.updateDocument(
-        rcmsDatabaseId,
-        COLLECTIONS.workspaces,
-        workspaceDoc.$id,
-        {
+      await updateScopedDocument({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.workspaces,
+        documentId: workspaceDoc.$id,
+        data: {
           logoFileId: null,
           logoBucketId: null,
           logoFileName: null,
           wmEnabled: false,
-        }
-      );
+        },
+      });
       await storage
         .deleteFile(
           workspaceDoc.logoBucketId || rcmsReceiptsBucketId,
@@ -713,28 +516,80 @@ export default function SettingsPage() {
         <div className="text-xs uppercase tracking-[0.35em] text-slate-500">Settings</div>
         <h3 className="mt-3 text-2xl font-semibold text-white">Workspace Settings</h3>
         <p className="mt-2 text-sm text-slate-400">
-          Manage billing lifecycle and team permissions.
+          Manage workspace policies, branding, and team permissions.
         </p>
       </header>
+
+      <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold text-slate-100">Workspace Policies</div>
+            <p className="mt-1 text-xs text-slate-400">
+              Billing is managed in the Billing Dashboard. Configure proration here.
+            </p>
+          </div>
+          <Link to="/app/billing" className="btn-secondary text-sm">
+            Open Billing Dashboard
+          </Link>
+        </div>
+
+        {workspaceError ? (
+          <div className="mt-4 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+            {workspaceError}
+          </div>
+        ) : null}
+
+        <div className="mt-5 rounded-xl border border-slate-700 bg-slate-900/40 p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold text-slate-100">
+            Rent Proration Policy
+            <span
+              className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-600 text-[11px] text-slate-300"
+              title="Actual days: prorate using the calendar month length. Fixed 30: prorate using 30 days regardless of the month."
+              aria-label="Proration help"
+            >
+              ?
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-slate-400">
+            Proration applies only for the move-in month. Move-out months are billed
+            at the full monthly rent. Prorated amounts are rounded to the nearest 1,000.
+          </p>
+          <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto]">
+            <label className="block text-sm text-slate-300">
+              Move-in Proration Mode
+              <select
+                value={prorationMode}
+                onChange={(event) =>
+                  setProrationMode(
+                    event.target.value === "fixed_30" ? "fixed_30" : "actual_days"
+                  )
+                }
+                className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                disabled={prorationSaving || workspaceLoading}
+              >
+                <option value="actual_days">Actual days in month</option>
+                <option value="fixed_30">Fixed 30 days</option>
+              </select>
+            </label>
+            <div className="flex items-end">
+              <button
+                type="button"
+                onClick={handleSaveProrationMode}
+                disabled={prorationSaving || workspaceLoading}
+                className="btn-secondary text-sm disabled:opacity-60"
+              >
+                {prorationSaving ? "Saving..." : "Save Policy"}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <div
         className="rounded-2xl border p-2"
         style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
       >
         <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => setTab("billing")}
-            className={[
-              "rounded-xl px-4 py-2 text-sm transition",
-              activeTab === "billing"
-                ? "bg-blue-600 text-white"
-                : "border text-slate-300 hover:bg-slate-900/50",
-            ].join(" ")}
-            style={activeTab === "billing" ? undefined : { borderColor: "var(--border)" }}
-          >
-            Billing
-          </button>
           <button
             type="button"
             onClick={() => setTab("branding")}
@@ -763,203 +618,6 @@ export default function SettingsPage() {
           </button>
         </div>
       </div>
-
-      {activeTab === "billing" && (
-        <div className="space-y-6">
-          <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6">
-            <div className="text-sm font-semibold text-slate-100">Billing Lifecycle</div>
-            <p className="mt-2 text-xs text-slate-400">
-              Track plan, renewal date, invoices, and payment status.
-            </p>
-
-            <div className="mt-4 grid gap-4 md:grid-cols-4">
-              <div className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">
-                <div className="text-xs uppercase tracking-[0.2em] text-slate-500">State</div>
-                <div className="mt-2 text-lg font-semibold text-slate-100">
-                  {billing?.effectiveState || billing?.state || "unknown"}
-                </div>
-              </div>
-              <div className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">
-                <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Current Plan</div>
-                <div className="mt-2 text-lg font-semibold text-slate-100">
-                  {(subscription?.planCode || billing?.planCode || "Not set").toUpperCase()}
-                </div>
-              </div>
-              <div className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">
-                <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Renewal Date</div>
-                <div className="mt-2 text-lg font-semibold text-slate-100">
-                  {formatDisplayDate(renewalDate)}
-                </div>
-              </div>
-              <div className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">
-                <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Payment Method</div>
-                <div className="mt-2 text-lg font-semibold text-slate-100">
-                  {(latestPayment?.provider || "Not set").toUpperCase()}
-                </div>
-                <div className="mt-1 text-xs text-slate-400">
-                  Ref: {latestPayment?.providerReference || latestPayment?.providerPaymentId || "--"}
-                </div>
-              </div>
-            </div>
-
-            {billing?.bannerTitle && billing?.bannerMessage ? (
-              <div
-                className="mt-4 rounded-xl border px-4 py-3 text-sm"
-                style={{
-                  borderColor:
-                    billing.bannerTone === "danger"
-                      ? "rgba(244,63,94,0.4)"
-                      : billing.bannerTone === "warning"
-                        ? "rgba(251,191,36,0.4)"
-                        : "rgba(56,189,248,0.4)",
-                  backgroundColor:
-                    billing.bannerTone === "danger"
-                      ? "rgba(190,24,93,0.15)"
-                      : billing.bannerTone === "warning"
-                        ? "rgba(180,83,9,0.15)"
-                        : "rgba(14,116,144,0.15)",
-                  color: "var(--text)",
-                }}
-              >
-                <div className="font-semibold">{billing.bannerTitle}</div>
-                <div className="mt-1 text-xs text-slate-100/90">{billing.bannerMessage}</div>
-              </div>
-            ) : null}
-
-            {billingError ? (
-              <div className="mt-4 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
-                {billingError}
-              </div>
-            ) : null}
-
-            <div className="mt-5 grid gap-4 md:grid-cols-3">
-              <label className="block text-sm text-slate-300">
-                Plan
-                <select
-                  value={planCode}
-                  onChange={(event) => setPlanCode(event.target.value)}
-                  className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
-                  disabled={billingLoading || plans.length === 0}
-                >
-                  {plans.length === 0 ? <option value="">No active plans</option> : null}
-                  {plans.map((plan) => (
-                    <option key={plan.$id} value={plan.code}>
-                      {plan.name} ({Number(plan.priceAmount ?? 0).toLocaleString()} {plan.currency})
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="block text-sm text-slate-300">
-                Coupon (optional)
-                <input
-                  value={couponCode}
-                  onChange={(event) => setCouponCode(event.target.value.toUpperCase())}
-                  className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
-                  placeholder="DISCOUNT10"
-                  disabled={billingLoading}
-                />
-              </label>
-              <div className="flex items-end">
-                <button
-                  type="button"
-                  onClick={() => handleStartCheckout()}
-                  disabled={checkoutLoading || !planCode || billingLoading}
-                  className="btn-primary w-full text-sm disabled:opacity-60"
-                >
-                  {checkoutLoading
-                    ? "Starting checkout..."
-                    : planCode && currentPlan && selectedPlan && selectedPlan.code !== currentPlan.code
-                      ? selectedPlan.priceAmount >= currentPlan.priceAmount
-                        ? "Upgrade Plan"
-                        : "Downgrade Plan"
-                      : "Pay / Renew Plan"}
-                </button>
-              </div>
-            </div>
-
-            <div className="mt-5 flex flex-wrap gap-3">
-              <button
-                type="button"
-                onClick={() => handleStartCheckout(subscription?.planCode || billing?.planCode || planCode)}
-                disabled={checkoutLoading || billingLoading || !(subscription?.planCode || billing?.planCode || planCode)}
-                className="btn-secondary text-sm disabled:opacity-60"
-              >
-                Update Payment Method
-              </button>
-              <button
-                type="button"
-                onClick={() => handleBillingAction("cancel")}
-                disabled={!canCancelSubscription || billingActionLoading != null}
-                className="btn-danger text-sm disabled:opacity-60"
-              >
-                {billingActionLoading === "cancel"
-                  ? "Cancelling..."
-                  : "Cancel at Period End"}
-              </button>
-              <button
-                type="button"
-                onClick={() => handleBillingAction("reactivate")}
-                disabled={!canReactivateSubscription || billingActionLoading != null}
-                className="btn-secondary text-sm disabled:opacity-60"
-              >
-                {billingActionLoading === "reactivate"
-                  ? "Reactivating..."
-                  : "Reactivate Subscription"}
-              </button>
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6">
-            <div className="text-sm font-semibold text-slate-100">Invoice History</div>
-            <p className="mt-2 text-xs text-slate-500">
-              Latest invoices for this workspace subscription.
-            </p>
-            <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-800">
-              <table className="min-w-[980px] w-full text-left text-sm text-slate-300">
-                <thead className="text-xs text-slate-500" style={{ backgroundColor: "var(--surface-strong)" }}>
-                  <tr>
-                    <th className="px-4 py-3">Invoice No.</th>
-                    <th className="px-4 py-3">Status</th>
-                    <th className="px-4 py-3">Total</th>
-                    <th className="px-4 py-3">Amount Due</th>
-                    <th className="px-4 py-3">Issued</th>
-                    <th className="px-4 py-3">Due</th>
-                    <th className="px-4 py-3">Paid</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {invoices.map((invoice) => (
-                    <tr
-                      key={invoice.$id}
-                      className="border-t odd:bg-slate-950/30"
-                      style={{ borderColor: "var(--border)" }}
-                    >
-                      <td className="px-4 py-3 text-slate-100">{invoice.invoiceNumber}</td>
-                      <td className="px-4 py-3">{invoice.status}</td>
-                      <td className="amount px-4 py-3">
-                        {formatMoney(invoice.totalAmount, invoice.currency)}
-                      </td>
-                      <td className="amount px-4 py-3">
-                        {formatMoney(invoice.amountDue, invoice.currency)}
-                      </td>
-                      <td className="px-4 py-3">{formatDisplayDate(invoice.issuedAt)}</td>
-                      <td className="px-4 py-3">{formatDisplayDate(invoice.dueDate)}</td>
-                      <td className="px-4 py-3">{formatDisplayDate(invoice.paidAt)}</td>
-                    </tr>
-                  ))}
-                  {invoices.length === 0 && (
-                    <tr>
-                      <td className="px-4 py-4 text-slate-500" colSpan={7}>
-                        No invoices yet for this workspace.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
 
       {activeTab === "branding" && (
         <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6">
@@ -1172,8 +830,8 @@ export default function SettingsPage() {
                 ? " (limit reached - upgrade to add more users)"
                 : ""}
               {teamMemberLimitStatus.reached ? (
-                <Link to="/app/upgrade" className="ml-2 underline">
-                  Upgrade Plan
+                <Link to="/app/billing" className="ml-2 underline">
+                  Open Billing
                 </Link>
               ) : null}
             </div>
@@ -1183,8 +841,8 @@ export default function SettingsPage() {
               {manageUsersAccess.reason ||
                 "User management is locked on your current plan. Upgrade to continue."}
               <div className="mt-2">
-                <Link to="/app/upgrade" className="underline">
-                  View plans and upgrade
+                <Link to="/app/billing" className="underline">
+                  Open Billing Dashboard
                 </Link>
               </div>
             </div>

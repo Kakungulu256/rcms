@@ -1,6 +1,6 @@
 import { createBrowserRouter, Navigate } from "react-router-dom";
 import AppShell from "./ui/AppShell";
-import DashboardPage from "./ui/pages/DashboardPage";
+import AppIndexPage from "./ui/pages/AppIndexPage";
 import ExpensesPage from "./ui/pages/ExpensesPage";
 import HousesPage from "./ui/pages/HousesPage";
 import LandingPage from "./ui/pages/LandingPage";
@@ -14,12 +14,13 @@ import SecurityDepositsPage from "./ui/pages/SecurityDepositsPage";
 import SettingsPage from "./ui/pages/SettingsPage";
 import SignupPage from "./ui/pages/SignupPage";
 import TenantsPage from "./ui/pages/TenantsPage";
-import UpgradePage from "./ui/pages/UpgradePage";
+import BillingDashboardPage from "./ui/pages/BillingDashboardPage";
 import RequireAuth from "./auth/RequireAuth";
 import RequireBillingAccess from "./auth/RequireBillingAccess";
 import RequireFeature from "./auth/RequireFeature";
 import RequireRole from "./auth/RequireRole";
 import RequirePlatformOwner from "./auth/RequirePlatformOwner";
+import RequireWorkspace from "./auth/RequireWorkspace";
 import BillingLockedPage from "./ui/pages/BillingLockedPage";
 import PlatformOwnerPage from "./ui/pages/PlatformOwnerPage";
 
@@ -45,97 +46,137 @@ export const router = createBrowserRouter([
       </RequireAuth>
     ),
     children: [
-      { index: true, element: <DashboardPage /> },
+      { index: true, element: <AppIndexPage /> },
       {
         path: "houses",
         element: (
-          <RequireFeature featureKey="houses.manage">
-            <RequireBillingAccess>
-              <RequireRole allow={["admin", "clerk"]}>
-                <HousesPage />
-              </RequireRole>
-            </RequireBillingAccess>
-          </RequireFeature>
+          <RequireWorkspace>
+            <RequireFeature featureKey="houses.manage">
+              <RequireBillingAccess>
+                <RequireRole allow={["admin", "clerk"]}>
+                  <HousesPage />
+                </RequireRole>
+              </RequireBillingAccess>
+            </RequireFeature>
+          </RequireWorkspace>
         ),
       },
       {
         path: "tenants",
         element: (
-          <RequireFeature featureKey="tenants.view">
-            <RequireBillingAccess>
-              <RequireRole allow={["admin", "clerk", "viewer"]}>
-                <TenantsPage />
-              </RequireRole>
-            </RequireBillingAccess>
-          </RequireFeature>
+          <RequireWorkspace>
+            <RequireFeature featureKey="tenants.view">
+              <RequireBillingAccess>
+                <RequireRole allow={["admin", "clerk", "viewer"]}>
+                  <TenantsPage />
+                </RequireRole>
+              </RequireBillingAccess>
+            </RequireFeature>
+          </RequireWorkspace>
         ),
       },
       {
         path: "payments",
         element: (
-          <RequireFeature featureKey="payments.view">
-            <RequireBillingAccess>
-              <RequireRole allow={["admin", "clerk", "viewer"]}>
-                <PaymentsPage />
-              </RequireRole>
-            </RequireBillingAccess>
-          </RequireFeature>
+          <RequireWorkspace>
+            <RequireFeature featureKey="payments.view">
+              <RequireBillingAccess>
+                <RequireRole allow={["admin", "clerk", "viewer"]}>
+                  <PaymentsPage />
+                </RequireRole>
+              </RequireBillingAccess>
+            </RequireFeature>
+          </RequireWorkspace>
         ),
       },
       {
         path: "expenses",
         element: (
-          <RequireFeature featureKey="expenses.manage">
-            <RequireBillingAccess>
-              <RequireRole allow={["admin", "clerk"]}>
-                <ExpensesPage />
-              </RequireRole>
-            </RequireBillingAccess>
-          </RequireFeature>
+          <RequireWorkspace>
+            <RequireFeature featureKey="expenses.manage">
+              <RequireBillingAccess>
+                <RequireRole allow={["admin", "clerk"]}>
+                  <ExpensesPage />
+                </RequireRole>
+              </RequireBillingAccess>
+            </RequireFeature>
+          </RequireWorkspace>
         ),
       },
       {
         path: "migration",
         element: (
-          <RequireFeature featureKey="migration.use">
-            <RequireBillingAccess>
-              <RequireRole allow={["admin", "clerk"]}>
-                <MigrationPage />
-              </RequireRole>
-            </RequireBillingAccess>
-          </RequireFeature>
+          <RequireWorkspace>
+            <RequireFeature featureKey="migration.use">
+              <RequireBillingAccess>
+                <RequireRole allow={["admin", "clerk"]}>
+                  <MigrationPage />
+                </RequireRole>
+              </RequireBillingAccess>
+            </RequireFeature>
+          </RequireWorkspace>
         ),
       },
       {
         path: "reports",
         element: (
-          <RequireFeature featureKey="reports.view">
-            <RequireBillingAccess>
-              <ReportsPage />
-            </RequireBillingAccess>
-          </RequireFeature>
+          <RequireWorkspace>
+            <RequireFeature featureKey="reports.view">
+              <RequireBillingAccess>
+                <ReportsPage />
+              </RequireBillingAccess>
+            </RequireFeature>
+          </RequireWorkspace>
         ),
       },
       {
         path: "security-deposits",
         element: (
-          <RequireFeature featureKey="security_deposits.view">
-            <RequireBillingAccess>
-              <RequireRole allow={["admin", "clerk", "viewer"]}>
-                <SecurityDepositsPage />
-              </RequireRole>
-            </RequireBillingAccess>
-          </RequireFeature>
+          <RequireWorkspace>
+            <RequireFeature featureKey="security_deposits.view">
+              <RequireBillingAccess>
+                <RequireRole allow={["admin", "clerk", "viewer"]}>
+                  <SecurityDepositsPage />
+                </RequireRole>
+              </RequireBillingAccess>
+            </RequireFeature>
+          </RequireWorkspace>
         ),
       },
-      { path: "upgrade", element: <UpgradePage /> },
-      { path: "billing-lock", element: <BillingLockedPage /> },
+      {
+        path: "billing",
+        element: (
+          <RequireWorkspace>
+            <RequireRole allow={["admin"]}>
+              <BillingDashboardPage />
+            </RequireRole>
+          </RequireWorkspace>
+        ),
+      },
+      {
+        path: "upgrade",
+        element: (
+          <RequireWorkspace>
+            <Navigate to="/app/billing" replace />
+          </RequireWorkspace>
+        ),
+      },
+      {
+        path: "billing-lock",
+        element: (
+          <RequireWorkspace>
+            <BillingLockedPage />
+          </RequireWorkspace>
+        ),
+      },
       {
         path: "settings",
         element: (
-          <RequireRole allow={["admin"]}>
-            <SettingsPage />
-          </RequireRole>
+          <RequireWorkspace>
+            <RequireRole allow={["admin"]}>
+              <SettingsPage />
+            </RequireRole>
+          </RequireWorkspace>
         ),
       },
       {

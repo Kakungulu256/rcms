@@ -6,11 +6,12 @@ import Modal from "../Modal";
 import TypeaheadSearch from "../TypeaheadSearch";
 import {
   createWorkspaceDocument,
-  databases,
+  deleteScopedDocument,
   listAllDocuments,
   rcmsDatabaseId,
   rcmsReceiptsBucketId,
   storage,
+  updateScopedDocument,
 } from "../../lib/appwrite";
 import { COLLECTIONS } from "../../lib/schema";
 import type {
@@ -201,11 +202,11 @@ export default function ExpensesPage() {
     if (!shouldLinkDeduction) {
       await Promise.all(
         existing.map((record) =>
-          databases.deleteDocument(
-            rcmsDatabaseId,
-            COLLECTIONS.securityDepositDeductions,
-            record.$id
-          )
+          deleteScopedDocument({
+            databaseId: rcmsDatabaseId,
+            collectionId: COLLECTIONS.securityDepositDeductions,
+            documentId: record.$id,
+          })
         )
       );
       return;
@@ -219,11 +220,11 @@ export default function ExpensesPage() {
     if (!occupyingTenant) {
       await Promise.all(
         existing.map((record) =>
-          databases.deleteDocument(
-            rcmsDatabaseId,
-            COLLECTIONS.securityDepositDeductions,
-            record.$id
-          )
+          deleteScopedDocument({
+            databaseId: rcmsDatabaseId,
+            collectionId: COLLECTIONS.securityDepositDeductions,
+            documentId: record.$id,
+          })
         )
       );
       throw new Error(
@@ -244,20 +245,20 @@ export default function ExpensesPage() {
     };
 
     if (existingRecord) {
-      await databases.updateDocument(
-        rcmsDatabaseId,
-        COLLECTIONS.securityDepositDeductions,
-        existingRecord.$id,
-        deductionPayload
-      );
+      await updateScopedDocument<typeof deductionPayload>({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.securityDepositDeductions,
+        documentId: existingRecord.$id,
+        data: deductionPayload,
+      });
       if (existing.length > 1) {
         await Promise.all(
           existing.slice(1).map((record) =>
-            databases.deleteDocument(
-              rcmsDatabaseId,
-              COLLECTIONS.securityDepositDeductions,
-              record.$id
-            )
+            deleteScopedDocument({
+              databaseId: rcmsDatabaseId,
+              collectionId: COLLECTIONS.securityDepositDeductions,
+              documentId: record.$id,
+            })
           )
         );
       }
@@ -324,12 +325,12 @@ export default function ExpensesPage() {
           : shouldRemoveCurrentReceipt
             ? "removed"
             : "unchanged";
-        const updated = await databases.updateDocument(
-          rcmsDatabaseId,
-          COLLECTIONS.expenses,
-          editingExpense.$id,
-          payload
-        );
+        const updated = await updateScopedDocument<typeof payload, Expense>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.expenses,
+          documentId: editingExpense.$id,
+          data: payload,
+        });
         savedExpense = updated as unknown as Expense;
         setExpenses((prev) =>
           prev.map((expense) =>

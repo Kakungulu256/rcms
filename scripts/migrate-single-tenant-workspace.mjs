@@ -387,10 +387,7 @@ async function migrateUsersToWorkspace({
       if (config.dryRun) {
         console.log(`[dry-run] would set user prefs workspaceId for ${email || userId}`);
       } else {
-        await users.updatePrefs({
-          userId,
-          prefs: mergePrefs(user.prefs, workspaceId),
-        });
+        await users.updatePrefs(userId, mergePrefs(user.prefs, workspaceId));
       }
       summary.updatedPrefs += 1;
     }

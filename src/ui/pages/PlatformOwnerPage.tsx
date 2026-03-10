@@ -8,6 +8,7 @@ import { useToast } from "../ToastContext";
 import { logAudit } from "../../lib/audit";
 import { formatDisplayDate } from "../../lib/dateDisplay";
 import { getPlatformOwnerConfigSummary } from "../../lib/platformOwner";
+import TypeaheadMultiSelect from "../TypeaheadMultiSelect";
 import {
   COLLECTIONS,
   decodeJson,
@@ -24,10 +25,35 @@ import {
 type StateCount = Record<SubscriptionState, number>;
 
 type PlanDraft = {
+  name: string;
   priceAmount: string;
   trialDays: string;
   isActive: boolean;
   saving: boolean;
+};
+
+type PlanCreateForm = {
+  name: string;
+  code: string;
+  currency: string;
+  priceAmount: string;
+  trialDays: string;
+  isActive: boolean;
+  sortOrder: string;
+  limitsJson: string;
+  saving: boolean;
+};
+
+const EMPTY_PLAN_CREATE: PlanCreateForm = {
+  name: "",
+  code: "",
+  currency: "UGX",
+  priceAmount: "",
+  trialDays: "",
+  isActive: true,
+  sortOrder: "",
+  limitsJson: "",
+  saving: false,
 };
 
 type CouponFormState = {
@@ -166,6 +192,9 @@ export default function PlatformOwnerPage() {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [coupons, setCoupons] = useState<Coupon[]>([]);
   const [planDrafts, setPlanDrafts] = useState<Record<string, PlanDraft>>({});
+  const [planCreateForm, setPlanCreateForm] = useState<PlanCreateForm>({
+    ...EMPTY_PLAN_CREATE,
+  });
   const [couponForm, setCouponForm] = useState<CouponFormState>({ ...EMPTY_COUPON_FORM });
   const [editingCouponId, setEditingCouponId] = useState<string | null>(null);
 
@@ -241,12 +270,35 @@ export default function PlatformOwnerPage() {
     void loadData();
   }, []);
 
+  const planOptions = useMemo(
+    () =>
+      [...plans]
+        .map((plan) => {
+          const code = String(plan.code ?? "").trim().toLowerCase();
+          return {
+            id: code,
+            label: String(plan.name ?? "").trim() || code,
+            description: code ? `Code: ${code}` : undefined,
+            keywords: code,
+          };
+        })
+        .filter((plan) => plan.id.length > 0)
+        .sort((left, right) => left.label.localeCompare(right.label)),
+    [plans]
+  );
+
+  const selectedCouponPlanCodes = useMemo(
+    () => parsePlanCodesCsv(couponForm.appliesToPlanCodesCsv),
+    [couponForm.appliesToPlanCodesCsv]
+  );
+
   useEffect(() => {
     setPlanDrafts((current) => {
       const next: Record<string, PlanDraft> = {};
       plans.forEach((plan) => {
         const existing = current[plan.$id];
         next[plan.$id] = {
+          name: existing?.name ?? plan.name ?? "",
           priceAmount: existing?.priceAmount ?? String(Number(plan.priceAmount ?? 0)),
           trialDays: existing?.trialDays ?? String(Math.max(0, Number(plan.trialDays ?? 0))),
           isActive: existing?.isActive ?? Boolean(plan.isActive),
@@ -367,6 +419,12 @@ export default function PlatformOwnerPage() {
     const draft = planDrafts[plan.$id];
     if (!draft || !user) return;
 
+    const planName = draft.name.trim();
+    if (!planName) {
+      toast.push("warning", "Plan name is required.");
+      return;
+    }
+
     const priceAmount = parseNumberInput(draft.priceAmount);
     if (priceAmount == null || priceAmount < 0) {
       toast.push("warning", "Plan price must be a number greater than or equal to 0.");
@@ -389,26 +447,30 @@ export default function PlatformOwnerPage() {
 
     try {
       await databases.updateDocument(rcmsDatabaseId, COLLECTIONS.plans, plan.$id, {
+        name: planName,
         priceAmount,
         trialDays: Math.floor(trialDaysInput),
         isActive: draft.isActive,
       });
 
-      await logAudit({
-        workspaceId: user.workspaceId,
-        entityType: "platform_plan",
-        entityId: plan.$id,
-        action: "update",
-        actorId: user.id,
-        details: {
-          code: plan.code,
-          next: {
-            priceAmount,
-            trialDays: Math.floor(trialDaysInput),
-            isActive: draft.isActive,
+      if (user.workspaceId) {
+        await logAudit({
+          workspaceId: user.workspaceId,
+          entityType: "platform_plan",
+          entityId: plan.$id,
+          action: "update",
+          actorId: user.id,
+          details: {
+            code: plan.code,
+            next: {
+              name: planName,
+              priceAmount,
+              trialDays: Math.floor(trialDaysInput),
+              isActive: draft.isActive,
+            },
           },
-        },
-      });
+        });
+      }
 
       toast.push("success", `Plan ${plan.code.toUpperCase()} updated.`);
       await loadData();
@@ -424,6 +486,103 @@ export default function PlatformOwnerPage() {
           saving: false,
         },
       }));
+    }
+  };
+
+  const handleCreatePlan = async () => {
+    if (!user) return;
+    const name = planCreateForm.name.trim();
+    const code = planCreateForm.code.trim().toLowerCase();
+    const currency = planCreateForm.currency.trim().toUpperCase();
+
+    if (!name) {
+      toast.push("warning", "Plan name is required.");
+      return;
+    }
+    if (!code) {
+      toast.push("warning", "Plan code is required.");
+      return;
+    }
+    if (!currency) {
+      toast.push("warning", "Currency is required.");
+      return;
+    }
+    if (plans.some((plan) => plan.code?.toLowerCase() === code)) {
+      toast.push("warning", `Plan code "${code}" already exists.`);
+      return;
+    }
+
+    const priceAmount = parseNumberInput(planCreateForm.priceAmount);
+    if (priceAmount == null || priceAmount < 0) {
+      toast.push("warning", "Plan price must be a number greater than or equal to 0.");
+      return;
+    }
+
+    const trialDaysInput = parseNumberInput(planCreateForm.trialDays);
+    if (trialDaysInput == null || trialDaysInput < 0) {
+      toast.push("warning", "Trial days must be a number greater than or equal to 0.");
+      return;
+    }
+
+    const sortOrderInput = parseNumberInput(planCreateForm.sortOrder);
+    const limitsJsonRaw = planCreateForm.limitsJson.trim();
+    let limitsJson: string | null = null;
+    if (limitsJsonRaw) {
+      try {
+        const parsed = JSON.parse(limitsJsonRaw);
+        if (!parsed || typeof parsed !== "object") {
+          throw new Error("Limits JSON must be an object.");
+        }
+        limitsJson = JSON.stringify(parsed);
+      } catch (error) {
+        toast.push(
+          "warning",
+          error instanceof Error ? error.message : "Limits JSON is invalid."
+        );
+        return;
+      }
+    }
+
+    setPlanCreateForm((current) => ({ ...current, saving: true }));
+    try {
+      await databases.createDocument(rcmsDatabaseId, COLLECTIONS.plans, ID.unique(), {
+        code,
+        name,
+        currency,
+        priceAmount,
+        trialDays: Math.floor(trialDaysInput),
+        isActive: planCreateForm.isActive,
+        sortOrder: sortOrderInput != null ? Math.floor(sortOrderInput) : null,
+        limitsJson,
+      });
+
+      if (user.workspaceId) {
+        await logAudit({
+          workspaceId: user.workspaceId,
+          entityType: "platform_plan",
+          entityId: code,
+          action: "create",
+          actorId: user.id,
+          details: {
+            code,
+            name,
+            currency,
+            priceAmount,
+            trialDays: Math.floor(trialDaysInput),
+            isActive: planCreateForm.isActive,
+          },
+        });
+      }
+
+      toast.push("success", `Plan ${code.toUpperCase()} created.`);
+      setPlanCreateForm({ ...EMPTY_PLAN_CREATE });
+      await loadData();
+    } catch (error) {
+      toast.push(
+        "error",
+        error instanceof Error ? error.message : "Failed to create plan."
+      );
+      setPlanCreateForm((current) => ({ ...current, saving: false }));
     }
   };
 
@@ -498,19 +657,21 @@ export default function PlatformOwnerPage() {
         });
       }
 
-      await logAudit({
-        workspaceId: user.workspaceId,
-        entityType: "platform_coupon",
-        entityId: editingCouponId ?? normalizedCode,
-        action: editingCouponId ? "update" : "create",
-        actorId: user.id,
-        details: {
-          code: normalizedCode,
-          discountPercent: Number(discountPercent.toFixed(2)),
-          targetPlanCodes,
-          isActive: couponForm.isActive,
-        },
-      });
+      if (user.workspaceId) {
+        await logAudit({
+          workspaceId: user.workspaceId,
+          entityType: "platform_coupon",
+          entityId: editingCouponId ?? normalizedCode,
+          action: editingCouponId ? "update" : "create",
+          actorId: user.id,
+          details: {
+            code: normalizedCode,
+            discountPercent: Number(discountPercent.toFixed(2)),
+            targetPlanCodes,
+            isActive: couponForm.isActive,
+          },
+        });
+      }
 
       toast.push(
         "success",
@@ -539,18 +700,20 @@ export default function PlatformOwnerPage() {
         isActive: !coupon.isActive,
       });
 
-      await logAudit({
-        workspaceId: user.workspaceId,
-        entityType: "platform_coupon",
-        entityId: coupon.$id,
-        action: "update",
-        actorId: user.id,
-        details: {
-          code: coupon.code,
-          previousActive: Boolean(coupon.isActive),
-          nextActive: !coupon.isActive,
-        },
-      });
+      if (user.workspaceId) {
+        await logAudit({
+          workspaceId: user.workspaceId,
+          entityType: "platform_coupon",
+          entityId: coupon.$id,
+          action: "update",
+          actorId: user.id,
+          details: {
+            code: coupon.code,
+            previousActive: Boolean(coupon.isActive),
+            nextActive: !coupon.isActive,
+          },
+        });
+      }
 
       toast.push(
         "success",
@@ -759,7 +922,15 @@ export default function PlatformOwnerPage() {
                 const draft = planDrafts[plan.$id];
                 return (
                   <tr key={plan.$id} className="border-t odd:bg-slate-950/30" style={{ borderColor: "var(--border)" }}>
-                    <td className="px-4 py-3 font-semibold text-slate-100">{plan.name}</td>
+                    <td className="px-4 py-3">
+                      <input
+                        value={draft?.name ?? plan.name ?? ""}
+                        onChange={(event) =>
+                          handlePlanDraftChange(plan.$id, "name", event.target.value)
+                        }
+                        className="input-base w-full rounded-md px-3 py-2 text-sm"
+                      />
+                    </td>
                     <td className="px-4 py-3">{plan.code}</td>
                     <td className="px-4 py-3">{plan.currency}</td>
                     <td className="px-4 py-3">
@@ -807,6 +978,135 @@ export default function PlatformOwnerPage() {
               })}
             </tbody>
           </table>
+        </div>
+
+        <div className="mt-6 rounded-xl border p-4" style={{ borderColor: "var(--border)" }}>
+          <div className="text-xs uppercase tracking-[0.18em] text-slate-500">Create Plan</div>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="block text-sm text-slate-300">
+              Plan Name
+              <input
+                value={planCreateForm.name}
+                onChange={(event) =>
+                  setPlanCreateForm((current) => ({ ...current, name: event.target.value }))
+                }
+                className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                placeholder="Starter"
+              />
+            </label>
+            <label className="block text-sm text-slate-300">
+              Plan Code
+              <input
+                value={planCreateForm.code}
+                onChange={(event) =>
+                  setPlanCreateForm((current) => ({
+                    ...current,
+                    code: event.target.value.toLowerCase(),
+                  }))
+                }
+                className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                placeholder="starter"
+              />
+            </label>
+          </div>
+          <div className="mt-3 grid gap-3 md:grid-cols-3">
+            <label className="block text-sm text-slate-300">
+              Currency
+              <input
+                value={planCreateForm.currency}
+                onChange={(event) =>
+                  setPlanCreateForm((current) => ({
+                    ...current,
+                    currency: event.target.value.toUpperCase(),
+                  }))
+                }
+                className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                placeholder="UGX"
+              />
+            </label>
+            <label className="block text-sm text-slate-300">
+              Price
+              <input
+                value={planCreateForm.priceAmount}
+                onChange={(event) =>
+                  setPlanCreateForm((current) => ({
+                    ...current,
+                    priceAmount: event.target.value,
+                  }))
+                }
+                className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                placeholder="49000"
+              />
+            </label>
+            <label className="block text-sm text-slate-300">
+              Trial Days
+              <input
+                value={planCreateForm.trialDays}
+                onChange={(event) =>
+                  setPlanCreateForm((current) => ({
+                    ...current,
+                    trialDays: event.target.value,
+                  }))
+                }
+                className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                placeholder="0"
+              />
+            </label>
+          </div>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="block text-sm text-slate-300">
+              Sort Order (optional)
+              <input
+                value={planCreateForm.sortOrder}
+                onChange={(event) =>
+                  setPlanCreateForm((current) => ({
+                    ...current,
+                    sortOrder: event.target.value,
+                  }))
+                }
+                className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                placeholder="5"
+              />
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-300 md:mt-8">
+              <input
+                type="checkbox"
+                checked={planCreateForm.isActive}
+                onChange={(event) =>
+                  setPlanCreateForm((current) => ({
+                    ...current,
+                    isActive: event.target.checked,
+                  }))
+                }
+              />
+              Active
+            </label>
+          </div>
+          <label className="mt-3 block text-sm text-slate-300">
+            Limits JSON (optional)
+            <textarea
+              value={planCreateForm.limitsJson}
+              onChange={(event) =>
+                setPlanCreateForm((current) => ({
+                  ...current,
+                  limitsJson: event.target.value,
+                }))
+              }
+              rows={4}
+              className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+              placeholder='{"maxHouses": 50, "maxActiveTenants": 300}'
+            />
+          </label>
+          <div className="mt-4 flex justify-end">
+            <button
+              type="button"
+              onClick={handleCreatePlan}
+              disabled={planCreateForm.saving}
+              className="btn-primary text-sm disabled:opacity-60"
+            >
+              {planCreateForm.saving ? "Creating..." : "Create Plan"}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -863,20 +1163,20 @@ export default function PlatformOwnerPage() {
                   className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
                 />
               </label>
-              <label className="block text-sm text-slate-300">
-                Plan Targeting
-                <input
-                  value={couponForm.appliesToPlanCodesCsv}
-                  onChange={(event) =>
-                    setCouponForm((current) => ({
-                      ...current,
-                      appliesToPlanCodesCsv: event.target.value,
-                    }))
-                  }
-                  placeholder="starter, growth"
-                  className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
-                />
-              </label>
+              <TypeaheadMultiSelect
+                label="Plan Targeting"
+                placeholder="Type to search plans..."
+                selectedIds={selectedCouponPlanCodes}
+                options={planOptions}
+                onChange={(values) =>
+                  setCouponForm((current) => ({
+                    ...current,
+                    appliesToPlanCodesCsv: values.join(", "),
+                  }))
+                }
+                emptyStateText="No plans match your search."
+                helperText="Leave empty to apply to all plans."
+              />
             </div>
             <label className="block text-sm text-slate-300">
               Description
@@ -1042,11 +1342,17 @@ export default function PlatformOwnerPage() {
           </div>
         </div>
         <div className="mt-4 text-xs text-slate-500">
-          Need workspace-level operations?{" "}
-          <Link to="/app/settings?tab=billing" className="underline">
-            Open workspace settings
-          </Link>
-          .
+          {user?.hasWorkspace ? (
+            <>
+              Need workspace-level operations?{" "}
+              <Link to="/app/billing" className="underline">
+                Open billing dashboard
+              </Link>
+              .
+            </>
+          ) : (
+            "Workspace-level operations remain available inside subscriber workspaces."
+          )}
         </div>
       </div>
     </section>

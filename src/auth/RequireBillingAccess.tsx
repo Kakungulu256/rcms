@@ -19,7 +19,7 @@ export default function RequireBillingAccess({ children }: RequireBillingAccessP
   if (billing?.accessState === "locked") {
     return (
       <Navigate
-        to="/app/upgrade"
+        to="/app/billing"
         replace
         state={{
           message:

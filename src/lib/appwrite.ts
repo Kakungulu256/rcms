@@ -1,6 +1,6 @@
 import { Account, Client, Databases, Functions, ID, Query, Storage, Teams } from "appwrite";
 import { COLLECTIONS } from "./schema";
-import { getActiveWorkspaceId, normalizeWorkspaceId } from "./workspace";
+import { getRequiredActiveWorkspaceId, normalizeWorkspaceId } from "./workspace";
 
 const endpoint = import.meta.env.VITE_APPWRITE_ENDPOINT as string | undefined;
 const projectId = import.meta.env.VITE_APPWRITE_PROJECT_ID as string | undefined;
@@ -54,7 +54,7 @@ export function getWorkspaceScopedQueries(params: {
   const { collectionId, queries = [], workspaceId } = params;
   if (!isWorkspaceScopedCollection(collectionId)) return [...queries];
   const resolvedWorkspaceId =
-    normalizeWorkspaceId(workspaceId) ?? getActiveWorkspaceId();
+    normalizeWorkspaceId(workspaceId) ?? getRequiredActiveWorkspaceId();
   return [Query.equal("workspaceId", [resolvedWorkspaceId]), ...queries];
 }
 
@@ -66,11 +66,45 @@ export function withWorkspaceData<T extends Record<string, unknown>>(params: {
   const { collectionId, data, workspaceId } = params;
   if (!isWorkspaceScopedCollection(collectionId)) return data;
   const resolvedWorkspaceId =
-    normalizeWorkspaceId(workspaceId) ?? getActiveWorkspaceId();
+    normalizeWorkspaceId(workspaceId) ?? getRequiredActiveWorkspaceId();
   return {
     ...data,
     workspaceId: resolvedWorkspaceId,
   };
+}
+
+function resolveScopedWorkspaceId(workspaceId?: string | null) {
+  return normalizeWorkspaceId(workspaceId) ?? getRequiredActiveWorkspaceId();
+}
+
+function assertDocumentMatchesWorkspaceScope(params: {
+  collectionId: string;
+  documentId: string;
+  document: unknown;
+  workspaceId: string;
+}) {
+  const { collectionId, documentId, document, workspaceId } = params;
+  if (collectionId === COLLECTIONS.workspaces) {
+    if (String((document as { $id?: string } | null)?.$id ?? "") !== workspaceId) {
+      throw new Error(
+        `Document ${documentId} in ${collectionId} does not belong to the active workspace.`
+      );
+    }
+    return;
+  }
+
+  if (!isWorkspaceScopedCollection(collectionId)) {
+    return;
+  }
+
+  const documentWorkspaceId = normalizeWorkspaceId(
+    (document as { workspaceId?: string | null } | null)?.workspaceId
+  );
+  if (!documentWorkspaceId || documentWorkspaceId !== workspaceId) {
+    throw new Error(
+      `Document ${documentId} in ${collectionId} does not belong to the active workspace.`
+    );
+  }
 }
 
 export async function createWorkspaceDocument<T extends Record<string, unknown>>(params: {
@@ -88,6 +122,69 @@ export async function createWorkspaceDocument<T extends Record<string, unknown>>
     documentId ?? ID.unique(),
     payload
   );
+}
+
+export async function getScopedDocument<T = unknown>(params: {
+  databaseId: string;
+  collectionId: string;
+  documentId: string;
+  workspaceId?: string | null;
+}): Promise<T> {
+  const { databaseId, collectionId, documentId, workspaceId } = params;
+  const resolvedWorkspaceId = resolveScopedWorkspaceId(workspaceId);
+  const document = await databases.getDocument(databaseId, collectionId, documentId);
+  assertDocumentMatchesWorkspaceScope({
+    collectionId,
+    documentId,
+    document,
+    workspaceId: resolvedWorkspaceId,
+  });
+  return document as unknown as T;
+}
+
+export async function updateScopedDocument<T extends Record<string, unknown>, R = unknown>(params: {
+  databaseId: string;
+  collectionId: string;
+  documentId: string;
+  data: T;
+  workspaceId?: string | null;
+}): Promise<R> {
+  const { databaseId, collectionId, documentId, data, workspaceId } = params;
+  const resolvedWorkspaceId = resolveScopedWorkspaceId(workspaceId);
+  await getScopedDocument({
+    databaseId,
+    collectionId,
+    documentId,
+    workspaceId: resolvedWorkspaceId,
+  });
+
+  const payload =
+    collectionId === COLLECTIONS.workspaces
+      ? data
+      : withWorkspaceData({ collectionId, data, workspaceId: resolvedWorkspaceId });
+  return (await databases.updateDocument(
+    databaseId,
+    collectionId,
+    documentId,
+    payload
+  )) as unknown as R;
+}
+
+export async function deleteScopedDocument(params: {
+  databaseId: string;
+  collectionId: string;
+  documentId: string;
+  workspaceId?: string | null;
+}) {
+  const { databaseId, collectionId, documentId, workspaceId } = params;
+  const resolvedWorkspaceId = resolveScopedWorkspaceId(workspaceId);
+  await getScopedDocument({
+    databaseId,
+    collectionId,
+    documentId,
+    workspaceId: resolvedWorkspaceId,
+  });
+  return databases.deleteDocument(databaseId, collectionId, documentId);
 }
 
 export async function listAllDocuments<T = unknown>(params: {
@@ -138,13 +235,13 @@ export async function listAllDocuments<T = unknown>(params: {
     !skipWorkspaceScope &&
     isWorkspaceScopedCollection(collectionId) &&
     documents.length === 0 &&
-    String(import.meta.env.VITE_WORKSPACE_INCLUDE_LEGACY_UNSCOPED ?? "true") !== "false";
+    String(import.meta.env.VITE_WORKSPACE_INCLUDE_LEGACY_UNSCOPED ?? "false") === "true";
   if (!allowLegacyFallback) {
     return documents;
   }
 
   const resolvedWorkspaceId =
-    normalizeWorkspaceId(workspaceId) ?? getActiveWorkspaceId();
+    normalizeWorkspaceId(workspaceId) ?? getRequiredActiveWorkspaceId();
   const legacyDocuments = await fetchPages([...queries]);
   return legacyDocuments.filter((document) => {
     const documentWorkspaceId = normalizeWorkspaceId((document as any)?.workspaceId);

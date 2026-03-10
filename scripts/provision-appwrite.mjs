@@ -44,6 +44,10 @@ const teamIds = {
   admin: normalizeEnv(process.env.APPWRITE_TEAM_ADMIN_ID),
   clerk: normalizeEnv(process.env.APPWRITE_TEAM_CLERK_ID),
   viewer: normalizeEnv(process.env.APPWRITE_TEAM_VIEWER_ID),
+  platformOwner: normalizeEnv(
+    process.env.APPWRITE_TEAM_PLATFORM_OWNER_ID ??
+      process.env.RCMS_PLATFORM_OWNER_TEAM_ID
+  ),
 };
 
 const hasTeamPermissions = Boolean(teamIds.admin && teamIds.clerk && teamIds.viewer);
@@ -69,6 +73,9 @@ function buildRolePermissions() {
   const adminTeam = Role.team(teamIds.admin);
   const clerkTeam = Role.team(teamIds.clerk);
   const viewerTeam = Role.team(teamIds.viewer);
+  const platformOwnerTeam = teamIds.platformOwner
+    ? Role.team(teamIds.platformOwner)
+    : null;
 
   return {
     adminCrud: [
@@ -83,6 +90,15 @@ function buildRolePermissions() {
       Permission.update(clerkTeam),
     ],
     viewerRead: [Permission.read(viewerTeam)],
+    platformOwnerRead: platformOwnerTeam ? [Permission.read(platformOwnerTeam)] : [],
+    platformOwnerCrud: platformOwnerTeam
+      ? [
+          Permission.read(platformOwnerTeam),
+          Permission.create(platformOwnerTeam),
+          Permission.update(platformOwnerTeam),
+          Permission.delete(platformOwnerTeam),
+        ]
+      : [],
   };
 }
 
@@ -111,6 +127,7 @@ function getCollectionPermissions(collectionId) {
     if (collectionId === "plans") {
       return [
         Permission.read(Role.any()),
+        ...rolePermissions.platformOwnerCrud,
         Permission.read(Role.team(teamIds.admin)),
         Permission.create(Role.team(teamIds.admin)),
         Permission.update(Role.team(teamIds.admin)),
@@ -120,6 +137,7 @@ function getCollectionPermissions(collectionId) {
     if (collectionId === "feature_entitlements") {
       return [
         Permission.read(Role.any()),
+        ...rolePermissions.platformOwnerCrud,
         Permission.read(Role.team(teamIds.admin)),
         Permission.create(Role.team(teamIds.admin)),
         Permission.update(Role.team(teamIds.admin)),
@@ -128,6 +146,7 @@ function getCollectionPermissions(collectionId) {
     }
 
     return [
+      ...rolePermissions.platformOwnerCrud,
       Permission.read(Role.team(teamIds.admin)),
       Permission.create(Role.team(teamIds.admin)),
       Permission.update(Role.team(teamIds.admin)),
@@ -140,6 +159,7 @@ function getCollectionPermissions(collectionId) {
       ...rolePermissions.adminCrud,
       ...rolePermissions.viewerRead,
       Permission.read(Role.team(teamIds.clerk)),
+      ...rolePermissions.platformOwnerRead,
     ];
   }
 
@@ -148,6 +168,7 @@ function getCollectionPermissions(collectionId) {
       ...rolePermissions.adminCrud,
       ...rolePermissions.clerkReadCreateUpdate,
       ...rolePermissions.viewerRead,
+      ...rolePermissions.platformOwnerRead,
     ];
   }
 
@@ -157,6 +178,7 @@ function getCollectionPermissions(collectionId) {
       Permission.create(Role.team(teamIds.admin)),
       Permission.read(Role.team(teamIds.clerk)),
       Permission.create(Role.team(teamIds.clerk)),
+      ...rolePermissions.platformOwnerRead,
     ];
   }
 
@@ -166,6 +188,7 @@ function getCollectionPermissions(collectionId) {
       Permission.create(Role.team(teamIds.admin)),
       Permission.update(Role.team(teamIds.admin)),
       Permission.delete(Role.team(teamIds.admin)),
+      ...rolePermissions.platformOwnerRead,
     ];
   }
 
@@ -175,6 +198,7 @@ function getCollectionPermissions(collectionId) {
       Permission.create(Role.team(teamIds.admin)),
       Permission.update(Role.team(teamIds.admin)),
       Permission.delete(Role.team(teamIds.admin)),
+      ...rolePermissions.platformOwnerRead,
     ];
   }
 
@@ -182,6 +206,7 @@ function getCollectionPermissions(collectionId) {
     ...rolePermissions.adminCrud,
     ...rolePermissions.clerkReadCreateUpdate,
     ...rolePermissions.viewerRead,
+    ...rolePermissions.platformOwnerRead,
   ];
 }
 
@@ -873,6 +898,15 @@ async function setupWorkspaces() {
   );
   await ensureAttribute(() =>
     databases.createFloatAttribute(databaseId, collectionId, "wmScale", false)
+  );
+  await ensureAttribute(() =>
+    databases.createEnumAttribute(
+      databaseId,
+      collectionId,
+      "prorationMode",
+      ["actual_days", "fixed_30"],
+      false
+    )
   );
   await ensureAttribute(() =>
     databases.createStringAttribute(databaseId, collectionId, "notes", 512, false)

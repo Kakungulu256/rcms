@@ -1,13 +1,12 @@
 import { Query } from "appwrite";
-import { useEffect, useMemo, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { databases, rcmsDatabaseId } from "../../lib/appwrite";
 import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../ToastContext";
-import { createBillingCheckoutSession } from "../../lib/billing";
+import { createBillingCheckoutSession, verifyBillingPayment } from "../../lib/billing";
 import { COLLECTIONS, type Plan } from "../../lib/schema";
 import { formatLimitValue, parsePlanLimits } from "../../lib/planLimits";
-import { getActiveWorkspaceId } from "../../lib/workspace";
 
 type PlanWithLimits = {
   plan: Plan;
@@ -33,17 +32,20 @@ function formatPlanPrice(amount: number | undefined, currency: string | undefine
 }
 
 export default function UpgradePage() {
-  const { role, billing, planCode, planLimits } = useAuth();
+  const { role, billing, planCode, planLimits, user } = useAuth();
   const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
   const toast = useToast();
   const [plans, setPlans] = useState<PlanWithLimits[]>([]);
   const [loading, setLoading] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [couponCode, setCouponCode] = useState("");
   const [selectedPlanCode, setSelectedPlanCode] = useState("");
+  const billingVerifyHandledRef = useRef<string | null>(null);
 
   const canCheckout = role === "admin";
   const isLocked = billing?.accessState === "locked";
+  const lockTone = billing?.bannerTone ?? "warning";
   const lockMessage =
     (location.state as { message?: string } | null)?.message ??
     billing?.bannerMessage ??
@@ -81,6 +83,56 @@ export default function UpgradePage() {
     };
   }, [planCode]);
 
+  useEffect(() => {
+    const transactionId =
+      searchParams.get("transaction_id") || searchParams.get("transactionId");
+    if (!transactionId || billingVerifyHandledRef.current === transactionId) return;
+
+    billingVerifyHandledRef.current = transactionId;
+    const txRef = searchParams.get("tx_ref") || searchParams.get("txRef") || "";
+    const status = (searchParams.get("status") || "").toLowerCase();
+
+    const cleanupParams = () => {
+      const next = new URLSearchParams(searchParams);
+      next.delete("transaction_id");
+      next.delete("transactionId");
+      next.delete("tx_ref");
+      next.delete("txRef");
+      next.delete("status");
+      setSearchParams(next, { replace: true });
+    };
+
+    if (status && ["cancelled", "canceled", "failed"].includes(status)) {
+      toast.push("warning", "Payment was not completed. Please retry if needed.");
+      cleanupParams();
+      return;
+    }
+
+    void (async () => {
+      try {
+        const result = await verifyBillingPayment({
+          workspaceId: user?.workspaceId,
+          transactionId,
+          txRef: txRef || undefined,
+        });
+        if (result.ok && result.status === "succeeded") {
+          toast.push("success", "Payment verified and subscription updated.");
+        } else if (result.ok) {
+          toast.push("warning", `Payment status: ${result.status}.`);
+        } else {
+          toast.push("error", result.error || "Failed to verify payment.");
+        }
+      } catch (verifyError) {
+        toast.push(
+          "error",
+          verifyError instanceof Error ? verifyError.message : "Failed to verify payment."
+        );
+      } finally {
+        cleanupParams();
+      }
+    })();
+  }, [searchParams, setSearchParams, toast, user?.workspaceId]);
+
   const selectedPlan = useMemo(
     () => plans.find((entry) => entry.plan.code === selectedPlanCode)?.plan ?? null,
     [plans, selectedPlanCode]
@@ -94,7 +146,7 @@ export default function UpgradePage() {
     setCheckoutLoading(true);
     try {
       const result = await createBillingCheckoutSession({
-        workspaceId: getActiveWorkspaceId(),
+        workspaceId: user?.workspaceId || undefined,
         planCode: selectedPlanCode,
         couponCode: couponCode.trim() || undefined,
       });
@@ -123,7 +175,23 @@ export default function UpgradePage() {
       </header>
 
       {lockMessage ? (
-        <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+        <div
+          className={`billing-banner rounded-2xl border px-4 py-3 text-sm billing-banner-${lockTone}`}
+          style={{
+            borderColor:
+              lockTone === "danger"
+                ? "rgba(244, 63, 94, 0.45)"
+                : lockTone === "warning"
+                  ? "rgba(251, 191, 36, 0.45)"
+                  : "rgba(56, 189, 248, 0.45)",
+            backgroundColor:
+              lockTone === "danger"
+                ? "rgba(190, 24, 93, 0.12)"
+                : lockTone === "warning"
+                  ? "rgba(180, 83, 9, 0.12)"
+                  : "rgba(14, 116, 144, 0.12)",
+          }}
+        >
           {lockMessage}
         </div>
       ) : null}
@@ -240,7 +308,7 @@ export default function UpgradePage() {
                               <span className="font-semibold text-slate-100">{plan.name}</span>
                             </label>
                             {current ? (
-                              <span className="rounded-full border border-sky-500/50 bg-sky-500/10 px-2 py-0.5 text-[11px] text-sky-200">
+                              <span className="rounded-full border border-slate-500 bg-white px-2 py-0.5 text-[11px] font-bold text-black">
                                 Current
                               </span>
                             ) : null}
