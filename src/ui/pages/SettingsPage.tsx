@@ -415,7 +415,7 @@ export default function SettingsPage() {
       }));
       setBrandingFile(null);
       setBrandingPreviewUrl(null);
-      await loadBillingData();
+      await loadWorkspaceSettings();
       toast.push("success", "Company logo removed.");
     } catch {
       toast.push("error", "Failed to remove company logo.");
