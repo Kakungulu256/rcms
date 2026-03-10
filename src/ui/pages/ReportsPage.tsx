@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Query } from "appwrite";
+import { Link } from "react-router-dom";
 import {
   addMonths,
   endOfMonth,
@@ -11,16 +12,27 @@ import {
 } from "date-fns";
 import { jsPDF } from "jspdf";
 import * as XLSX from "xlsx";
-import { listAllDocuments, rcmsDatabaseId } from "../../lib/appwrite";
+import {
+  getScopedDocument,
+  listAllDocuments,
+  rcmsDatabaseId,
+  rcmsReceiptsBucketId,
+  storage,
+} from "../../lib/appwrite";
 import { COLLECTIONS } from "../../lib/schema";
 import type {
+  AuditLog,
   Expense,
   House,
   Payment,
   SecurityDepositDeduction,
   Tenant,
+  Workspace,
 } from "../../lib/schema";
 import { useToast } from "../ToastContext";
+import { useAuth } from "../../auth/AuthContext";
+import { logAudit } from "../../lib/audit";
+import { formatLimitValue, getLimitStatus } from "../../lib/planLimits";
 import {
   buildPaidByMonth,
   buildPaymentSummaryByMonth,
@@ -38,6 +50,13 @@ import {
 } from "../../lib/paymentNotes";
 import { formatDisplayDate, formatShortMonth } from "../../lib/dateDisplay";
 import TypeaheadField, { type TypeaheadOption } from "../TypeaheadField";
+import {
+  type WatermarkPosition,
+  type WorkspaceBranding,
+  clampWatermarkOpacity,
+  clampWatermarkScale,
+  normalizeWorkspaceBranding,
+} from "../../lib/branding";
 
 type ArrearsRow = {
   tenantId: string;
@@ -190,8 +209,73 @@ function invertIntervals(
   return gaps;
 }
 
+function getFileViewUrl(bucketId: string, fileId: string) {
+  try {
+    const result = storage.getFileView(bucketId, fileId) as unknown;
+    if (typeof result === "string") return result;
+    if (result && typeof (result as URL).toString === "function") {
+      return (result as URL).toString();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function fileToDataUrl(file: Blob) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Failed to read image."));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function fetchImageAsDataUrl(url: string) {
+  const response = await fetch(url, { credentials: "include" });
+  if (!response.ok) {
+    throw new Error("Failed to load workspace logo.");
+  }
+  const blob = await response.blob();
+  return fileToDataUrl(blob);
+}
+
+function getWatermarkRect(params: {
+  pageWidth: number;
+  pageHeight: number;
+  imageWidth: number;
+  imageHeight: number;
+  position: WatermarkPosition;
+  scale: number;
+}) {
+  const { pageWidth, pageHeight, imageWidth, imageHeight, position, scale } = params;
+  const margin = 12;
+  const targetWidth = Math.max((pageWidth * scale) / 100, 20);
+  const ratio = imageWidth > 0 ? imageHeight / imageWidth : 1;
+  const targetHeight = Math.max(targetWidth * ratio, 12);
+
+  let x = (pageWidth - targetWidth) / 2;
+  let y = (pageHeight - targetHeight) / 2;
+  if (position === "top_left") {
+    x = margin;
+    y = margin;
+  } else if (position === "top_right") {
+    x = pageWidth - targetWidth - margin;
+    y = margin;
+  } else if (position === "bottom_left") {
+    x = margin;
+    y = pageHeight - targetHeight - margin;
+  } else if (position === "bottom_right") {
+    x = pageWidth - targetWidth - margin;
+    y = pageHeight - targetHeight - margin;
+  }
+
+  return { x, y, width: targetWidth, height: targetHeight };
+}
+
 export default function ReportsPage() {
   const toast = useToast();
+  const { user, planLimits } = useAuth();
   const [payments, setPayments] = useState<Payment[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [tenants, setTenants] = useState<Tenant[]>([]);
@@ -212,8 +296,24 @@ export default function ReportsPage() {
   const [selectedTenantId, setSelectedTenantId] = useState<string>("");
   const [noteEditorOpen, setNoteEditorOpen] = useState(false);
   const [personalReportNote, setPersonalReportNote] = useState("");
+  const [workspaceBranding, setWorkspaceBranding] = useState<WorkspaceBranding>(() =>
+    normalizeWorkspaceBranding(null)
+  );
+  const [watermarkEnabled, setWatermarkEnabled] = useState(false);
+  const [watermarkOpacity, setWatermarkOpacity] = useState(0.16);
+  const [watermarkScale, setWatermarkScale] = useState(32);
+  const [watermarkPosition, setWatermarkPosition] =
+    useState<WatermarkPosition>("center");
+  const [logoPreviewUrl, setLogoPreviewUrl] = useState<string | null>(null);
+  const [logoDataUrl, setLogoDataUrl] = useState<string | null>(null);
+  const [logoLoading, setLogoLoading] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
   const [exportingXlsx, setExportingXlsx] = useState(false);
+  const [exportsThisMonth, setExportsThisMonth] = useState(0);
+  const exportLimitStatus = useMemo(
+    () => getLimitStatus(planLimits.exportsPerMonth, exportsThisMonth),
+    [exportsThisMonth, planLimits.exportsPerMonth]
+  );
 
   const tenantLookup = useMemo(
     () => new Map(tenants.map((tenant) => [tenant.$id, tenant])),
@@ -253,7 +353,16 @@ export default function ReportsPage() {
     setLoading(true);
     setError(null);
     try {
-      const [paymentResult, expenseResult, tenantResult, houseResult, deductionResult] =
+      const currentMonthStart = format(startOfMonth(new Date()), "yyyy-MM-dd");
+      const [
+        paymentResult,
+        expenseResult,
+        tenantResult,
+        houseResult,
+        deductionResult,
+        exportAuditResult,
+        workspaceDoc,
+      ] =
         await Promise.all([
         listAllDocuments<Payment>({
           databaseId: rcmsDatabaseId,
@@ -288,12 +397,48 @@ export default function ReportsPage() {
           collectionId: COLLECTIONS.securityDepositDeductions,
           queries: [Query.orderAsc("deductionDate")],
         }).catch(() => []),
+        listAllDocuments<AuditLog>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.auditLogs,
+          queries: [
+            Query.equal("entityType", ["report_export"]),
+            Query.equal("action", ["create"]),
+            Query.greaterThanEqual("timestamp", [currentMonthStart]),
+            Query.orderDesc("timestamp"),
+          ],
+        }).catch(() => []),
+        getScopedDocument<Workspace>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.workspaces,
+          documentId: user?.workspaceId ?? "",
+        })
+          .then((doc) => doc as unknown as Workspace)
+          .catch(() => null),
         ]);
       setPayments(paymentResult);
       setExpenses(expenseResult);
       setTenants(tenantResult);
       setHouses(houseResult);
       setSecurityDepositDeductions(deductionResult);
+      setExportsThisMonth(exportAuditResult.length);
+      const normalizedBranding = normalizeWorkspaceBranding(workspaceDoc);
+      setWorkspaceBranding(normalizedBranding);
+      setWatermarkEnabled(
+        Boolean(normalizedBranding.wmEnabled && normalizedBranding.logoFileId)
+      );
+      setWatermarkOpacity(clampWatermarkOpacity(normalizedBranding.wmOpacity));
+      setWatermarkScale(clampWatermarkScale(normalizedBranding.wmScale));
+      setWatermarkPosition(normalizedBranding.wmPosition);
+      if (normalizedBranding.logoFileId) {
+        setLogoPreviewUrl(
+          getFileViewUrl(
+            normalizedBranding.logoBucketId || rcmsReceiptsBucketId,
+            normalizedBranding.logoFileId
+          )
+        );
+      } else {
+        setLogoPreviewUrl(null);
+      }
     } catch (err) {
       setError("Failed to load report data.");
     } finally {
@@ -304,6 +449,63 @@ export default function ReportsPage() {
   useEffect(() => {
     loadData();
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    if (!logoPreviewUrl) {
+      setLogoDataUrl(null);
+      return () => {
+        active = false;
+      };
+    }
+
+    setLogoLoading(true);
+    fetchImageAsDataUrl(logoPreviewUrl)
+      .then((dataUrl) => {
+        if (!active) return;
+        setLogoDataUrl(dataUrl);
+      })
+      .catch(() => {
+        if (!active) return;
+        setLogoDataUrl(null);
+      })
+      .finally(() => {
+        if (!active) return;
+        setLogoLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [logoPreviewUrl]);
+
+  const ensureExportAllowed = () => {
+    if (!exportLimitStatus.reached) return true;
+    const message =
+      "Monthly export limit reached on your current plan. Open Billing to continue exporting.";
+    toast.push("warning", message);
+    return false;
+  };
+
+  const recordExportAudit = (formatType: "pdf" | "xlsx", reportName: string) => {
+    if (!user) return;
+    void logAudit({
+      entityType: "report_export",
+      entityId: `${reportType}_${Date.now()}`,
+      action: "create",
+      actorId: user.id,
+      details: {
+        format: formatType,
+        reportType,
+        reportName,
+      },
+    })
+      .then(() => setExportsThisMonth((prev) => prev + 1))
+      .catch(() => undefined);
+  };
+
+  const effectiveWatermarkEnabled =
+    watermarkEnabled && Boolean(logoDataUrl && workspaceBranding.logoFileId);
 
   const summary = useMemo(() => {
     const rawRange = (() => {
@@ -1090,6 +1292,9 @@ export default function ReportsPage() {
   const exportXlsx = () => {
     setExportingXlsx(true);
     try {
+      if (!ensureExportAllowed()) {
+        return;
+      }
       if (reportType === "tenantDetail" && !summary.selectedTenant) {
         toast.push("warning", "Select a tenant first.");
         return;
@@ -1415,6 +1620,23 @@ export default function ReportsPage() {
         );
       }
 
+      if (effectiveWatermarkEnabled) {
+        XLSX.utils.book_append_sheet(
+          workbook,
+          XLSX.utils.json_to_sheet([
+            { Item: "Watermark Enabled", Value: "Yes" },
+            { Item: "Logo File", Value: workspaceBranding.logoFileName || "--" },
+            { Item: "Logo Bucket", Value: workspaceBranding.logoBucketId || rcmsReceiptsBucketId },
+            { Item: "Logo File ID", Value: workspaceBranding.logoFileId || "--" },
+            { Item: "Position", Value: watermarkPosition },
+            { Item: "Opacity", Value: `${Math.round(watermarkOpacity * 100)}%` },
+            { Item: "Scale", Value: `${watermarkScale}%` },
+            { Item: "Preview URL", Value: logoPreviewUrl || "--" },
+          ]),
+          "Watermark"
+        );
+      }
+
       const fileSuffix =
         reportType === "tenantDetail" && summary.selectedTenant
           ? `_${summary.selectedTenant.fullName.replace(/\s+/g, "_")}`
@@ -1439,6 +1661,7 @@ export default function ReportsPage() {
         )}.xlsx`
       );
       toast.push("success", "Report exported as XLSX.");
+      recordExportAudit("xlsx", fileSuffix ? `report${fileSuffix}` : "report");
     } catch (err) {
       toast.push("error", "Failed to export XLSX report.");
     } finally {
@@ -1446,9 +1669,12 @@ export default function ReportsPage() {
     }
   };
 
-  const exportPdf = () => {
+  const exportPdf = async () => {
     setExportingPdf(true);
     try {
+      if (!ensureExportAllowed()) {
+        return;
+      }
       if (reportType === "tenantDetail" && !summary.selectedTenant) {
         toast.push("warning", "Select a tenant first.");
         return;
@@ -1462,6 +1688,69 @@ export default function ReportsPage() {
             ? "landscape"
             : "portrait",
       });
+      const watermarkImage = await (async () => {
+        if (!effectiveWatermarkEnabled || !logoDataUrl) return null;
+        return new Promise<{ dataUrl: string; width: number; height: number } | null>(
+          (resolve) => {
+            const image = new Image();
+            image.onload = () => {
+              const canvas = document.createElement("canvas");
+              canvas.width = image.naturalWidth || image.width;
+              canvas.height = image.naturalHeight || image.height;
+              const context = canvas.getContext("2d");
+              if (!context) {
+                resolve({
+                  dataUrl: logoDataUrl,
+                  width: canvas.width || 1,
+                  height: canvas.height || 1,
+                });
+                return;
+              }
+              context.clearRect(0, 0, canvas.width, canvas.height);
+              context.globalAlpha = clampWatermarkOpacity(watermarkOpacity);
+              context.drawImage(image, 0, 0, canvas.width, canvas.height);
+              resolve({
+                dataUrl: canvas.toDataURL("image/png"),
+                width: canvas.width,
+                height: canvas.height,
+              });
+            };
+            image.onerror = () => resolve(null);
+            image.src = logoDataUrl;
+          }
+        );
+      })();
+
+      const drawPdfWatermark = () => {
+        if (!watermarkImage) return;
+        const pageWidth = doc.internal.pageSize.getWidth();
+        const pageHeight = doc.internal.pageSize.getHeight();
+        const rect = getWatermarkRect({
+          pageWidth,
+          pageHeight,
+          imageWidth: watermarkImage.width,
+          imageHeight: watermarkImage.height,
+          position: watermarkPosition,
+          scale: clampWatermarkScale(watermarkScale),
+        });
+        doc.addImage(
+          watermarkImage.dataUrl,
+          "PNG",
+          rect.x,
+          rect.y,
+          rect.width,
+          rect.height,
+          undefined,
+          "FAST"
+        );
+      };
+
+      const addPageWithWatermark = () => {
+        doc.addPage();
+        drawPdfWatermark();
+      };
+
+      drawPdfWatermark();
       doc.setFont("helvetica", "bold");
       doc.setFontSize(16);
       const title =
@@ -1497,7 +1786,7 @@ export default function ReportsPage() {
 
       const ensureSpace = (height: number) => {
         if (y + height > bottom) {
-          doc.addPage();
+          addPageWithWatermark();
           y = 20;
         }
       };
@@ -1603,7 +1892,7 @@ export default function ReportsPage() {
           const lineCount = Math.max(...rowLines.map((lines) => Math.max(lines.length, 1)));
           const rowHeight = Math.max(minRowHeight, lineCount * lineHeight + 4);
           if (y + rowHeight > bottom) {
-            doc.addPage();
+            addPageWithWatermark();
             y = 20;
             drawHeader();
           }
@@ -1883,6 +2172,7 @@ export default function ReportsPage() {
           `RCMS_Monthly_Tenancy_Report${fileSuffix}_${startFileKey}_${endFileKey}.pdf`
         );
         toast.push("success", "Report exported as PDF.");
+        recordExportAudit("pdf", `monthly_tenancy${fileSuffix}`);
         return;
       }
 
@@ -1935,6 +2225,7 @@ export default function ReportsPage() {
         )}.pdf`
       );
       toast.push("success", "Report exported as PDF.");
+      recordExportAudit("pdf", fileSuffix ? `report${fileSuffix}` : "report");
     } catch (err) {
       toast.push("error", "Failed to export PDF report.");
     } finally {
@@ -2076,17 +2367,167 @@ export default function ReportsPage() {
         <button
           onClick={exportXlsx}
           className="btn-primary text-sm"
-          disabled={loading || exportingXlsx}
+          disabled={loading || exportingXlsx || exportLimitStatus.reached}
         >
-          {exportingXlsx ? "Exporting..." : "Export XLSX"}
+          {exportingXlsx
+            ? "Exporting..."
+            : exportLimitStatus.reached
+              ? "Export XLSX (Locked)"
+              : "Export XLSX"}
         </button>
         <button
           onClick={exportPdf}
           className="btn-secondary text-sm"
-          disabled={loading || exportingPdf}
+          disabled={loading || exportingPdf || exportLimitStatus.reached}
         >
-          {exportingPdf ? "Exporting..." : "Export PDF"}
+          {exportingPdf
+            ? "Exporting..."
+            : exportLimitStatus.reached
+              ? "Export PDF (Locked)"
+              : "Export PDF"}
         </button>
+        {exportLimitStatus.reached ? (
+          <Link to="/app/billing" className="btn-secondary text-sm">
+            Open Billing
+          </Link>
+        ) : null}
+        {planLimits.exportsPerMonth != null && (
+          <div className="text-xs text-amber-300">
+            Exports this month: {exportLimitStatus.used.toLocaleString()} /{" "}
+            {formatLimitValue(exportLimitStatus.limit)}
+            {exportLimitStatus.reached ? " (limit reached)" : ""}
+          </div>
+        )}
+      </div>
+
+      <div
+        className="rounded-2xl border p-4"
+        style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
+      >
+        <div className="text-sm font-semibold text-slate-100">Logo Watermark (Export)</div>
+        <p className="mt-1 text-xs text-slate-500">
+          Uses workspace branding defaults from Settings. You can override before export.
+        </p>
+        <div className="mt-4 grid gap-4 lg:grid-cols-[1.2fr_1fr]">
+          <div className="space-y-3">
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                checked={watermarkEnabled}
+                onChange={(event) => setWatermarkEnabled(event.target.checked)}
+                disabled={!workspaceBranding.logoFileId || logoLoading}
+              />
+              Include company logo watermark
+            </label>
+            {!workspaceBranding.logoFileId ? (
+              <div className="text-xs text-amber-300">
+                No workspace logo found. Upload it in Settings - Branding tab.
+              </div>
+            ) : null}
+
+            <div className="grid gap-4 md:grid-cols-3">
+              <label className="block text-sm text-slate-300">
+                Position
+                <select
+                  value={watermarkPosition}
+                  onChange={(event) =>
+                    setWatermarkPosition(event.target.value as WatermarkPosition)
+                  }
+                  className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                  disabled={!workspaceBranding.logoFileId}
+                >
+                  <option value="center">center</option>
+                  <option value="top_left">top_left</option>
+                  <option value="top_right">top_right</option>
+                  <option value="bottom_left">bottom_left</option>
+                  <option value="bottom_right">bottom_right</option>
+                </select>
+              </label>
+              <label className="block text-sm text-slate-300">
+                Opacity ({Math.round(watermarkOpacity * 100)}%)
+                <input
+                  type="range"
+                  min={5}
+                  max={95}
+                  step={1}
+                  value={Math.round(watermarkOpacity * 100)}
+                  onChange={(event) =>
+                    setWatermarkOpacity(clampWatermarkOpacity(Number(event.target.value) / 100))
+                  }
+                  className="mt-2 w-full"
+                  disabled={!workspaceBranding.logoFileId}
+                />
+              </label>
+              <label className="block text-sm text-slate-300">
+                Size ({watermarkScale}%)
+                <input
+                  type="range"
+                  min={10}
+                  max={80}
+                  step={1}
+                  value={watermarkScale}
+                  onChange={(event) =>
+                    setWatermarkScale(clampWatermarkScale(Number(event.target.value)))
+                  }
+                  className="mt-2 w-full"
+                  disabled={!workspaceBranding.logoFileId}
+                />
+              </label>
+            </div>
+          </div>
+          <div>
+            <div className="text-xs uppercase tracking-[0.18em] text-slate-500">Preview</div>
+            <div
+              className="mt-2 relative h-48 overflow-hidden rounded-2xl border"
+              style={{ borderColor: "var(--border)", backgroundColor: "#f8fafc" }}
+            >
+              <div className="absolute inset-0 p-4 text-[11px] text-slate-500">
+                <div className="font-semibold text-slate-700">TENANCY SUMMARY REPORT</div>
+                <div className="mt-1">Range: {summary.reportPeriodLabel}</div>
+                <div className="mt-1">Date: {summary.currentDateKey}</div>
+              </div>
+              {logoPreviewUrl && watermarkEnabled ? (
+                <img
+                  src={logoPreviewUrl}
+                  alt="Watermark preview"
+                  className="pointer-events-none absolute select-none object-contain"
+                  style={{
+                    width: `${watermarkScale}%`,
+                    opacity: watermarkOpacity,
+                    left:
+                      watermarkPosition === "top_left" || watermarkPosition === "bottom_left"
+                        ? "8px"
+                        : watermarkPosition === "top_right" || watermarkPosition === "bottom_right"
+                          ? "auto"
+                          : "50%",
+                    right:
+                      watermarkPosition === "top_right" || watermarkPosition === "bottom_right"
+                        ? "8px"
+                        : "auto",
+                    top:
+                      watermarkPosition === "top_left" || watermarkPosition === "top_right"
+                        ? "8px"
+                        : watermarkPosition === "bottom_left" || watermarkPosition === "bottom_right"
+                          ? "auto"
+                          : "50%",
+                    bottom:
+                      watermarkPosition === "bottom_left" || watermarkPosition === "bottom_right"
+                        ? "8px"
+                        : "auto",
+                    transform: watermarkPosition === "center" ? "translate(-50%, -50%)" : undefined,
+                  }}
+                />
+              ) : (
+                <div className="absolute inset-0 flex items-center justify-center text-xs text-slate-500">
+                  {logoLoading ? "Loading logo..." : "Watermark preview unavailable"}
+                </div>
+              )}
+            </div>
+            <div className="mt-2 text-xs text-slate-500">
+              PDF receives image watermark. XLSX includes watermark metadata sheet.
+            </div>
+          </div>
+        </div>
       </div>
 
       {noteEditorOpen && (

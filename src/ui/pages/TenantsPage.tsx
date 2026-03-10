@@ -1,13 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { ID, Query } from "appwrite";
 import { endOfMonth, subMonths } from "date-fns";
+import { Link } from "react-router-dom";
 import TenantDetail from "../tenants/TenantDetail";
 import TenantForm from "../tenants/TenantForm";
 import TenantList from "../tenants/TenantList";
 import Modal from "../Modal";
 import PaginationControls from "../PaginationControls";
 import TypeaheadSearch from "../TypeaheadSearch";
-import { databases, listAllDocuments, rcmsDatabaseId } from "../../lib/appwrite";
+import {
+  createWorkspaceDocument,
+  listAllDocuments,
+  rcmsDatabaseId,
+  updateScopedDocument,
+} from "../../lib/appwrite";
 import { COLLECTIONS } from "../../lib/schema";
 import type {
   House,
@@ -20,6 +26,7 @@ import { logAudit } from "../../lib/audit";
 import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../ToastContext";
 import { appendRentHistory, buildRentByMonth } from "../../lib/rentHistory";
+import { formatLimitValue, getLimitStatus } from "../../lib/planLimits";
 
 type PanelMode = "list" | "create" | "edit";
 
@@ -28,7 +35,7 @@ type TenantFormWithEffectiveDate = TenantFormValues & {
 };
 
 export default function TenantsPage() {
-  const { user, permissions } = useAuth();
+  const { user, permissions, planLimits } = useAuth();
   const canManageTenants = permissions.canManageTenants;
   const toast = useToast();
   const [tenants, setTenants] = useState<Tenant[]>([]);
@@ -139,6 +146,14 @@ export default function TenantsPage() {
     });
     return Array.from(values);
   }, [houseLookup, sortedTenants]);
+  const activeTenantCount = useMemo(
+    () => tenants.filter((tenant) => tenant.status === "active" && !tenant.moveOutDate).length,
+    [tenants]
+  );
+  const activeTenantLimitStatus = useMemo(
+    () => getLimitStatus(planLimits.maxActiveTenants, activeTenantCount),
+    [activeTenantCount, planLimits.maxActiveTenants]
+  );
 
   const loadData = async () => {
     setLoading(true);
@@ -254,15 +269,18 @@ export default function TenantsPage() {
       return;
     }
 
-    const updatedHouse = await databases.updateDocument(
-      rcmsDatabaseId,
-      COLLECTIONS.houses,
-      houseId,
-      {
+    const updatedHouse = await updateScopedDocument<
+      { status: string; currentTenantId: string | null },
+      House
+    >({
+      databaseId: rcmsDatabaseId,
+      collectionId: COLLECTIONS.houses,
+      documentId: houseId,
+      data: {
         status: nextStatus,
         currentTenantId: nextCurrentTenantId,
-      }
-    );
+      },
+    });
     setHouses((prev) =>
       prev.map((item) =>
         item.$id === houseId ? (updatedHouse as unknown as House) : item
@@ -306,6 +324,14 @@ export default function TenantsPage() {
     try {
       const { rentEffectiveDate, ...rest } = values;
       const normalized = normalizeTenantPayload(rest);
+      if (normalized.status === "active" && activeTenantLimitStatus.reached) {
+        const message =
+          "Active tenant limit reached on your current plan. Open Billing to add more active tenants.";
+        setError(message);
+        toast.push("warning", message);
+        setLoading(false);
+        return;
+      }
       const houseId = normalized.house;
       const assignable = ensureAssignableHouse(houseId);
       if (!assignable.ok) {
@@ -334,12 +360,12 @@ export default function TenantsPage() {
               })
             : null,
       };
-      const created = await databases.createDocument(
-        rcmsDatabaseId,
-        COLLECTIONS.tenants,
-        ID.unique(),
-        payload
-      );
+      const created = await createWorkspaceDocument({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.tenants,
+        documentId: ID.unique(),
+        data: payload,
+      });
       const createdTenant = created as unknown as Tenant;
       const createdHouseId =
         typeof createdTenant.house === "string"
@@ -386,6 +412,18 @@ export default function TenantsPage() {
     try {
       const { rentEffectiveDate, ...rest } = values;
       const normalized = normalizeTenantPayload(rest);
+      const selectedIsActive =
+        selected.status === "active" && !selected.moveOutDate;
+      const nextIsActive =
+        normalized.status === "active" && !normalized.moveOutDate;
+      if (!selectedIsActive && nextIsActive && activeTenantLimitStatus.reached) {
+        const message =
+          "Active tenant limit reached on your current plan. Open Billing to activate more tenants.";
+        setError(message);
+        toast.push("warning", message);
+        setLoading(false);
+        return;
+      }
       const houseId = normalized.house;
       const assignable = ensureAssignableHouse(houseId, selected);
       if (!assignable.ok) {
@@ -455,12 +493,12 @@ export default function TenantsPage() {
             : selected.rentHistoryJson ?? null
           : selected.rentHistoryJson ?? null,
       };
-      const updated = await databases.updateDocument(
-        rcmsDatabaseId,
-        COLLECTIONS.tenants,
-        selected.$id,
-        payload
-      );
+      const updated = await updateScopedDocument<typeof payload, Tenant>({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.tenants,
+        documentId: selected.$id,
+        data: payload,
+      });
       const updatedTenant = updated as unknown as Tenant;
       const updatedHouseId =
         typeof updatedTenant.house === "string"
@@ -529,6 +567,13 @@ export default function TenantsPage() {
                   ? "Loading..."
                   : `${filteredTenants.length} of ${tenants.length} tenants`}
               </div>
+              {planLimits.maxActiveTenants != null && (
+                <div className="mt-1 text-xs text-amber-300">
+                  Active tenant usage: {activeTenantLimitStatus.used.toLocaleString()} /{" "}
+                  {formatLimitValue(activeTenantLimitStatus.limit)}
+                  {activeTenantLimitStatus.reached ? " (limit reached)" : ""}
+                </div>
+              )}
             </div>
             <div className="flex flex-wrap gap-2">
               {canManageTenants && (
@@ -537,11 +582,17 @@ export default function TenantsPage() {
                     setMode("create");
                     setModalOpen(true);
                   }}
-                  className="btn-primary text-sm"
+                  disabled={activeTenantLimitStatus.reached}
+                  className="btn-primary text-sm disabled:opacity-60"
                 >
-                  Add Tenant
+                  {activeTenantLimitStatus.reached ? "Add Tenant (Locked)" : "Add Tenant"}
                 </button>
               )}
+              {canManageTenants && activeTenantLimitStatus.reached ? (
+                <Link to="/app/billing" className="btn-secondary text-sm">
+                  Open Billing
+                </Link>
+              ) : null}
               <button
                 onClick={loadData}
                 className="btn-secondary text-sm"

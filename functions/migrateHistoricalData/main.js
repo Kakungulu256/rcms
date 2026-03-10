@@ -1,4 +1,4 @@
-import { Account, Client, Databases, ID, Query, Teams } from "node-appwrite";
+import { Account, Client, Databases, ID, Query } from "node-appwrite";
 
 function getEnv(...keys) {
   for (const key of keys) {
@@ -25,6 +25,28 @@ function normalize(value) {
   return String(value).trim();
 }
 
+function normalizeWorkspaceId(value) {
+  const normalized = String(value ?? "").trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function resolveWorkspaceId(body) {
+  return (
+    normalizeWorkspaceId(body?.workspaceId) ||
+    normalizeWorkspaceId(getEnv("RCMS_DEFAULT_WORKSPACE_ID")) ||
+    "default"
+  );
+}
+
+function assertWorkspaceAccess(document, workspaceId, label) {
+  const documentWorkspaceId = normalizeWorkspaceId(document?.workspaceId);
+  if (documentWorkspaceId && documentWorkspaceId !== workspaceId) {
+    const error = new Error(`${label} does not belong to this workspace.`);
+    error.code = 403;
+    throw error;
+  }
+}
+
 function parseNumber(value) {
   if (typeof value === "number") return value;
   if (!value) return 0;
@@ -36,6 +58,129 @@ function parseDateSafe(value) {
   if (!value) return null;
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function isBillingLocked({ workspace, subscription }) {
+  const now = new Date();
+  const rawState = subscription?.state || workspace?.subscriptionState || "trialing";
+
+  if (rawState === "active") return false;
+  if (rawState === "trialing") {
+    const trialEnd = parseDateSafe(subscription?.trialEndDate || workspace?.trialEndDate);
+    return trialEnd ? trialEnd.getTime() <= now.getTime() : false;
+  }
+  if (rawState === "past_due") {
+    const graceEndsAt = parseDateSafe(subscription?.graceEndsAt);
+    return !graceEndsAt || graceEndsAt.getTime() <= now.getTime();
+  }
+  if (rawState === "canceled") {
+    const periodEnd = parseDateSafe(subscription?.currentPeriodEnd);
+    return !periodEnd || periodEnd.getTime() <= now.getTime();
+  }
+
+  return true;
+}
+
+function parseEntitlementsJson(value) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object") return null;
+    if (parsed.features && typeof parsed.features === "object") {
+      return parsed.features;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function resolvePlanFeatureRule(plan, featureKey) {
+  const entitlements = parseEntitlementsJson(plan?.entitlementsJson);
+  if (!entitlements || typeof entitlements !== "object") {
+    return null;
+  }
+  const raw = entitlements[featureKey];
+  if (typeof raw === "boolean") {
+    return { enabled: raw };
+  }
+  if (raw && typeof raw === "object") {
+    const enabled = typeof raw.enabled === "boolean" ? raw.enabled : true;
+    return { enabled };
+  }
+  return null;
+}
+
+async function getLatestSubscription(databases, databaseId, workspaceId) {
+  const page = await databases.listDocuments(databaseId, "subscriptions", [
+    Query.equal("workspaceId", [workspaceId]),
+    Query.orderDesc("$updatedAt"),
+    Query.limit(1),
+  ]);
+  return page.documents?.[0] ?? null;
+}
+
+async function getPlanByCode(databases, databaseId, planCode) {
+  if (!planCode) return null;
+  const page = await databases.listDocuments(databaseId, "plans", [
+    Query.equal("code", [planCode]),
+    Query.limit(1),
+  ]);
+  return page.documents?.[0] ?? null;
+}
+
+async function getFeatureEntitlement(databases, databaseId, planCode, featureKey) {
+  if (!planCode) return null;
+  try {
+    const page = await databases.listDocuments(databaseId, "feature_entitlements", [
+      Query.equal("planCode", [planCode]),
+      Query.equal("featureKey", [featureKey]),
+      Query.limit(1),
+    ]);
+    return page.documents?.[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function assertFeatureEnabled({
+  databases,
+  databaseId,
+  workspaceId,
+  featureKey,
+}) {
+  const workspace = await databases.getDocument(databaseId, "workspaces", workspaceId);
+  const subscription = await getLatestSubscription(databases, databaseId, workspaceId);
+
+  if (isBillingLocked({ workspace, subscription })) {
+    const error = new Error(
+      "Billing is inactive for this workspace. Upgrade or renew to continue."
+    );
+    error.code = 402;
+    throw error;
+  }
+
+  const plan = await getPlanByCode(databases, databaseId, subscription?.planCode ?? null);
+  const row = await getFeatureEntitlement(
+    databases,
+    databaseId,
+    subscription?.planCode ?? null,
+    featureKey
+  );
+
+  const fromPlan = resolvePlanFeatureRule(plan, featureKey);
+  const enabled =
+    typeof row?.enabled === "boolean"
+      ? Boolean(row.enabled)
+      : fromPlan?.enabled ?? true;
+
+  if (!enabled) {
+    const error = new Error(
+      `Feature "${featureKey}" is locked by your current plan. Upgrade in Settings to continue.`
+    );
+    error.code = 402;
+    throw error;
+  }
 }
 
 function startOfMonth(date) {
@@ -74,7 +219,18 @@ function roundMoney(value) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 }
 
+function roundProratedRent(value) {
+  const normalized = Number(value) || 0;
+  if (normalized <= 0) return 0;
+  return Math.round(normalized / 1000) * 1000;
+}
+
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const FIXED_PRORATION_DAYS = 30;
+
+function normalizeProrationMode(value) {
+  return value === "fixed_30" ? "fixed_30" : "actual_days";
+}
 
 function parseDateOnlyUtc(value) {
   if (!value) return null;
@@ -96,11 +252,19 @@ function diffDaysInclusive(start, end) {
   return Math.floor((end.getTime() - start.getTime()) / MS_PER_DAY) + 1;
 }
 
+function isSameMonthUtc(left, right) {
+  return (
+    left.getUTCFullYear() === right.getUTCFullYear() &&
+    left.getUTCMonth() === right.getUTCMonth()
+  );
+}
+
 function prorateMonthlyRent({
   baseRent,
   month,
   occupancyStartDate,
   occupancyEndDate,
+  prorationMode,
 }) {
   const normalizedRent = Number(baseRent) || 0;
   if (normalizedRent <= 0) return 0;
@@ -111,17 +275,30 @@ function prorateMonthlyRent({
   const occupancyStart = parseDateOnlyUtc(occupancyStartDate);
   const occupancyEnd = parseDateOnlyUtc(occupancyEndDate);
 
+  if (!occupancyStart) return roundMoney(normalizedRent);
+
+  const isMoveInMonth = isSameMonthUtc(occupancyStart, monthStart);
+  if (!isMoveInMonth) {
+    return roundMoney(normalizedRent);
+  }
+
+  if (occupancyEnd && isSameMonthUtc(occupancyEnd, monthStart)) {
+    return roundMoney(normalizedRent);
+  }
+
   const effectiveStart =
     occupancyStart && occupancyStart > monthStart ? occupancyStart : monthStart;
-  const effectiveEnd = occupancyEnd && occupancyEnd < monthEnd ? occupancyEnd : monthEnd;
+  const effectiveEnd = monthEnd;
   if (effectiveEnd < effectiveStart) return 0;
 
   const occupiedDays = diffDaysInclusive(effectiveStart, effectiveEnd);
   const totalDaysInMonth = diffDaysInclusive(monthStart, monthEnd);
-  if (occupiedDays >= totalDaysInMonth) {
+  const mode = normalizeProrationMode(prorationMode);
+  const denominator = mode === "fixed_30" ? FIXED_PRORATION_DAYS : totalDaysInMonth;
+  if (occupiedDays >= denominator) {
     return roundMoney(normalizedRent);
   }
-  return roundMoney((normalizedRent * occupiedDays) / totalDaysInMonth);
+  return roundProratedRent((normalizedRent * occupiedDays) / denominator);
 }
 
 function buildPaidByMonth(payments) {
@@ -201,6 +378,7 @@ function buildRentByMonth({
   fallbackRent,
   occupancyStartDate = null,
   occupancyEndDate = null,
+  prorationMode = "actual_days",
 }) {
   const tenantHistory = parseHistory(tenantHistoryJson);
   const houseHistory = parseHistory(houseHistoryJson);
@@ -215,6 +393,7 @@ function buildRentByMonth({
       month,
       occupancyStartDate,
       occupancyEndDate,
+      prorationMode,
     });
   });
   return rentByMonth;
@@ -305,18 +484,41 @@ function findOccupyingTenantForHouse(tenants, houseId, expenseDate) {
   );
 }
 
-async function listAllDocuments(databases, databaseId, collectionId, baseQueries = []) {
-  const documents = [];
-  let cursor = null;
-  while (true) {
-    const queries = [...baseQueries, Query.limit(100)];
-    if (cursor) queries.push(Query.cursorAfter(cursor));
-    const page = await databases.listDocuments(databaseId, collectionId, queries);
-    documents.push(...page.documents);
-    if (page.documents.length < 100) break;
-    cursor = page.documents[page.documents.length - 1].$id;
+async function listAllDocuments(
+  databases,
+  databaseId,
+  collectionId,
+  baseQueries = [],
+  workspaceId = null
+) {
+  const fetchWithQueries = async (queriesWithoutLimit) => {
+    const documents = [];
+    let cursor = null;
+    while (true) {
+      const queries = [...queriesWithoutLimit, Query.limit(100)];
+      if (cursor) queries.push(Query.cursorAfter(cursor));
+      const page = await databases.listDocuments(databaseId, collectionId, queries);
+      documents.push(...page.documents);
+      if (page.documents.length < 100) break;
+      cursor = page.documents[page.documents.length - 1].$id;
+    }
+    return documents;
+  };
+
+  const scopedQueries = workspaceId
+    ? [Query.equal("workspaceId", [workspaceId]), ...baseQueries]
+    : [...baseQueries];
+  const scopedDocuments = await fetchWithQueries(scopedQueries);
+  if (scopedDocuments.length > 0 || !workspaceId) {
+    return scopedDocuments;
   }
-  return documents;
+
+  // Transitional fallback for legacy records missing workspaceId.
+  const legacyDocuments = await fetchWithQueries(baseQueries);
+  return legacyDocuments.filter((document) => {
+    const documentWorkspaceId = normalizeWorkspaceId(document?.workspaceId);
+    return !documentWorkspaceId || documentWorkspaceId === workspaceId;
+  });
 }
 
 function isMigrationDataShape(data) {
@@ -334,26 +536,37 @@ async function ensureCallerCanMigrate({
   endpoint,
   projectId,
   jwt,
-  adminTeamId,
-  clerkTeamId,
+  databases,
+  databaseId,
+  workspaceId,
 }) {
   if (!jwt) {
     throw Object.assign(new Error("Missing caller JWT."), { code: 401 });
   }
   const callerClient = new Client().setEndpoint(endpoint).setProject(projectId).setJWT(jwt);
   const account = new Account(callerClient);
-  const teams = new Teams(callerClient);
-  await account.get();
-  const teamList = await teams.list();
-  const hasAllowedTeam = (teamList.teams ?? []).some((team) => {
-    const name = String(team.name ?? "").trim().toLowerCase();
-    const byName = name === "admin" || name === "clerk";
-    const byId =
-      (adminTeamId && team.$id === adminTeamId) ||
-      (clerkTeamId && team.$id === clerkTeamId);
-    return Boolean(byName || byId);
-  });
-  if (!hasAllowedTeam) {
+  const caller = await account.get();
+  const callerWorkspaceId = normalizeWorkspaceId(caller?.prefs?.workspaceId);
+  if (callerWorkspaceId && callerWorkspaceId !== workspaceId) {
+    throw Object.assign(new Error("Caller is not allowed to use another workspace."), {
+      code: 403,
+    });
+  }
+
+  const workspace = await databases.getDocument(databaseId, "workspaces", workspaceId);
+  if (workspace?.ownerUserId === caller.$id) {
+    return;
+  }
+
+  const membershipPage = await databases.listDocuments(databaseId, "workspace_memberships", [
+    Query.equal("workspaceId", [workspaceId]),
+    Query.equal("userId", [caller.$id]),
+    Query.equal("status", ["active"]),
+    Query.limit(1),
+  ]);
+  const membership = membershipPage.documents?.[0] ?? null;
+  const role = String(membership?.role ?? "").trim().toLowerCase();
+  if (role !== "admin" && role !== "clerk") {
     throw Object.assign(new Error("Only admin or clerk can run old-record import."), {
       code: 403,
     });
@@ -383,8 +596,6 @@ export default async (context) => {
     "APPWRITE_FUNCTION_API_KEY"
   );
   const databaseId = getEnv("RCMS_APPWRITE_DATABASE_ID", "APPWRITE_DATABASE_ID") || "rcms";
-  const adminTeamId = getEnv("RCMS_APPWRITE_TEAM_ADMIN_ID", "APPWRITE_TEAM_ADMIN_ID");
-  const clerkTeamId = getEnv("RCMS_APPWRITE_TEAM_CLERK_ID", "APPWRITE_TEAM_CLERK_ID");
 
   if (!endpoint || !projectId || !apiKey) {
     return res.json(
@@ -398,6 +609,7 @@ export default async (context) => {
   }
 
   const jwt = normalize(body.jwt);
+  const workspaceId = resolveWorkspaceId(body);
   const data = body.data;
   if (!isMigrationDataShape(data)) {
     return res.json(
@@ -410,19 +622,31 @@ export default async (context) => {
   }
 
   try {
-    await ensureCallerCanMigrate({
-      endpoint,
-      projectId,
-      jwt,
-      adminTeamId,
-      clerkTeamId,
-    });
-
     const adminClient = new Client()
       .setEndpoint(endpoint)
       .setProject(projectId)
       .setKey(apiKey);
     const databases = new Databases(adminClient);
+
+    await ensureCallerCanMigrate({
+      endpoint,
+      projectId,
+      jwt,
+      databases,
+      databaseId,
+      workspaceId,
+    });
+
+    await assertFeatureEnabled({
+      databases,
+      databaseId,
+      workspaceId,
+      featureKey: "migration.use",
+    });
+
+    const workspace = await databases.getDocument(databaseId, "workspaces", workspaceId);
+    const prorationMode = normalizeProrationMode(workspace?.prorationMode);
+
     const warnings = [];
     const counters = {
       housesCreated: 0,
@@ -433,9 +657,13 @@ export default async (context) => {
       housesUpdated: 0,
     };
 
-    const existingHouses = await listAllDocuments(databases, databaseId, "houses", [
-      Query.orderAsc("code"),
-    ]);
+    const existingHouses = await listAllDocuments(
+      databases,
+      databaseId,
+      "houses",
+      [Query.orderAsc("code")],
+      workspaceId
+    );
     const houseByCode = new Map(existingHouses.map((house) => [house.code, house]));
     const houseById = new Map(existingHouses.map((house) => [house.$id, house]));
 
@@ -449,6 +677,7 @@ export default async (context) => {
       const monthlyRent = parseNumber(row.MonthlyRent);
       const effectiveDate = normalize(row.RentEffectiveDate) || new Date().toISOString().slice(0, 10);
       const created = await databases.createDocument(databaseId, "houses", ID.unique(), {
+        workspaceId,
         code,
         name: normalize(row.HouseName) || null,
         monthlyRent,
@@ -465,9 +694,13 @@ export default async (context) => {
       counters.housesCreated += 1;
     }
 
-    const existingTenants = await listAllDocuments(databases, databaseId, "tenants", [
-      Query.orderAsc("fullName"),
-    ]);
+    const existingTenants = await listAllDocuments(
+      databases,
+      databaseId,
+      "tenants",
+      [Query.orderAsc("fullName")],
+      workspaceId
+    );
     const tenantByKey = new Map(existingTenants.map((tenant) => [buildTenantKey(tenant), tenant]));
 
     for (const row of data.tenants) {
@@ -488,6 +721,7 @@ export default async (context) => {
       const moveOutDate = normalize(row.MoveOutDate) || null;
       const status = moveOutDate ? "inactive" : normalizeStatus(row.Status, "active");
       const created = await databases.createDocument(databaseId, "tenants", ID.unique(), {
+        workspaceId,
         fullName,
         phone: normalize(row.Phone) || null,
         house: house.$id,
@@ -508,10 +742,13 @@ export default async (context) => {
     }
 
     for (const [houseCode, house] of houseByCode.entries()) {
-      const tenantsForHouse = await listAllDocuments(databases, databaseId, "tenants", [
-        Query.equal("house", [house.$id]),
-        Query.orderAsc("fullName"),
-      ]);
+      const tenantsForHouse = await listAllDocuments(
+        databases,
+        databaseId,
+        "tenants",
+        [Query.equal("house", [house.$id]), Query.orderAsc("fullName")],
+        workspaceId
+      );
       const occupant =
         tenantsForHouse.find((tenant) => tenant.status === "active" && !tenant.moveOutDate) ??
         null;
@@ -541,10 +778,13 @@ export default async (context) => {
 
     const paymentsByTenant = new Map();
     for (const tenant of tenantByKey.values()) {
-      const existingPayments = await listAllDocuments(databases, databaseId, "payments", [
-        Query.equal("tenant", [tenant.$id]),
-        Query.orderAsc("paymentDate"),
-      ]);
+      const existingPayments = await listAllDocuments(
+        databases,
+        databaseId,
+        "payments",
+        [Query.equal("tenant", [tenant.$id]), Query.orderAsc("paymentDate")],
+        workspaceId
+      );
       paymentsByTenant.set(tenant.$id, existingPayments);
     }
 
@@ -578,6 +818,7 @@ export default async (context) => {
         fallbackRent: rent,
         occupancyStartDate: tenant.moveInDate,
         occupancyEndDate: tenant.moveOutDate ?? null,
+        prorationMode,
       });
       const allocation = previewAllocation({
         amount: parseNumber(row.Amount),
@@ -594,6 +835,7 @@ export default async (context) => {
       );
 
       const created = await databases.createDocument(databaseId, "payments", ID.unique(), {
+        workspaceId,
         tenant: tenant.$id,
         amount: parseNumber(row.Amount),
         method: normalizeMethod(row.Method),
@@ -623,6 +865,7 @@ export default async (context) => {
       const affectsSecurityDeposit =
         category === "maintenance" && parseBooleanLike(row.AffectsSecurityDeposit);
       const createdExpense = await databases.createDocument(databaseId, "expenses", ID.unique(), {
+        workspaceId,
         category,
         description: normalize(row.Description),
         amount: parseNumber(row.Amount),
@@ -654,6 +897,7 @@ export default async (context) => {
             "security_deposit_deductions",
             ID.unique(),
             {
+              workspaceId,
               tenantId: occupyingTenant.$id,
               expenseId: createdExpense.$id,
               houseId,

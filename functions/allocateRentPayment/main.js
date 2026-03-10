@@ -1,4 +1,4 @@
-import { Client, Databases, ID, Query, Teams } from "node-appwrite";
+import { Account, Client, Databases, ID, Query } from "node-appwrite";
 
 const REQUIRED_FIELDS = ["tenantId", "amount", "method", "paymentDate"];
 
@@ -6,16 +6,61 @@ function getEnv(name, fallback) {
   return process.env[name] ?? fallback;
 }
 
-async function callerHasAdminRole({ endpoint, projectId, jwt, adminTeamId }) {
+function normalizeWorkspaceId(value) {
+  const normalized = String(value ?? "").trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function resolveWorkspaceId(body) {
+  return (
+    normalizeWorkspaceId(body?.workspaceId) ||
+    normalizeWorkspaceId(getEnv("RCMS_DEFAULT_WORKSPACE_ID")) ||
+    "default"
+  );
+}
+
+function assertWorkspaceAccess(document, workspaceId, label) {
+  const documentWorkspaceId = normalizeWorkspaceId(document?.workspaceId);
+  if (documentWorkspaceId && documentWorkspaceId !== workspaceId) {
+    const error = new Error(`${label} does not belong to this workspace.`);
+    error.code = 403;
+    throw error;
+  }
+}
+
+async function callerHasWorkspaceRole({
+  endpoint,
+  projectId,
+  jwt,
+  databases,
+  databaseId,
+  workspaceId,
+  allowedRoles,
+}) {
   if (!jwt) return true;
   const callerClient = new Client().setEndpoint(endpoint).setProject(projectId).setJWT(jwt);
-  const teams = new Teams(callerClient);
-  const teamList = await teams.list();
-  return (teamList.teams ?? []).some((team) => {
-    const byId = adminTeamId && team.$id === adminTeamId;
-    const byName = String(team.name ?? "").trim().toLowerCase() === "admin";
-    return Boolean(byId || byName);
-  });
+  const account = new Account(callerClient);
+  const caller = await account.get();
+
+  const callerWorkspaceId = normalizeWorkspaceId(caller?.prefs?.workspaceId);
+  if (callerWorkspaceId && callerWorkspaceId !== workspaceId) {
+    return false;
+  }
+
+  const workspace = await databases.getDocument(databaseId, "workspaces", workspaceId);
+  if (workspace?.ownerUserId === caller.$id) {
+    return allowedRoles.includes("admin");
+  }
+
+  const membershipPage = await databases.listDocuments(databaseId, "workspace_memberships", [
+    Query.equal("workspaceId", [workspaceId]),
+    Query.equal("userId", [caller.$id]),
+    Query.equal("status", ["active"]),
+    Query.limit(1),
+  ]);
+  const membership = membershipPage.documents?.[0] ?? null;
+  const role = String(membership?.role ?? "").trim().toLowerCase();
+  return allowedRoles.includes(role);
 }
 
 function parseJson(body) {
@@ -66,7 +111,136 @@ function parseDateSafe(value) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function isBillingLocked({ workspace, subscription }) {
+  const now = new Date();
+  const rawState = subscription?.state || workspace?.subscriptionState || "trialing";
+
+  if (rawState === "active") return false;
+  if (rawState === "trialing") {
+    const trialEnd = parseDateSafe(subscription?.trialEndDate || workspace?.trialEndDate);
+    return trialEnd ? trialEnd.getTime() <= now.getTime() : false;
+  }
+  if (rawState === "past_due") {
+    const graceEndsAt = parseDateSafe(subscription?.graceEndsAt);
+    return !graceEndsAt || graceEndsAt.getTime() <= now.getTime();
+  }
+  if (rawState === "canceled") {
+    const periodEnd = parseDateSafe(subscription?.currentPeriodEnd);
+    return !periodEnd || periodEnd.getTime() <= now.getTime();
+  }
+
+  return true;
+}
+
+function parseEntitlementsJson(value) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object") return null;
+    if (parsed.features && typeof parsed.features === "object") {
+      return parsed.features;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function resolvePlanFeatureRule(plan, featureKey) {
+  const entitlements = parseEntitlementsJson(plan?.entitlementsJson);
+  if (!entitlements || typeof entitlements !== "object") {
+    return null;
+  }
+  const raw = entitlements[featureKey];
+  if (typeof raw === "boolean") {
+    return { enabled: raw };
+  }
+  if (raw && typeof raw === "object") {
+    const enabled = typeof raw.enabled === "boolean" ? raw.enabled : true;
+    return { enabled };
+  }
+  return null;
+}
+
+async function getLatestSubscription(databases, databaseId, workspaceId) {
+  const page = await databases.listDocuments(databaseId, "subscriptions", [
+    Query.equal("workspaceId", [workspaceId]),
+    Query.orderDesc("$updatedAt"),
+    Query.limit(1),
+  ]);
+  return page.documents?.[0] ?? null;
+}
+
+async function getPlanByCode(databases, databaseId, planCode) {
+  if (!planCode) return null;
+  const page = await databases.listDocuments(databaseId, "plans", [
+    Query.equal("code", [planCode]),
+    Query.limit(1),
+  ]);
+  return page.documents?.[0] ?? null;
+}
+
+async function getFeatureEntitlement(databases, databaseId, planCode, featureKey) {
+  if (!planCode) return null;
+  try {
+    const page = await databases.listDocuments(databaseId, "feature_entitlements", [
+      Query.equal("planCode", [planCode]),
+      Query.equal("featureKey", [featureKey]),
+      Query.limit(1),
+    ]);
+    return page.documents?.[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function assertFeatureEnabled({
+  databases,
+  databaseId,
+  workspaceId,
+  featureKey,
+}) {
+  const workspace = await databases.getDocument(databaseId, "workspaces", workspaceId);
+  const subscription = await getLatestSubscription(databases, databaseId, workspaceId);
+
+  if (isBillingLocked({ workspace, subscription })) {
+    const error = new Error(
+      "Billing is inactive for this workspace. Upgrade or renew to continue."
+    );
+    error.code = 402;
+    throw error;
+  }
+
+  const plan = await getPlanByCode(databases, databaseId, subscription?.planCode ?? null);
+  const row = await getFeatureEntitlement(
+    databases,
+    databaseId,
+    subscription?.planCode ?? null,
+    featureKey
+  );
+
+  const fromPlan = resolvePlanFeatureRule(plan, featureKey);
+  const enabled =
+    typeof row?.enabled === "boolean"
+      ? Boolean(row.enabled)
+      : fromPlan?.enabled ?? true;
+
+  if (!enabled) {
+    const error = new Error(
+      `Feature "${featureKey}" is locked by your current plan. Upgrade in Settings to continue.`
+    );
+    error.code = 402;
+    throw error;
+  }
+}
+
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const PRORATE_ROUNDING_UNIT = 1000;
+const FIXED_PRORATION_DAYS = 30;
+
+function normalizeProrationMode(value) {
+  return value === "fixed_30" ? "fixed_30" : "actual_days";
+}
 
 function parseDateOnlyUtc(value) {
   if (!value) return null;
@@ -88,11 +262,19 @@ function diffDaysInclusive(start, end) {
   return Math.floor((end.getTime() - start.getTime()) / MS_PER_DAY) + 1;
 }
 
+function isSameMonthUtc(left, right) {
+  return (
+    left.getUTCFullYear() === right.getUTCFullYear() &&
+    left.getUTCMonth() === right.getUTCMonth()
+  );
+}
+
 function prorateMonthlyRent({
   baseRent,
   month,
   occupancyStartDate,
   occupancyEndDate,
+  prorationMode,
 }) {
   const normalizedRent = Number(baseRent) || 0;
   if (normalizedRent <= 0) return 0;
@@ -103,17 +285,30 @@ function prorateMonthlyRent({
   const occupancyStart = parseDateOnlyUtc(occupancyStartDate);
   const occupancyEnd = parseDateOnlyUtc(occupancyEndDate);
 
+  if (!occupancyStart) return roundMoney(normalizedRent);
+
+  const isMoveInMonth = isSameMonthUtc(occupancyStart, monthStart);
+  if (!isMoveInMonth) {
+    return roundMoney(normalizedRent);
+  }
+
+  if (occupancyEnd && isSameMonthUtc(occupancyEnd, monthStart)) {
+    return roundMoney(normalizedRent);
+  }
+
   const effectiveStart =
     occupancyStart && occupancyStart > monthStart ? occupancyStart : monthStart;
-  const effectiveEnd = occupancyEnd && occupancyEnd < monthEnd ? occupancyEnd : monthEnd;
+  const effectiveEnd = monthEnd;
   if (effectiveEnd < effectiveStart) return 0;
 
   const occupiedDays = diffDaysInclusive(effectiveStart, effectiveEnd);
   const totalDaysInMonth = diffDaysInclusive(monthStart, monthEnd);
-  if (occupiedDays >= totalDaysInMonth) {
+  const mode = normalizeProrationMode(prorationMode);
+  const denominator = mode === "fixed_30" ? FIXED_PRORATION_DAYS : totalDaysInMonth;
+  if (occupiedDays >= denominator) {
     return roundMoney(normalizedRent);
   }
-  return roundMoney((normalizedRent * occupiedDays) / totalDaysInMonth);
+  return roundProratedRent((normalizedRent * occupiedDays) / denominator);
 }
 
 function getTenantUpdatedAt(tenant) {
@@ -176,6 +371,12 @@ function buildPaidByMonth(payments) {
 
 function roundMoney(value) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+}
+
+function roundProratedRent(value) {
+  const normalized = Number(value) || 0;
+  if (normalized <= 0) return 0;
+  return Math.round(normalized / PRORATE_ROUNDING_UNIT) * PRORATE_ROUNDING_UNIT;
 }
 
 function normalizeNote(value) {
@@ -296,7 +497,8 @@ function buildRentByMonth(
   houseHistoryJson,
   fallbackRent,
   occupancyStartDate = null,
-  occupancyEndDate = null
+  occupancyEndDate = null,
+  prorationMode = "actual_days"
 ) {
   const tenantHistory = parseHistory(tenantHistoryJson);
   const houseHistory = parseHistory(houseHistoryJson);
@@ -311,6 +513,7 @@ function buildRentByMonth(
       month,
       occupancyStartDate,
       occupancyEndDate,
+      prorationMode,
     });
   });
   return rentByMonth;
@@ -333,27 +536,44 @@ function allocatePayment({ amount, months, paidByMonth, rentByMonth }) {
   return { allocation, remaining };
 }
 
-async function listAllTenantPayments(databases, databaseId, tenantId) {
-  const documents = [];
-  let cursor = null;
-  const pageSize = 100;
+async function listAllTenantPayments(databases, databaseId, tenantId, workspaceId) {
+  const listWithQueries = async (baseQueries) => {
+    const documents = [];
+    let cursor = null;
+    const pageSize = 100;
 
-  while (true) {
-    const queries = [
-      Query.equal("tenant", [tenantId]),
-      Query.orderAsc("paymentDate"),
-      Query.limit(pageSize),
-    ];
-    if (cursor) {
-      queries.push(Query.cursorAfter(cursor));
+    while (true) {
+      const queries = [...baseQueries, Query.limit(pageSize)];
+      if (cursor) {
+        queries.push(Query.cursorAfter(cursor));
+      }
+      const page = await databases.listDocuments(databaseId, "payments", queries);
+      documents.push(...page.documents);
+      if (page.documents.length < pageSize) break;
+      cursor = page.documents[page.documents.length - 1].$id;
     }
-    const page = await databases.listDocuments(databaseId, "payments", queries);
-    documents.push(...page.documents);
-    if (page.documents.length < pageSize) break;
-    cursor = page.documents[page.documents.length - 1].$id;
+
+    return documents;
+  };
+
+  const scoped = await listWithQueries([
+    Query.equal("tenant", [tenantId]),
+    Query.equal("workspaceId", [workspaceId]),
+    Query.orderAsc("paymentDate"),
+  ]);
+  if (scoped.length > 0) {
+    return scoped;
   }
 
-  return documents;
+  // Transitional fallback for legacy records missing workspaceId.
+  const legacy = await listWithQueries([
+    Query.equal("tenant", [tenantId]),
+    Query.orderAsc("paymentDate"),
+  ]);
+  return legacy.filter((payment) => {
+    const paymentWorkspaceId = normalizeWorkspaceId(payment?.workspaceId);
+    return !paymentWorkspaceId || paymentWorkspaceId === workspaceId;
+  });
 }
 
 export default async (context) => {
@@ -377,8 +597,6 @@ export default async (context) => {
     getEnv("APPWRITE_API_KEY") ||
     getEnv("APPWRITE_FUNCTION_API_KEY");
   const databaseId = getEnv("RCMS_APPWRITE_DATABASE_ID") || "rcms";
-  const adminTeamId =
-    getEnv("RCMS_APPWRITE_TEAM_ADMIN_ID") || getEnv("APPWRITE_TEAM_ADMIN_ID");
 
   if (!endpoint || !projectId) {
     log?.("Missing Appwrite endpoint or project in function env.");
@@ -400,6 +618,7 @@ export default async (context) => {
 
   const {
     jwt,
+    workspaceId: payloadWorkspaceId,
     tenantId,
     amount,
     method,
@@ -413,6 +632,7 @@ export default async (context) => {
     receiptFileSize,
     reversePaymentId,
   } = body;
+  const workspaceId = resolveWorkspaceId({ workspaceId: payloadWorkspaceId });
   const normalizedNotes = normalizeNote(notes);
   const normalizedReceiptFileId = normalizeOptionalString(receiptFileId);
   const normalizedReceiptBucketId = normalizeOptionalString(receiptBucketId);
@@ -437,14 +657,28 @@ export default async (context) => {
     );
   }
   const databases = new Databases(client);
+  const entitlementDatabases =
+    apiKey && jwt
+      ? new Databases(new Client().setEndpoint(endpoint).setProject(projectId).setKey(apiKey))
+      : databases;
 
   if (reversePaymentId) {
     try {
-      const isAdmin = await callerHasAdminRole({
+      await assertFeatureEnabled({
+        databases: entitlementDatabases,
+        databaseId,
+        workspaceId,
+        featureKey: "payments.reverse",
+      });
+
+      const isAdmin = await callerHasWorkspaceRole({
         endpoint,
         projectId,
         jwt,
-        adminTeamId,
+        databases: entitlementDatabases,
+        databaseId,
+        workspaceId,
+        allowedRoles: ["admin"],
       });
       if (!isAdmin) {
         return res.json(
@@ -455,11 +689,13 @@ export default async (context) => {
       log?.(`Reversing payment ${reversePaymentId}`);
       log?.("Fetching original payment...");
       const original = await databases.getDocument(databaseId, "payments", reversePaymentId);
+      assertWorkspaceAccess(original, workspaceId, "Payment");
       if (original.isReversal) {
         return res.json({ ok: false, error: "Reversal entries cannot be reversed." }, 400);
       }
       const existingReversals = await databases.listDocuments(databaseId, "payments", [
         Query.equal("reversedPaymentId", [original.$id]),
+        Query.equal("workspaceId", [workspaceId]),
         Query.limit(1),
       ]);
       if (existingReversals.total > 0) {
@@ -474,10 +710,12 @@ export default async (context) => {
         return res.json({ ok: false, error: "Original payment has no tenant." }, 400);
       }
       const tenant = await databases.getDocument(databaseId, "tenants", originalTenantId);
+      assertWorkspaceAccess(tenant, workspaceId, "Tenant");
       const tenantPayments = await listAllTenantPayments(
         databases,
         databaseId,
-        originalTenantId
+        originalTenantId,
+        workspaceId
       );
       const paidByMonth = buildPaidByMonth(tenantPayments);
       const originalDepositApplied = roundMoney(
@@ -517,6 +755,7 @@ export default async (context) => {
       const recordedBy = req.headers["x-appwrite-user-id"] ?? null;
       log?.("Creating reversal document...");
       const reversal = await databases.createDocument(databaseId, "payments", ID.unique(), {
+        workspaceId,
         tenant: originalTenantId,
         amount: -totalReversalAmount,
         securityDepositApplied: depositToReverse > 0 ? -depositToReverse : 0,
@@ -569,24 +808,41 @@ export default async (context) => {
   }
 
   try {
+    await assertFeatureEnabled({
+      databases: entitlementDatabases,
+      databaseId,
+      workspaceId,
+      featureKey: "payments.record",
+    });
+
     log?.(`Allocating payment for tenant ${tenantId}`);
     const paymentDateValue = parseDateSafe(paymentDate);
     if (!paymentDateValue) {
       return res.json({ ok: false, error: "Invalid payment date." }, 400);
     }
     const tenant = await databases.getDocument(databaseId, "tenants", tenantId);
+    assertWorkspaceAccess(tenant, workspaceId, "Tenant");
+    const workspace = await databases.getDocument(databaseId, "workspaces", workspaceId);
     const houseId =
       typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? null;
     const house = houseId
       ? await databases.getDocument(databaseId, "houses", houseId)
       : null;
+    if (house) {
+      assertWorkspaceAccess(house, workspaceId, "House");
+    }
     const rent = roundMoney(tenant.rentOverride ?? house?.monthlyRent ?? 0);
     const amountValue = roundMoney(Math.max(Number(amount) || 0, 0));
     if (amountValue <= 0) {
       return res.json({ ok: false, error: "Amount must be greater than zero." }, 400);
     }
 
-    const paymentList = await listAllTenantPayments(databases, databaseId, tenantId);
+    const paymentList = await listAllTenantPayments(
+      databases,
+      databaseId,
+      tenantId,
+      workspaceId
+    );
     const activeRentPayments = getActiveRentPayments(paymentList);
     const isInitialActivePayment = activeRentPayments.length === 0;
     const depositState = resolveDepositState(tenant, rent);
@@ -624,7 +880,8 @@ export default async (context) => {
       house?.rentHistoryJson ?? null,
       rent,
       tenant.moveInDate,
-      occupancyEndDate
+      occupancyEndDate,
+      normalizeProrationMode(workspace?.prorationMode)
     );
     const { allocation, remaining } = allocatePayment({
       amount: allocatableAmount,
@@ -646,6 +903,7 @@ export default async (context) => {
       "payments",
       ID.unique(),
       {
+        workspaceId,
         tenant: tenantId,
         amount: amountValue,
         securityDepositApplied,

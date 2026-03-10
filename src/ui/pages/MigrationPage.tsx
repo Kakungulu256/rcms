@@ -3,11 +3,14 @@ import * as XLSX from "xlsx";
 import { ID, Query } from "appwrite";
 import {
   account,
-  databases,
+  createWorkspaceDocument,
   functions as appwriteFunctions,
+  getWorkspaceScopedQueries,
   listAllDocuments,
   rcmsDatabaseId,
+  updateScopedDocument,
 } from "../../lib/appwrite";
+import { getRequiredActiveWorkspaceId } from "../../lib/workspace";
 import { COLLECTIONS } from "../../lib/schema";
 import {
   buildMonthSeries,
@@ -361,10 +364,12 @@ export default function MigrationPage() {
     if (migrateFunctionId) {
       try {
         const jwt = await account.createJWT();
+        const activeWorkspaceId = getRequiredActiveWorkspaceId();
         const { parsed: migrationResult, latest } = await executeMigrationFunction(
           migrateFunctionId,
           {
             jwt: jwt.jwt,
+            workspaceId: activeWorkspaceId,
             data: parsed,
           }
         );
@@ -413,12 +418,11 @@ export default function MigrationPage() {
     }
 
     try {
-      const houseResult = await databases.listDocuments(
-        rcmsDatabaseId,
-        COLLECTIONS.houses,
-        [Query.orderAsc("code")]
-      );
-      const existingHouses = houseResult.documents as unknown as House[];
+      const existingHouses = await listAllDocuments<House>({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.houses,
+        queries: [Query.orderAsc("code")],
+      });
       const houseByCode = new Map(existingHouses.map((house) => [house.code, house]));
       const houseById = new Map(existingHouses.map((house) => [house.$id, house]));
 
@@ -431,11 +435,11 @@ export default function MigrationPage() {
         if (houseByCode.has(code)) continue;
         const monthlyRent = parseNumber(row.MonthlyRent);
         const effectiveDate = normalize(row.RentEffectiveDate) || new Date().toISOString().slice(0, 10);
-        const created = await databases.createDocument(
-          rcmsDatabaseId,
-          COLLECTIONS.houses,
-          ID.unique(),
-          {
+        const created = await createWorkspaceDocument({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.houses,
+          documentId: ID.unique(),
+          data: {
             code,
             name: normalize(row.HouseName) || null,
             monthlyRent,
@@ -446,18 +450,17 @@ export default function MigrationPage() {
               amount: monthlyRent,
               source: "house",
             }),
-          }
-        );
+          },
+        });
         houseByCode.set(code, created as unknown as House);
         houseById.set((created as unknown as House).$id, created as unknown as House);
       }
 
-      const tenantResult = await databases.listDocuments(
-        rcmsDatabaseId,
-        COLLECTIONS.tenants,
-        [Query.orderAsc("fullName")]
-      );
-      const existingTenants = tenantResult.documents as unknown as Tenant[];
+      const existingTenants = await listAllDocuments<Tenant>({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.tenants,
+        queries: [Query.orderAsc("fullName")],
+      });
       const tenantKey = (tenant: Tenant) => {
         const houseId =
           typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
@@ -484,11 +487,11 @@ export default function MigrationPage() {
           moveOutDate != null
             ? "inactive"
             : normalize(row.Status).toLowerCase() || "active";
-        const created = await databases.createDocument(
-          rcmsDatabaseId,
-          COLLECTIONS.tenants,
-          ID.unique(),
-          {
+        const created = await createWorkspaceDocument({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.tenants,
+          documentId: ID.unique(),
+          data: {
             fullName,
             phone: normalize(row.Phone) || null,
             house: house.$id,
@@ -503,8 +506,8 @@ export default function MigrationPage() {
             securityDepositRefunded: false,
             rentOverride: parseNumber(row.RentOverride) || null,
             notes: normalize(row.Notes) || null,
-          }
-        );
+          },
+        });
         tenantByKey.set(key, created as unknown as Tenant);
       }
 
@@ -529,15 +532,18 @@ export default function MigrationPage() {
         ) {
           continue;
         }
-        const updatedHouse = (await databases.updateDocument(
-          rcmsDatabaseId,
-          COLLECTIONS.houses,
-          house.$id,
-          {
+        const updatedHouse = await updateScopedDocument<
+          { status: string; currentTenantId: string | null },
+          House
+        >({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.houses,
+          documentId: house.$id,
+          data: {
             status: nextStatus,
             currentTenantId: nextCurrentTenantId,
-          }
-        )) as unknown as House;
+          },
+        });
         houseByCode.set(houseCode, updatedHouse);
         houseById.set(updatedHouse.$id, updatedHouse);
       }
@@ -551,12 +557,16 @@ export default function MigrationPage() {
 
       const paymentsByTenant = new Map<string, Payment[]>();
       for (const tenant of tenantByKey.values()) {
-        const existing = await databases.listDocuments(
-          rcmsDatabaseId,
-          COLLECTIONS.payments,
-          [Query.equal("tenant", tenant.$id)]
-        );
-        paymentsByTenant.set(tenant.$id, existing.documents as unknown as Payment[]);
+        const existing = await listAllDocuments<Payment>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.payments,
+          queries: getWorkspaceScopedQueries({
+            collectionId: COLLECTIONS.payments,
+            queries: [Query.equal("tenant", [tenant.$id])],
+          }),
+          skipWorkspaceScope: true,
+        });
+        paymentsByTenant.set(tenant.$id, existing);
       }
 
       const sortedPayments = [...parsed.payments].sort((a, b) =>
@@ -609,11 +619,11 @@ export default function MigrationPage() {
           )
         );
 
-        const created = await databases.createDocument(
-          rcmsDatabaseId,
-          COLLECTIONS.payments,
-          ID.unique(),
-          {
+        const created = await createWorkspaceDocument({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.payments,
+          documentId: ID.unique(),
+          data: {
             tenant: tenant.$id,
             amount: parseNumber(row.Amount),
             method: normalize(row.Method).toLowerCase() || "cash",
@@ -621,8 +631,8 @@ export default function MigrationPage() {
             reference: normalize(row.Reference) || null,
             notes: normalize(row.Notes) || null,
             allocationJson,
-          }
-        );
+          },
+        });
         paymentsByTenant.set(
           tenant.$id,
           [created as unknown as Payment, ...existingPayments]
@@ -646,11 +656,11 @@ export default function MigrationPage() {
         }
         const affectsSecurityDeposit =
           category === "maintenance" && parseBooleanLike(row.AffectsSecurityDeposit);
-        const created = await databases.createDocument(
-          rcmsDatabaseId,
-          COLLECTIONS.expenses,
-          ID.unique(),
-          {
+        const created = await createWorkspaceDocument({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.expenses,
+          documentId: ID.unique(),
+          data: {
             category,
             description: normalize(row.Description),
             amount: parseNumber(row.Amount),
@@ -663,8 +673,8 @@ export default function MigrationPage() {
               ? normalize(row.SecurityDepositDeductionNote) || null
               : null,
             notes: normalize(row.Notes) || null,
-          }
-        );
+          },
+        });
         if (affectsSecurityDeposit && houseId) {
           const occupyingTenant = findOccupyingTenantForHouse(
             knownTenants,
@@ -678,11 +688,11 @@ export default function MigrationPage() {
               ) || "Maintenance"} (${normalize(row.ExpenseDate)})`
             );
           } else {
-            await databases.createDocument(
-              rcmsDatabaseId,
-              COLLECTIONS.securityDepositDeductions,
-              ID.unique(),
-              {
+            await createWorkspaceDocument({
+              databaseId: rcmsDatabaseId,
+              collectionId: COLLECTIONS.securityDepositDeductions,
+              documentId: ID.unique(),
+              data: {
                 tenantId: occupyingTenant.$id,
                 expenseId: (created as { $id: string }).$id,
                 houseId,
@@ -695,8 +705,8 @@ export default function MigrationPage() {
                   normalize(row.Notes) ||
                   null,
                 expenseReference: (created as { $id: string }).$id,
-              }
-            );
+              },
+            });
           }
         }
         if (!created) {

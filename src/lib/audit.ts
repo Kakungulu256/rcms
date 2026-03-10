@@ -1,5 +1,4 @@
-import { ID } from "appwrite";
-import { databases, rcmsDatabaseId } from "./appwrite";
+import { rcmsDatabaseId, createWorkspaceDocument } from "./appwrite";
 import { COLLECTIONS, encodeJson } from "./schema";
 
 export type AuditAction = "create" | "update" | "reverse" | "delete";
@@ -10,14 +9,20 @@ export async function logAudit(params: {
   action: AuditAction;
   actorId: string;
   details?: Record<string, unknown>;
+  workspaceId?: string;
 }) {
-  const { entityType, entityId, action, actorId, details } = params;
-  return databases.createDocument(rcmsDatabaseId, COLLECTIONS.auditLogs, ID.unique(), {
-    entityType,
-    entityId,
-    action,
-    actorId,
-    timestamp: new Date().toISOString(),
-    detailsJson: encodeJson(details ?? null),
+  const { entityType, entityId, action, actorId, details, workspaceId } = params;
+  return createWorkspaceDocument({
+    databaseId: rcmsDatabaseId,
+    collectionId: COLLECTIONS.auditLogs,
+    workspaceId,
+    data: {
+      entityType,
+      entityId,
+      action,
+      actorId,
+      timestamp: new Date().toISOString(),
+      detailsJson: encodeJson(details ?? null),
+    },
   });
 }

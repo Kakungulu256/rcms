@@ -100,6 +100,23 @@ export function resolveRoleFromTeams(
   return "viewer";
 }
 
+export function resolveRoleFromWorkspaceMembership(
+  membership:
+    | { role?: string | null; status?: string | null }
+    | null
+    | undefined
+): AppRole {
+  const status = normalize(membership?.status);
+  if (status && status !== "active") {
+    return "viewer";
+  }
+  const role = normalize(membership?.role);
+  if (role === "admin") return "admin";
+  if (role === "clerk") return "clerk";
+  if (role === "viewer") return "viewer";
+  return "viewer";
+}
+
 export function getRolePermissions(role: AppRole | null | undefined): RolePermissions {
   return PERMISSIONS[role ?? "viewer"];
 }

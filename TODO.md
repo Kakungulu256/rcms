@@ -173,25 +173,25 @@ Use this list in order. Complete and verify each item before moving to the next.
 
 ## Phase 10: SaaS Onboarding, Billing, and Plan-Based Access (Next)
 
-37. [ ] Introduce platform tenancy model (workspace/account per customer)
+37. [x] Introduce platform tenancy model (workspace/account per customer)
 - Add a top-level `workspace` model so each signup gets isolated data.
 - Scope all houses, tenants, payments, expenses, reports, and users to `workspaceId`.
 - Prevent cross-workspace access by query filters + backend checks.
 - Support property managers with many properties across different landlords within one workspace.
 
-38. [ ] Add public landing page and marketing site flow
+38. [x] Add public landing page and marketing site flow
 - New public route for product overview, pricing, FAQs, and CTA buttons.
 - Keep app routes protected behind authentication.
 - Add clear `Start free trial` and `Login` entry points.
 
-39. [ ] Build self-service signup + workspace bootstrap
+39. [x] Build self-service signup + workspace bootstrap
 - On signup, create:
 - Appwrite user
 - Workspace record
 - Default team membership as `admin` for that workspace owner.
 - Set initial subscription state to `trialing` with start/end dates.
 
-40. [ ] Add subscription domain models
+40. [x] Add subscription domain models
 - Add collections/tables for:
 - `plans`
 - `subscriptions`
@@ -199,42 +199,47 @@ Use this list in order. Complete and verify each item before moving to the next.
 - `invoices`
 - `payments_billing`
 - `feature_entitlements` (or plan JSON entitlements)
+- `coupons`
+- `coupon_redemptions`
 - Track trial, active, past_due, canceled, expired states.
 - Keep plan pricing and trial settings editable by platform owner (no hardcoded prices in code).
+- Support coupon rules with percentage discounts per plan/package, validity windows, usage limits, and active/inactive state.
 
-41. [ ] Implement billing integration + webhook processing
-- Integrate payment provider (Stripe recommended; Flutterwave/Pesapal optional).
+41. [x] Implement payment gateway abstraction + Flutterwave integration + webhook processing
+- Add gateway adapter interface/service so provider can be swapped without rewriting billing flows.
+- Implement Flutterwave adapter as the initial provider.
 - Create checkout session for plan purchase/upgrade.
 - Process provider webhooks to activate/suspend subscriptions.
 - Make webhook handler idempotent and audit-logged.
+- Keep gateway configuration environment-driven (`provider`, keys, webhook secret, callback URLs).
 
-42. [ ] Implement trial period and lifecycle rules
+42. [x] Implement trial period and lifecycle rules
 - Configure trial duration to `5 days` (editable in plan catalog/settings).
 - During trial, selected features are enabled.
 - After trial expiry without payment, lock premium features and show upgrade prompts.
 - Add grace period and retry/dunning behavior for failed renewals.
 
-43. [ ] Build feature gating and entitlement enforcement layer
+43. [x] Build feature gating and entitlement enforcement layer
 - Centralize checks like `canAccessFeature(user, workspace, featureKey)`.
 - Gate both frontend UI and backend function actions.
 - Return clear messages when a feature is locked by plan.
 
-44. [ ] Refactor RBAC to workspace-aware memberships
+44. [x] Refactor RBAC to workspace-aware memberships
 - Keep roles (`admin`, `clerk`, `viewer`) but make them workspace-scoped.
 - Allow an admin to invite/manage users only inside their workspace.
 - Ensure role checks always include workspace context.
 
-45. [ ] Enforce plan limits (quota controls)
+45. [x] Enforce plan limits (quota controls)
 - Add limits by plan (examples: max properties, max landlords, max houses, max active tenants, max team members, exports/month).
 - Block create actions at limit with upgrade CTA.
 - Add usage counters and a usage dashboard card.
 
-46. [ ] Add locked-state UX and upgrade/paywall screens
+46. [x] Add locked-state UX and upgrade/paywall screens
 - Show locked badges and disabled buttons for unavailable features.
 - Add upgrade modal/page with current plan, limits, and comparison table.
 - Add billing status banner (trial days left, subscription expiry, past due).
 
-47. [ ] Add billing/settings management for workspace admin
+47. [x] Add billing/settings management for workspace admin
 - Billing tab in Settings:
 - current plan
 - renewal date
@@ -242,28 +247,29 @@ Use this list in order. Complete and verify each item before moving to the next.
 - payment method management
 - upgrade/downgrade/cancel/reactivate actions.
 
-48. [ ] Add workspace branding (company logo) for exports
+48. [x] Add workspace branding (company logo) for exports
 - Allow workspace admin to upload/manage company logo (storage + validation).
 - Add option to include logo as watermark on exported reports (PDF/XLSX where applicable).
 - Provide controls for watermark style/opacity/position and preview before export.
 - Ensure exports without logo still work normally.
 
-49. [ ] Build platform owner dashboard (super-admin console)
+49. [x] Build platform owner dashboard (super-admin console)
 - Add owner-only dashboard to monitor all subscribers/workspaces.
 - Include: total signups, trialing, active paid, past due, churned, MRR/collections, plan distribution, and recent activity by workspace.
 - Include controls to edit plan prices/trial days and activate/deactivate plans globally.
+- Include coupon management (create/edit/activate/deactivate percentage coupons, plan targeting, usage limits, expiry windows).
 
-50. [ ] Add team invitations and acceptance flow
+50. [x] Add team invitations and acceptance flow
 - Admin sends invite by email with target role.
 - Invite acceptance creates membership in the correct workspace and role.
 - Prevent duplicate conflicting memberships.
 
-51. [ ] Security and audit hardening for monetized flows
+51. [x] Security and audit hardening for monetized flows
 - Audit-log plan changes, renewals, cancellations, and failed billing actions.
 - Protect billing endpoints/functions with signature verification and strict auth.
 - Add anti-abuse checks (rate limiting for signup/invites/checkout initiation).
 
-52. [ ] Data migration strategy from current single-tenant app
+52. [x] Data migration strategy from current single-tenant app
 - Backfill existing records with a default `workspaceId`.
 - Create owner workspace/team from current admin account.
 - Migrate existing users into workspace memberships.
@@ -273,6 +279,7 @@ Use this list in order. Complete and verify each item before moving to the next.
 - trial -> paid
 - paid -> expired/past_due
 - plan upgrades/downgrades
+- coupon flows (valid coupon, expired coupon, max-usage reached, plan-mismatch coupon)
 - role + plan combined permissions
 - workspace data isolation.
 - Add rollback plan and billing reconciliation checks.

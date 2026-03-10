@@ -16,7 +16,8 @@
     "seed:report:scenarios": "node scripts/seed-report-scenarios.mjs",
     "seed:report:scenarios:reset": "node scripts/reset-report-scenarios.mjs",
     "appwrite:users": "node scripts/bootstrap-users.mjs",
-    "bucket:clear": "node scripts/clear-bucket-files.mjs"
+    "bucket:clear": "node scripts/clear-bucket-files.mjs",
+    "appwrite:migrate:workspace": "node scripts/migrate-single-tenant-workspace.mjs"
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",

@@ -5,11 +5,13 @@ import ExpenseList from "../expenses/ExpenseList";
 import Modal from "../Modal";
 import TypeaheadSearch from "../TypeaheadSearch";
 import {
-  databases,
+  createWorkspaceDocument,
+  deleteScopedDocument,
   listAllDocuments,
   rcmsDatabaseId,
   rcmsReceiptsBucketId,
   storage,
+  updateScopedDocument,
 } from "../../lib/appwrite";
 import { COLLECTIONS } from "../../lib/schema";
 import type {
@@ -200,11 +202,11 @@ export default function ExpensesPage() {
     if (!shouldLinkDeduction) {
       await Promise.all(
         existing.map((record) =>
-          databases.deleteDocument(
-            rcmsDatabaseId,
-            COLLECTIONS.securityDepositDeductions,
-            record.$id
-          )
+          deleteScopedDocument({
+            databaseId: rcmsDatabaseId,
+            collectionId: COLLECTIONS.securityDepositDeductions,
+            documentId: record.$id,
+          })
         )
       );
       return;
@@ -218,11 +220,11 @@ export default function ExpensesPage() {
     if (!occupyingTenant) {
       await Promise.all(
         existing.map((record) =>
-          databases.deleteDocument(
-            rcmsDatabaseId,
-            COLLECTIONS.securityDepositDeductions,
-            record.$id
-          )
+          deleteScopedDocument({
+            databaseId: rcmsDatabaseId,
+            collectionId: COLLECTIONS.securityDepositDeductions,
+            documentId: record.$id,
+          })
         )
       );
       throw new Error(
@@ -243,32 +245,32 @@ export default function ExpensesPage() {
     };
 
     if (existingRecord) {
-      await databases.updateDocument(
-        rcmsDatabaseId,
-        COLLECTIONS.securityDepositDeductions,
-        existingRecord.$id,
-        deductionPayload
-      );
+      await updateScopedDocument<typeof deductionPayload>({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.securityDepositDeductions,
+        documentId: existingRecord.$id,
+        data: deductionPayload,
+      });
       if (existing.length > 1) {
         await Promise.all(
           existing.slice(1).map((record) =>
-            databases.deleteDocument(
-              rcmsDatabaseId,
-              COLLECTIONS.securityDepositDeductions,
-              record.$id
-            )
+            deleteScopedDocument({
+              databaseId: rcmsDatabaseId,
+              collectionId: COLLECTIONS.securityDepositDeductions,
+              documentId: record.$id,
+            })
           )
         );
       }
       return;
     }
 
-    await databases.createDocument(
-      rcmsDatabaseId,
-      COLLECTIONS.securityDepositDeductions,
-      ID.unique(),
-      deductionPayload
-    );
+    await createWorkspaceDocument({
+      databaseId: rcmsDatabaseId,
+      collectionId: COLLECTIONS.securityDepositDeductions,
+      documentId: ID.unique(),
+      data: deductionPayload,
+    });
   };
 
   const handleSave = async (values: ExpenseFormValues) => {
@@ -323,12 +325,12 @@ export default function ExpensesPage() {
           : shouldRemoveCurrentReceipt
             ? "removed"
             : "unchanged";
-        const updated = await databases.updateDocument(
-          rcmsDatabaseId,
-          COLLECTIONS.expenses,
-          editingExpense.$id,
-          payload
-        );
+        const updated = await updateScopedDocument<typeof payload, Expense>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.expenses,
+          documentId: editingExpense.$id,
+          data: payload,
+        });
         savedExpense = updated as unknown as Expense;
         setExpenses((prev) =>
           prev.map((expense) =>
@@ -357,12 +359,12 @@ export default function ExpensesPage() {
           }
         }
       } else {
-        const created = await databases.createDocument(
-          rcmsDatabaseId,
-          COLLECTIONS.expenses,
-          ID.unique(),
-          payload
-        );
+        const created = await createWorkspaceDocument({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.expenses,
+          documentId: ID.unique(),
+          data: payload,
+        });
         savedExpense = created as unknown as Expense;
         setExpenses((prev) => [savedExpense as Expense, ...prev]);
         toast.push("success", "Expense recorded.");

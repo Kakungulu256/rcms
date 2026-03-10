@@ -19,9 +19,8 @@ export default function RequireRole({ allow, children }: Props) {
   }
 
   if (!user || !role || !allow.includes(role)) {
-    return <Navigate to="/" replace />;
+    return <Navigate to="/app" replace />;
   }
 
   return <>{children}</>;
 }
-

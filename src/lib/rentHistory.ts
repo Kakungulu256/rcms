@@ -5,10 +5,29 @@ export type RentHistoryEntry = {
   note?: string;
 };
 
+export type ProrationMode = "actual_days" | "fixed_30";
+
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const FIXED_PRORATION_DAYS = 30;
+
+let defaultProrationMode: ProrationMode = "actual_days";
 
 function roundCurrency(value: number) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+}
+
+function roundProratedRent(value: number) {
+  const normalized = Number(value) || 0;
+  if (normalized <= 0) return 0;
+  return Math.round(normalized / 1000) * 1000;
+}
+
+export function normalizeProrationMode(value?: string | null): ProrationMode {
+  return value === "fixed_30" ? "fixed_30" : "actual_days";
+}
+
+export function setDefaultProrationMode(value?: string | null) {
+  defaultProrationMode = normalizeProrationMode(value);
 }
 
 function parseDateOnlyUtc(value?: string | null) {
@@ -31,11 +50,19 @@ function diffDaysInclusive(start: Date, end: Date) {
   return Math.floor((end.getTime() - start.getTime()) / MS_PER_DAY) + 1;
 }
 
+function isSameMonthUtc(left: Date, right: Date) {
+  return (
+    left.getUTCFullYear() === right.getUTCFullYear() &&
+    left.getUTCMonth() === right.getUTCMonth()
+  );
+}
+
 function prorateMonthlyRent(params: {
   baseRent: number;
   monthKey: string;
   occupancyStartDate?: string | null;
   occupancyEndDate?: string | null;
+  prorationMode?: ProrationMode;
 }) {
   const { baseRent, monthKey, occupancyStartDate, occupancyEndDate } = params;
   const normalizedRent = Number(baseRent) || 0;
@@ -47,10 +74,22 @@ function prorateMonthlyRent(params: {
   const occupancyStart = parseDateOnlyUtc(occupancyStartDate);
   const occupancyEnd = parseDateOnlyUtc(occupancyEndDate);
 
+  if (!occupancyStart) {
+    return roundCurrency(normalizedRent);
+  }
+
+  const isMoveInMonth = isSameMonthUtc(occupancyStart, monthStart);
+  if (!isMoveInMonth) {
+    return roundCurrency(normalizedRent);
+  }
+
+  if (occupancyEnd && isSameMonthUtc(occupancyEnd, monthStart)) {
+    return roundCurrency(normalizedRent);
+  }
+
   const effectiveStart =
     occupancyStart && occupancyStart > monthStart ? occupancyStart : monthStart;
-  const effectiveEnd =
-    occupancyEnd && occupancyEnd < monthEnd ? occupancyEnd : monthEnd;
+  const effectiveEnd = monthEnd;
 
   if (effectiveEnd < effectiveStart) {
     return 0;
@@ -58,10 +97,12 @@ function prorateMonthlyRent(params: {
 
   const occupiedDays = diffDaysInclusive(effectiveStart, effectiveEnd);
   const totalDaysInMonth = diffDaysInclusive(monthStart, monthEnd);
-  if (occupiedDays >= totalDaysInMonth) {
+  const mode = params.prorationMode ?? defaultProrationMode;
+  const denominator = mode === "fixed_30" ? FIXED_PRORATION_DAYS : totalDaysInMonth;
+  if (occupiedDays >= denominator) {
     return roundCurrency(normalizedRent);
   }
-  return roundCurrency((normalizedRent * occupiedDays) / totalDaysInMonth);
+  return roundProratedRent((normalizedRent * occupiedDays) / denominator);
 }
 
 export function parseRentHistory(value?: string | null): RentHistoryEntry[] {
@@ -113,6 +154,7 @@ export function buildRentByMonth(params: {
   fallbackRent: number;
   occupancyStartDate?: string | null;
   occupancyEndDate?: string | null;
+  prorationMode?: ProrationMode;
 }) {
   const {
     months,
@@ -121,6 +163,7 @@ export function buildRentByMonth(params: {
     fallbackRent,
     occupancyStartDate,
     occupancyEndDate,
+    prorationMode,
   } = params;
   const tenantHistory = parseRentHistory(tenantHistoryJson);
   const houseHistory = parseRentHistory(houseHistoryJson);
@@ -137,6 +180,7 @@ export function buildRentByMonth(params: {
       monthKey: month,
       occupancyStartDate,
       occupancyEndDate,
+      prorationMode,
     });
   });
   return rentByMonth;

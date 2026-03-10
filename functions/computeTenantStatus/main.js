@@ -4,6 +4,28 @@ function getEnv(name, fallback) {
   return process.env[name] ?? fallback;
 }
 
+function normalizeWorkspaceId(value) {
+  const normalized = String(value ?? "").trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function resolveWorkspaceId(body) {
+  return (
+    normalizeWorkspaceId(body?.workspaceId) ||
+    normalizeWorkspaceId(getEnv("RCMS_DEFAULT_WORKSPACE_ID")) ||
+    "default"
+  );
+}
+
+function assertWorkspaceAccess(document, workspaceId, label) {
+  const documentWorkspaceId = normalizeWorkspaceId(document?.workspaceId);
+  if (documentWorkspaceId && documentWorkspaceId !== workspaceId) {
+    const error = new Error(`${label} does not belong to this workspace.`);
+    error.code = 403;
+    throw error;
+  }
+}
+
 function parseJson(body) {
   if (!body) return null;
   try {
@@ -23,7 +45,18 @@ function roundMoney(value) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 }
 
+function roundProratedRent(value) {
+  const normalized = Number(value) || 0;
+  if (normalized <= 0) return 0;
+  return Math.round(normalized / 1000) * 1000;
+}
+
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const FIXED_PRORATION_DAYS = 30;
+
+function normalizeProrationMode(value) {
+  return value === "fixed_30" ? "fixed_30" : "actual_days";
+}
 
 function parseDateSafe(value) {
   if (!value) return null;
@@ -66,11 +99,19 @@ function diffDaysInclusive(start, end) {
   return Math.floor((end.getTime() - start.getTime()) / MS_PER_DAY) + 1;
 }
 
+function isSameMonthUtc(left, right) {
+  return (
+    left.getUTCFullYear() === right.getUTCFullYear() &&
+    left.getUTCMonth() === right.getUTCMonth()
+  );
+}
+
 function prorateMonthlyRent({
   baseRent,
   month,
   occupancyStartDate,
   occupancyEndDate,
+  prorationMode,
 }) {
   const normalizedRent = Number(baseRent) || 0;
   if (normalizedRent <= 0) return 0;
@@ -81,17 +122,30 @@ function prorateMonthlyRent({
   const occupancyStart = parseDateOnlyUtc(occupancyStartDate);
   const occupancyEnd = parseDateOnlyUtc(occupancyEndDate);
 
+  if (!occupancyStart) return roundMoney(normalizedRent);
+
+  const isMoveInMonth = isSameMonthUtc(occupancyStart, monthStart);
+  if (!isMoveInMonth) {
+    return roundMoney(normalizedRent);
+  }
+
+  if (occupancyEnd && isSameMonthUtc(occupancyEnd, monthStart)) {
+    return roundMoney(normalizedRent);
+  }
+
   const effectiveStart =
     occupancyStart && occupancyStart > monthStart ? occupancyStart : monthStart;
-  const effectiveEnd = occupancyEnd && occupancyEnd < monthEnd ? occupancyEnd : monthEnd;
+  const effectiveEnd = monthEnd;
   if (effectiveEnd < effectiveStart) return 0;
 
   const occupiedDays = diffDaysInclusive(effectiveStart, effectiveEnd);
   const totalDaysInMonth = diffDaysInclusive(monthStart, monthEnd);
-  if (occupiedDays >= totalDaysInMonth) {
+  const mode = normalizeProrationMode(prorationMode);
+  const denominator = mode === "fixed_30" ? FIXED_PRORATION_DAYS : totalDaysInMonth;
+  if (occupiedDays >= denominator) {
     return roundMoney(normalizedRent);
   }
-  return roundMoney((normalizedRent * occupiedDays) / totalDaysInMonth);
+  return roundProratedRent((normalizedRent * occupiedDays) / denominator);
 }
 
 function buildPaidByMonth(payments) {
@@ -163,7 +217,8 @@ function resolveRentForMonth(
   houseHistoryJson,
   fallbackRent,
   occupancyStartDate = null,
-  occupancyEndDate = null
+  occupancyEndDate = null,
+  prorationMode = "actual_days"
 ) {
   const tenantHistory = parseHistory(tenantHistoryJson);
   const houseHistory = parseHistory(houseHistoryJson);
@@ -176,30 +231,48 @@ function resolveRentForMonth(
     month,
     occupancyStartDate,
     occupancyEndDate,
+    prorationMode,
   });
 }
 
-async function listAllTenantPayments(databases, databaseId, tenantId) {
-  const documents = [];
-  let cursor = null;
-  const pageSize = 100;
+async function listAllTenantPayments(databases, databaseId, tenantId, workspaceId) {
+  const listWithQueries = async (baseQueries) => {
+    const documents = [];
+    let cursor = null;
+    const pageSize = 100;
 
-  while (true) {
-    const queries = [
-      Query.equal("tenant", [tenantId]),
-      Query.orderAsc("paymentDate"),
-      Query.limit(pageSize),
-    ];
-    if (cursor) {
-      queries.push(Query.cursorAfter(cursor));
+    while (true) {
+      const queries = [...baseQueries, Query.limit(pageSize)];
+      if (cursor) {
+        queries.push(Query.cursorAfter(cursor));
+      }
+      const page = await databases.listDocuments(databaseId, "payments", queries);
+      documents.push(...page.documents);
+      if (page.documents.length < pageSize) break;
+      cursor = page.documents[page.documents.length - 1].$id;
     }
-    const page = await databases.listDocuments(databaseId, "payments", queries);
-    documents.push(...page.documents);
-    if (page.documents.length < pageSize) break;
-    cursor = page.documents[page.documents.length - 1].$id;
+
+    return documents;
+  };
+
+  const scoped = await listWithQueries([
+    Query.equal("tenant", [tenantId]),
+    Query.equal("workspaceId", [workspaceId]),
+    Query.orderAsc("paymentDate"),
+  ]);
+  if (scoped.length > 0) {
+    return scoped;
   }
 
-  return documents;
+  // Transitional fallback for legacy records missing workspaceId.
+  const legacy = await listWithQueries([
+    Query.equal("tenant", [tenantId]),
+    Query.orderAsc("paymentDate"),
+  ]);
+  return legacy.filter((payment) => {
+    const paymentWorkspaceId = normalizeWorkspaceId(payment?.workspaceId);
+    return !paymentWorkspaceId || paymentWorkspaceId === workspaceId;
+  });
 }
 
 export default async (context) => {
@@ -209,6 +282,7 @@ export default async (context) => {
     log?.("Missing tenantId in request.");
     return res.json({ ok: false, error: "tenantId is required." }, 400);
   }
+  const workspaceId = resolveWorkspaceId(body);
 
   const endpoint =
     getEnv("RCMS_APPWRITE_ENDPOINT") ||
@@ -241,14 +315,24 @@ export default async (context) => {
 
   try {
     const tenant = await databases.getDocument(databaseId, "tenants", body.tenantId);
+    assertWorkspaceAccess(tenant, workspaceId, "Tenant");
+    const workspace = await databases.getDocument(databaseId, "workspaces", workspaceId);
     const houseId =
       typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? null;
     const house = houseId
       ? await databases.getDocument(databaseId, "houses", houseId)
       : null;
+    if (house) {
+      assertWorkspaceAccess(house, workspaceId, "House");
+    }
     const rent = tenant.rentOverride ?? house?.monthlyRent ?? 0;
 
-    const paymentList = await listAllTenantPayments(databases, databaseId, body.tenantId);
+    const paymentList = await listAllTenantPayments(
+      databases,
+      databaseId,
+      body.tenantId,
+      workspaceId
+    );
     const paidByMonth = buildPaidByMonth(paymentList);
     const currentMonth = monthKey(new Date());
     const today = new Date();
@@ -264,7 +348,8 @@ export default async (context) => {
       house?.rentHistoryJson ?? null,
       rent,
       tenant.moveInDate,
-      occupancyEndDate
+      occupancyEndDate,
+      normalizeProrationMode(workspace?.prorationMode)
     );
     const paidThisMonth = paidByMonth[currentMonth] ?? 0;
 

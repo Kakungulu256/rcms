@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
-import { useLocation, useNavigate } from "react-router-dom";
+import { OAuthProvider } from "appwrite";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
+import { account } from "../../lib/appwrite";
 import { useToast } from "../ToastContext";
 
 type LoginForm = {
@@ -9,21 +11,120 @@ type LoginForm = {
   password: string;
 };
 
+function GoogleLogoIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 48 48" className="h-5 w-5">
+      <path
+        fill="#FFC107"
+        d="M43.611 20.083H42V20H24v8h11.303C34.216 32.658 29.65 36 24 36c-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.957 3.043l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"
+      />
+      <path
+        fill="#FF3D00"
+        d="M6.306 14.691l6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.957 3.043l5.657-5.657C34.046 6.053 29.268 4 24 4c-7.682 0-14.347 4.337-17.694 10.691z"
+      />
+      <path
+        fill="#4CAF50"
+        d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238C29.148 35.091 26.715 36 24 36c-5.173 0-9.625-3.332-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"
+      />
+      <path
+        fill="#1976D2"
+        d="M43.611 20.083H42V20H24v8h11.303c-1.091 3.051-4 5.45-7.914 5.45-2.698 0-5.116-.898-7.174-2.4l6.19 5.238C29.86 42.023 24 44 24 44c11.045 0 20-8.955 20-20 0-1.341-.138-2.65-.389-3.917z"
+      />
+    </svg>
+  );
+}
+
 export default function LoginPage() {
-  const { signIn, loading, error } = useAuth();
+  const { signIn, loading, error, user } = useAuth();
   const toast = useToast();
   const [showPassword, setShowPassword] = useState(false);
+  const [recoveryLoading, setRecoveryLoading] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
-  const from = (location.state as { from?: string } | null)?.from || "/";
-  const { register, handleSubmit } = useForm<LoginForm>({
+  const from = (location.state as { from?: string } | null)?.from || "/app";
+  const isTrialIntent = useMemo(
+    () => new URLSearchParams(location.search).get("intent") === "trial",
+    [location.search]
+  );
+  const oauthFailed = useMemo(
+    () => new URLSearchParams(location.search).get("oauth") === "failed",
+    [location.search]
+  );
+  const resetSuccess = useMemo(
+    () => new URLSearchParams(location.search).get("reset") === "success",
+    [location.search]
+  );
+  const { register, handleSubmit, getValues } = useForm<LoginForm>({
     defaultValues: { email: "", password: "" },
   });
 
+  useEffect(() => {
+    if (!loading && user) {
+      navigate("/app", { replace: true });
+    }
+  }, [loading, navigate, user]);
+
+  useEffect(() => {
+    if (oauthFailed) {
+      setActionError("Google sign-in failed. Please try again.");
+    }
+  }, [oauthFailed]);
+
+  useEffect(() => {
+    if (resetSuccess) {
+      toast.push("success", "Password reset successful. Sign in with your new password.");
+    }
+  }, [resetSuccess, toast]);
+
   const onSubmit = async (values: LoginForm) => {
+    setActionError(null);
     const ok = await signIn(values.email, values.password);
     if (ok) {
       navigate(from, { replace: true });
+    }
+  };
+
+  const handleGoogleSignIn = async () => {
+    setActionError(null);
+    try {
+      const origin = window.location.origin;
+      await account.createOAuth2Session(
+        OAuthProvider.Google,
+        `${origin}/app`,
+        `${origin}/login?oauth=failed`
+      );
+    } catch (oauthError) {
+      const message =
+        oauthError instanceof Error ? oauthError.message : "Unable to start Google sign-in.";
+      setActionError(message);
+      toast.push("error", message);
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    setActionError(null);
+    const email = getValues("email")?.trim().toLowerCase() ?? "";
+    if (!email) {
+      const message = "Enter your email first, then click Forgot password.";
+      setActionError(message);
+      toast.push("warning", message);
+      return;
+    }
+    setRecoveryLoading(true);
+    try {
+      const recoveryUrl = `${window.location.origin}/reset-password`;
+      await account.createRecovery(email, recoveryUrl);
+      toast.push("success", "Password reset link sent. Check your email.");
+    } catch (recoverError) {
+      const message =
+        recoverError instanceof Error
+          ? recoverError.message
+          : "Unable to send password reset email.";
+      setActionError(message);
+      toast.push("error", message);
+    } finally {
+      setRecoveryLoading(false);
     }
   };
 
@@ -37,8 +138,15 @@ export default function LoginPage() {
               Rent Collection Management
             </h1>
             <p className="mt-2 text-sm text-slate-500">
-              Sign in to manage tenants, track payments, and monitor expenses.
+              {isTrialIntent
+                ? "Start your free trial workspace. Sign in with your account to continue setup."
+                : "Sign in to manage tenants, track payments, and monitor expenses."}
             </p>
+            <div className="mt-4">
+              <Link to="/" className="text-sm font-medium text-blue-200 hover:underline">
+                Back to home
+              </Link>
+            </div>
           </div>
 
           <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-8">
@@ -119,12 +227,39 @@ export default function LoginPage() {
                   {error}
                 </div>
               )}
+              {actionError && (
+                <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+                  {actionError}
+                </div>
+              )}
               <button
                 type="submit"
                 disabled={loading}
                 className="btn-primary w-full text-sm disabled:opacity-60"
               >
                 {loading ? "Signing in..." : "Sign In"}
+              </button>
+              <div className="relative py-1">
+                <div className="h-px bg-slate-700/70" />
+                <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-slate-900/50 px-2 text-xs font-semibold tracking-wide text-slate-400">
+                  OR
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleGoogleSignIn}
+                className="btn-secondary flex w-full items-center justify-center gap-2 text-sm"
+              >
+                <GoogleLogoIcon />
+                Continue with Google
+              </button>
+              <button
+                type="button"
+                onClick={handleForgotPassword}
+                disabled={recoveryLoading}
+                className="w-full text-sm font-medium text-blue-200 hover:underline disabled:opacity-60"
+              >
+                {recoveryLoading ? "Sending reset link..." : "Forgot password?"}
               </button>
             </form>
           </div>

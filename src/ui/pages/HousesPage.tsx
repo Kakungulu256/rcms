@@ -1,18 +1,25 @@
 import { useEffect, useMemo, useState } from "react";
 import { ID, Query } from "appwrite";
+import { Link } from "react-router-dom";
 import HouseDetail from "../houses/HouseDetail";
 import HouseForm from "../houses/HouseForm";
 import HouseList from "../houses/HouseList";
 import Modal from "../Modal";
 import PaginationControls from "../PaginationControls";
 import TypeaheadSearch from "../TypeaheadSearch";
-import { databases, listAllDocuments, rcmsDatabaseId } from "../../lib/appwrite";
+import {
+  createWorkspaceDocument,
+  listAllDocuments,
+  rcmsDatabaseId,
+  updateScopedDocument,
+} from "../../lib/appwrite";
 import { COLLECTIONS } from "../../lib/schema";
 import type { House, HouseForm as HouseFormValues, Tenant } from "../../lib/schema";
 import { logAudit } from "../../lib/audit";
 import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../ToastContext";
 import { appendRentHistory } from "../../lib/rentHistory";
+import { formatLimitValue, getLimitStatus } from "../../lib/planLimits";
 
 type PanelMode = "list" | "create" | "edit";
 type HouseStatusFilter = "all" | "occupied" | "vacant" | "inactive";
@@ -22,7 +29,7 @@ type HouseFormWithEffectiveDate = HouseFormValues & {
 };
 
 export default function HousesPage() {
-  const { user, permissions } = useAuth();
+  const { user, permissions, planLimits } = useAuth();
   const canManageHouses = permissions.canManageHouses;
   const toast = useToast();
   const [houses, setHouses] = useState<House[]>([]);
@@ -91,6 +98,10 @@ export default function HousesPage() {
     const start = (housePage - 1) * housePageSize;
     return filteredHouses.slice(start, start + housePageSize);
   }, [filteredHouses, housePage, housePageSize]);
+  const houseLimitStatus = useMemo(
+    () => getLimitStatus(planLimits.maxHouses, houses.length),
+    [houses.length, planLimits.maxHouses]
+  );
 
   const loadHouses = async () => {
     setLoading(true);
@@ -134,6 +145,13 @@ export default function HousesPage() {
       toast.push("warning", "You do not have permission to create houses.");
       return;
     }
+    if (houseLimitStatus.reached) {
+      const message =
+        "House limit reached on your current plan. Open Billing to add more houses.";
+      setError(message);
+      toast.push("warning", message);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -141,11 +159,11 @@ export default function HousesPage() {
       const effectiveDate =
         rentEffectiveDate ?? new Date().toISOString().slice(0, 10);
       const manualStatus = rest.status === "inactive" ? "inactive" : "vacant";
-      const created = await databases.createDocument(
-        rcmsDatabaseId,
-        COLLECTIONS.houses,
-        ID.unique(),
-        {
+      const created = await createWorkspaceDocument({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.houses,
+        documentId: ID.unique(),
+        data: {
           ...rest,
           status: manualStatus,
           currentTenantId: null,
@@ -154,8 +172,8 @@ export default function HousesPage() {
             amount: rest.monthlyRent,
             source: "house",
           }),
-        }
-      );
+        },
+      });
       setHouses((prev) => [...prev, created as unknown as House]);
       setSelected(created as unknown as House);
       setMode("list");
@@ -226,12 +244,12 @@ export default function HousesPage() {
             })
           : selected.rentHistoryJson ?? null,
       };
-      const updated = await databases.updateDocument(
-        rcmsDatabaseId,
-        COLLECTIONS.houses,
-        selected.$id,
-        updatedPayload
-      );
+      const updated = await updateScopedDocument<typeof updatedPayload, House>({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.houses,
+        documentId: selected.$id,
+        data: updatedPayload,
+      });
       setHouses((prev) =>
         prev.map((house) =>
           house.$id === selected.$id ? (updated as unknown as House) : house
@@ -278,6 +296,13 @@ export default function HousesPage() {
                   ? "Loading..."
                   : `${filteredHouses.length} of ${housesMatchingSearch.length} houses`}
               </div>
+              {planLimits.maxHouses != null && (
+                <div className="mt-1 text-xs text-amber-300">
+                  Plan usage: {houseLimitStatus.used.toLocaleString()} /{" "}
+                  {formatLimitValue(houseLimitStatus.limit)} houses
+                  {houseLimitStatus.reached ? " (limit reached)" : ""}
+                </div>
+              )}
             </div>
             <div className="flex flex-wrap gap-2">
               {canManageHouses && (
@@ -286,11 +311,17 @@ export default function HousesPage() {
                     setMode("create");
                     setModalOpen(true);
                   }}
-                  className="btn-primary text-sm"
+                  disabled={houseLimitStatus.reached}
+                  className="btn-primary text-sm disabled:opacity-60"
                 >
-                  Add House
+                  {houseLimitStatus.reached ? "Add House (Locked)" : "Add House"}
                 </button>
               )}
+              {canManageHouses && houseLimitStatus.reached ? (
+                <Link to="/app/billing" className="btn-secondary text-sm">
+                  Open Billing
+                </Link>
+              ) : null}
               <button
                 onClick={loadHouses}
                 className="btn-secondary text-sm"
