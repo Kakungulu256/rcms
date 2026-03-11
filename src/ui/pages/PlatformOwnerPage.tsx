@@ -124,7 +124,11 @@ function clampDiscountPercent(value: number) {
   return Math.min(Math.max(value, 0), MAX_DISCOUNT_PERCENT);
 }
 
-function isTrialPlan(plan: Plan, priceAmount: number, trialDays: number) {
+function isTrialPlanIdentity(
+  plan: { code?: string | null; name?: string | null },
+  priceAmount: number,
+  trialDays: number
+) {
   const code = String(plan.code ?? "").toLowerCase();
   const name = String(plan.name ?? "").toLowerCase();
   return (
@@ -144,7 +148,7 @@ function getPlanDiscountDraft(plan: Plan) {
   );
   const priceAmount = Number(plan.priceAmount ?? 0);
   const trialDays = Number(plan.trialDays ?? 0);
-  const isTrial = isTrialPlan(plan, priceAmount, trialDays);
+  const isTrial = isTrialPlanIdentity(plan, priceAmount, trialDays);
   const sixMonthFallback = isTrial ? 0 : DEFAULT_SIX_MONTH_DISCOUNT;
   const annualFallback = isTrial ? 0 : DEFAULT_ANNUAL_DISCOUNT;
   const sixMonth =
@@ -632,11 +636,7 @@ export default function PlatformOwnerPage() {
     }
 
     const trialDaysValue = Math.floor(trialDaysInput);
-    const isTrial = isTrialPlan(
-      { ...planCreateForm, $id: "", code, name } as Plan,
-      priceAmount,
-      trialDaysValue
-    );
+    const isTrial = isTrialPlanIdentity({ code, name }, priceAmount, trialDaysValue);
     const sixMonthFallback = isTrial ? 0 : DEFAULT_SIX_MONTH_DISCOUNT;
     const annualFallback = isTrial ? 0 : DEFAULT_ANNUAL_DISCOUNT;
 
