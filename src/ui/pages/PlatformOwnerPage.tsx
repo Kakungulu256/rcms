@@ -28,6 +28,8 @@ type PlanDraft = {
   name: string;
   priceAmount: string;
   trialDays: string;
+  sixMonthDiscountPercent: string;
+  annualDiscountPercent: string;
   isActive: boolean;
   saving: boolean;
 };
@@ -38,6 +40,8 @@ type PlanCreateForm = {
   currency: string;
   priceAmount: string;
   trialDays: string;
+  sixMonthDiscountPercent: string;
+  annualDiscountPercent: string;
   isActive: boolean;
   sortOrder: string;
   limitsJson: string;
@@ -50,6 +54,8 @@ const EMPTY_PLAN_CREATE: PlanCreateForm = {
   currency: "UGX",
   priceAmount: "",
   trialDays: "",
+  sixMonthDiscountPercent: "",
+  annualDiscountPercent: "",
   isActive: true,
   sortOrder: "",
   limitsJson: "",
@@ -108,6 +114,47 @@ function parseNumberInput(value: string) {
   const parsed = Number(normalized);
   if (!Number.isFinite(parsed)) return null;
   return parsed;
+}
+
+const DEFAULT_SIX_MONTH_DISCOUNT = 10;
+const DEFAULT_ANNUAL_DISCOUNT = 20;
+const MAX_DISCOUNT_PERCENT = 60;
+
+function clampDiscountPercent(value: number) {
+  return Math.min(Math.max(value, 0), MAX_DISCOUNT_PERCENT);
+}
+
+function isTrialPlan(plan: Plan, priceAmount: number, trialDays: number) {
+  const code = String(plan.code ?? "").toLowerCase();
+  const name = String(plan.name ?? "").toLowerCase();
+  return (
+    code.includes("trial") ||
+    name.includes("trial") ||
+    (priceAmount === 0 && trialDays > 0)
+  );
+}
+
+function getPlanDiscountDraft(plan: Plan) {
+  const metadata = decodeJson<Record<string, unknown>>(plan.metadataJson) ?? {};
+  const sixMonthRaw = Number(
+    metadata.sixMonthDiscountPercent ?? metadata.discount6MonthsPercent
+  );
+  const annualRaw = Number(
+    metadata.annualDiscountPercent ?? metadata.discountAnnualPercent
+  );
+  const priceAmount = Number(plan.priceAmount ?? 0);
+  const trialDays = Number(plan.trialDays ?? 0);
+  const isTrial = isTrialPlan(plan, priceAmount, trialDays);
+  const sixMonthFallback = isTrial ? 0 : DEFAULT_SIX_MONTH_DISCOUNT;
+  const annualFallback = isTrial ? 0 : DEFAULT_ANNUAL_DISCOUNT;
+  const sixMonth =
+    Number.isFinite(sixMonthRaw) ? clampDiscountPercent(sixMonthRaw) : sixMonthFallback;
+  const annual =
+    Number.isFinite(annualRaw) ? clampDiscountPercent(annualRaw) : annualFallback;
+  return {
+    sixMonth: String(sixMonth),
+    annual: String(annual),
+  };
 }
 
 function toDateOnlyInput(value?: string | null) {
@@ -297,10 +344,14 @@ export default function PlatformOwnerPage() {
       const next: Record<string, PlanDraft> = {};
       plans.forEach((plan) => {
         const existing = current[plan.$id];
+        const discounts = getPlanDiscountDraft(plan);
         next[plan.$id] = {
           name: existing?.name ?? plan.name ?? "",
           priceAmount: existing?.priceAmount ?? String(Number(plan.priceAmount ?? 0)),
           trialDays: existing?.trialDays ?? String(Math.max(0, Number(plan.trialDays ?? 0))),
+          sixMonthDiscountPercent:
+            existing?.sixMonthDiscountPercent ?? discounts.sixMonth,
+          annualDiscountPercent: existing?.annualDiscountPercent ?? discounts.annual,
           isActive: existing?.isActive ?? Boolean(plan.isActive),
           saving: false,
         };
@@ -437,6 +488,40 @@ export default function PlatformOwnerPage() {
       return;
     }
 
+    const sixMonthDiscount = parseNumberInput(draft.sixMonthDiscountPercent);
+    if (
+      sixMonthDiscount == null ||
+      sixMonthDiscount < 0 ||
+      sixMonthDiscount > MAX_DISCOUNT_PERCENT
+    ) {
+      toast.push(
+        "warning",
+        `6-month discount must be between 0 and ${MAX_DISCOUNT_PERCENT}.`
+      );
+      return;
+    }
+
+    const annualDiscount = parseNumberInput(draft.annualDiscountPercent);
+    if (
+      annualDiscount == null ||
+      annualDiscount < 0 ||
+      annualDiscount > MAX_DISCOUNT_PERCENT
+    ) {
+      toast.push(
+        "warning",
+        `Annual discount must be between 0 and ${MAX_DISCOUNT_PERCENT}.`
+      );
+      return;
+    }
+
+    const metadata = decodeJson<Record<string, unknown>>(plan.metadataJson) ?? {};
+    const nextMetadata = {
+      ...metadata,
+      sixMonthDiscountPercent: clampDiscountPercent(sixMonthDiscount),
+      annualDiscountPercent: clampDiscountPercent(annualDiscount),
+    };
+    const metadataJson = encodeJson(stripUndefined(nextMetadata));
+
     setPlanDrafts((current) => ({
       ...current,
       [plan.$id]: {
@@ -451,6 +536,7 @@ export default function PlatformOwnerPage() {
         priceAmount,
         trialDays: Math.floor(trialDaysInput),
         isActive: draft.isActive,
+        metadataJson,
       });
 
       if (user.workspaceId) {
@@ -467,6 +553,8 @@ export default function PlatformOwnerPage() {
               priceAmount,
               trialDays: Math.floor(trialDaysInput),
               isActive: draft.isActive,
+              sixMonthDiscountPercent: clampDiscountPercent(sixMonthDiscount),
+              annualDiscountPercent: clampDiscountPercent(annualDiscount),
             },
           },
         });
@@ -543,6 +631,43 @@ export default function PlatformOwnerPage() {
       }
     }
 
+    const trialDaysValue = Math.floor(trialDaysInput);
+    const isTrial = isTrialPlan(
+      { ...planCreateForm, $id: "", code, name } as Plan,
+      priceAmount,
+      trialDaysValue
+    );
+    const sixMonthFallback = isTrial ? 0 : DEFAULT_SIX_MONTH_DISCOUNT;
+    const annualFallback = isTrial ? 0 : DEFAULT_ANNUAL_DISCOUNT;
+
+    const sixMonthDiscountRaw =
+      parseNumberInput(planCreateForm.sixMonthDiscountPercent) ?? sixMonthFallback;
+    const annualDiscountRaw =
+      parseNumberInput(planCreateForm.annualDiscountPercent) ?? annualFallback;
+
+    if (sixMonthDiscountRaw < 0 || sixMonthDiscountRaw > MAX_DISCOUNT_PERCENT) {
+      toast.push(
+        "warning",
+        `6-month discount must be between 0 and ${MAX_DISCOUNT_PERCENT}.`
+      );
+      return;
+    }
+
+    if (annualDiscountRaw < 0 || annualDiscountRaw > MAX_DISCOUNT_PERCENT) {
+      toast.push(
+        "warning",
+        `Annual discount must be between 0 and ${MAX_DISCOUNT_PERCENT}.`
+      );
+      return;
+    }
+
+    const metadataJson = encodeJson(
+      stripUndefined({
+        sixMonthDiscountPercent: clampDiscountPercent(sixMonthDiscountRaw),
+        annualDiscountPercent: clampDiscountPercent(annualDiscountRaw),
+      })
+    );
+
     setPlanCreateForm((current) => ({ ...current, saving: true }));
     try {
       await databases.createDocument(rcmsDatabaseId, COLLECTIONS.plans, ID.unique(), {
@@ -550,10 +675,11 @@ export default function PlatformOwnerPage() {
         name,
         currency,
         priceAmount,
-        trialDays: Math.floor(trialDaysInput),
+        trialDays: trialDaysValue,
         isActive: planCreateForm.isActive,
         sortOrder: sortOrderInput != null ? Math.floor(sortOrderInput) : null,
         limitsJson,
+        metadataJson,
       });
 
       if (user.workspaceId) {
@@ -568,8 +694,10 @@ export default function PlatformOwnerPage() {
             name,
             currency,
             priceAmount,
-            trialDays: Math.floor(trialDaysInput),
+            trialDays: trialDaysValue,
             isActive: planCreateForm.isActive,
+            sixMonthDiscountPercent: clampDiscountPercent(sixMonthDiscountRaw),
+            annualDiscountPercent: clampDiscountPercent(annualDiscountRaw),
           },
         });
       }
@@ -902,10 +1030,10 @@ export default function PlatformOwnerPage() {
       >
         <div className="text-sm font-semibold text-slate-100">Global Plan Controls</div>
         <p className="mt-1 text-xs text-slate-500">
-          Update plan pricing, trial days, and active status globally.
+          Update plan pricing, discounts, trial days, and active status globally.
         </p>
         <div className="mt-4 overflow-auto rounded-xl border" style={{ borderColor: "var(--border)" }}>
-          <table className="min-w-[900px] w-full text-left text-sm text-slate-300">
+          <table className="min-w-[1120px] w-full text-left text-sm text-slate-300">
             <thead className="text-xs text-slate-500" style={{ backgroundColor: "var(--surface-strong)" }}>
               <tr>
                 <th className="px-4 py-3">Plan</th>
@@ -913,6 +1041,8 @@ export default function PlatformOwnerPage() {
                 <th className="px-4 py-3">Currency</th>
                 <th className="px-4 py-3">Price</th>
                 <th className="px-4 py-3">Trial Days</th>
+                <th className="px-4 py-3">6 mo %</th>
+                <th className="px-4 py-3">Annual %</th>
                 <th className="px-4 py-3">Active</th>
                 <th className="px-4 py-3">Action</th>
               </tr>
@@ -949,6 +1079,34 @@ export default function PlatformOwnerPage() {
                           handlePlanDraftChange(plan.$id, "trialDays", event.target.value)
                         }
                         className="input-base w-full rounded-md px-3 py-2 text-sm"
+                      />
+                    </td>
+                    <td className="px-4 py-3">
+                      <input
+                        value={draft?.sixMonthDiscountPercent ?? ""}
+                        onChange={(event) =>
+                          handlePlanDraftChange(
+                            plan.$id,
+                            "sixMonthDiscountPercent",
+                            event.target.value
+                          )
+                        }
+                        className="input-base w-full rounded-md px-3 py-2 text-sm"
+                        placeholder={`${DEFAULT_SIX_MONTH_DISCOUNT}`}
+                      />
+                    </td>
+                    <td className="px-4 py-3">
+                      <input
+                        value={draft?.annualDiscountPercent ?? ""}
+                        onChange={(event) =>
+                          handlePlanDraftChange(
+                            plan.$id,
+                            "annualDiscountPercent",
+                            event.target.value
+                          )
+                        }
+                        className="input-base w-full rounded-md px-3 py-2 text-sm"
+                        placeholder={`${DEFAULT_ANNUAL_DISCOUNT}`}
                       />
                     </td>
                     <td className="px-4 py-3">
@@ -1053,6 +1211,40 @@ export default function PlatformOwnerPage() {
               />
             </label>
           </div>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="block text-sm text-slate-300">
+              6-month Discount %
+              <input
+                value={planCreateForm.sixMonthDiscountPercent}
+                onChange={(event) =>
+                  setPlanCreateForm((current) => ({
+                    ...current,
+                    sixMonthDiscountPercent: event.target.value,
+                  }))
+                }
+                className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                placeholder={`${DEFAULT_SIX_MONTH_DISCOUNT}`}
+              />
+            </label>
+            <label className="block text-sm text-slate-300">
+              Annual Discount %
+              <input
+                value={planCreateForm.annualDiscountPercent}
+                onChange={(event) =>
+                  setPlanCreateForm((current) => ({
+                    ...current,
+                    annualDiscountPercent: event.target.value,
+                  }))
+                }
+                className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                placeholder={`${DEFAULT_ANNUAL_DISCOUNT}`}
+              />
+            </label>
+          </div>
+          <p className="mt-2 text-xs text-slate-500">
+            Discounts apply to 6-month and annual totals shown on the landing page. Use 0 to
+            disable a discount.
+          </p>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             <label className="block text-sm text-slate-300">
               Sort Order (optional)

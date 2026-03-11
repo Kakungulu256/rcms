@@ -26,6 +26,10 @@ const PLANS = [
     trialDays: 5,
     isActive: true,
     sortOrder: 1,
+    metadata: {
+      sixMonthDiscountPercent: 0,
+      annualDiscountPercent: 0,
+    },
     limits: {
       maxProperties: 1,
       maxLandlords: 1,
@@ -44,6 +48,10 @@ const PLANS = [
     trialDays: 0,
     isActive: true,
     sortOrder: 2,
+    metadata: {
+      sixMonthDiscountPercent: 10,
+      annualDiscountPercent: 20,
+    },
     limits: {
       maxProperties: 2,
       maxLandlords: 3,
@@ -62,6 +70,10 @@ const PLANS = [
     trialDays: 0,
     isActive: true,
     sortOrder: 3,
+    metadata: {
+      sixMonthDiscountPercent: 10,
+      annualDiscountPercent: 20,
+    },
     limits: {
       maxProperties: 8,
       maxLandlords: 12,
@@ -80,6 +92,10 @@ const PLANS = [
     trialDays: 0,
     isActive: true,
     sortOrder: 4,
+    metadata: {
+      sixMonthDiscountPercent: 10,
+      annualDiscountPercent: 20,
+    },
     limits: {
       maxProperties: 25,
       maxLandlords: 40,
@@ -102,6 +118,7 @@ function buildPayload(plan) {
     isActive: plan.isActive,
     sortOrder: plan.sortOrder,
     limitsJson: JSON.stringify(plan.limits),
+    metadataJson: JSON.stringify(plan.metadata ?? null),
   };
 }
 
