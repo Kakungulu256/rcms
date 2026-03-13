@@ -1024,13 +1024,26 @@ export default function ReportsPage() {
     const nextMonthKey = format(nextMonthDate, "yyyy-MM");
     const reportMonthLabel = formatShortMonth(reportMonthDate);
     const nextMonthLabel = formatShortMonth(nextMonthDate);
+    const reportScopeLabel =
+      rangeMode === "month" ? "For the Month" : rangeMode === "year" ? "For the Year" : "For the Period";
+    const reportScopeValue =
+      rangeMode === "month"
+        ? reportMonthLabel
+        : rangeMode === "year"
+        ? format(range.start, "yyyy")
+        : `${rangeStartDisplay} to ${rangeEndDisplay}`;
+    const sortTypeLabel =
+      rangeMode === "month" ? "Monthly" : rangeMode === "year" ? "Yearly" : "Custom Date Range";
+
+    const occupancyWindowStart = isMonthRange ? reportMonthStart : range.start;
+    const occupancyWindowEnd = isMonthRange ? reportMonthEnd : range.end;
 
     const monthlyTenancyRows: MonthlyTenantStatusRow[] = tenantsForReport
       .filter((tenant) => {
         const moveIn = parseISO(tenant.moveInDate);
-        const moveOut = getTenantEffectiveEndDate(tenant, reportMonthEnd);
-        if (moveIn > reportMonthEnd) return false;
-        if (moveOut < reportMonthStart) return false;
+        const moveOut = getTenantEffectiveEndDate(tenant, occupancyWindowEnd);
+        if (moveIn > occupancyWindowEnd) return false;
+        if (moveOut < occupancyWindowStart) return false;
         return true;
       })
       .map((tenant) => {
@@ -1046,9 +1059,13 @@ export default function ReportsPage() {
         });
         const paidByMonth = buildPaidByMonth(tenantPayments);
         const paymentSummaryByMonth = buildPaymentSummaryByMonth(tenantPayments);
-        const monthsToReport = buildTenantMonthSeries(tenant, reportMonthDate);
+        const reportReferenceDate = isMonthRange ? reportMonthDate : range.end;
+        const monthsToReport = buildTenantMonthSeries(tenant, reportReferenceDate);
         const monthsForRates = Array.from(
-          new Set([...monthsToReport, reportMonthKey, nextMonthKey])
+          new Set([
+            ...monthsToReport,
+            ...(isMonthRange ? [reportMonthKey, nextMonthKey] : []),
+          ])
         );
         const rentByMonth = buildRentByMonth({
           months: monthsForRates,
@@ -1069,8 +1086,11 @@ export default function ReportsPage() {
         const monthsInSelectedRange = monthsToReport.filter(
           (month) => month >= rangeStartMonth && month <= rangeEndMonth
         );
-        const rate = rentByMonth[reportMonthKey] ?? 0;
-        const nextRate = rentByMonth[nextMonthKey] ?? rate;
+        const rateMonthKey = isMonthRange
+          ? reportMonthKey
+          : monthsInSelectedRange.at(-1) ?? reportMonthKey;
+        const rate = rentByMonth[rateMonthKey] ?? 0;
+        const nextRate = isMonthRange ? rentByMonth[nextMonthKey] ?? rate : rate;
         const rentPaid = isMonthRange
           ? paidByMonth[reportMonthKey] ?? 0
           : monthsInSelectedRange.reduce(
@@ -1346,6 +1366,9 @@ export default function ReportsPage() {
       reportMonthKey,
       reportMonthLabel,
       reportPeriodLabel,
+      reportScopeLabel,
+      reportScopeValue,
+      sortTypeLabel,
       isMonthRange,
       nextMonthLabel,
       monthlyTenancyRows,
@@ -1391,8 +1414,8 @@ export default function ReportsPage() {
       }
 
       const workbook = XLSX.utils.book_new();
-      const sortTypeLabel =
-        rangeMode === "month" ? "Month" : rangeMode === "year" ? "Year" : "Custom Date";
+      const sortTypeLabel = summary.sortTypeLabel;
+      const reportingPeriodValue = `${summary.reportScopeLabel} (${summary.reportScopeValue})`;
       const houseNameLabel = selectedHouseName?.trim();
       const trimmedPersonalNote = personalReportNote.trim();
       const personalNoteRows =
@@ -1492,7 +1515,7 @@ export default function ReportsPage() {
         XLSX.utils.book_append_sheet(
           workbook,
           XLSX.utils.json_to_sheet([
-            { Note: "Range", Value: summary.reportPeriodLabel },
+            { Note: "Reporting Period", Value: reportingPeriodValue },
             { Note: "Inactive tenants with arrears", Value: summary.inactiveArrearsRows.length },
             { Note: "Inactive tenant arrears total", Value: summary.inactiveArrearsTotal },
             ...personalNoteRows,
@@ -1534,7 +1557,7 @@ export default function ReportsPage() {
         XLSX.utils.book_append_sheet(
           workbook,
           XLSX.utils.json_to_sheet([
-            { Note: "Range", Value: summary.reportPeriodLabel },
+            { Note: "Reporting Period", Value: reportingPeriodValue },
             { Note: "Deduction entries", Value: summary.depositDeductionsCount },
             { Note: "Tenants affected", Value: summary.depositTenantsAffectedCount },
             { Note: "Total deductions", Value: summary.depositDeductionsTotal },
@@ -1568,8 +1591,8 @@ export default function ReportsPage() {
           "ByHouse"
         );
         const reportMetaRows = [
-          { Note: "Range", Value: summary.reportPeriodLabel },
-          { Note: "Sort Type", Value: sortTypeLabel },
+          { Note: "Reporting Period", Value: reportingPeriodValue },
+          { Note: "Sorted By", Value: sortTypeLabel },
           ...(houseNameLabel
             ? [{ Note: "House Name", Value: houseNameLabel }]
             : []),
@@ -1618,8 +1641,8 @@ export default function ReportsPage() {
         XLSX.utils.book_append_sheet(
           workbook,
           XLSX.utils.json_to_sheet([
-            { Note: `Report Period`, Value: summary.reportPeriodLabel },
-            { Note: "Sort Type", Value: sortTypeLabel },
+            { Note: "Reporting Period", Value: reportingPeriodValue },
+            { Note: "Sorted By", Value: sortTypeLabel },
             ...(houseNameLabel
               ? [{ Note: "House Name", Value: houseNameLabel }]
               : []),
@@ -1875,11 +1898,9 @@ export default function ReportsPage() {
       doc.setFont("helvetica", "normal");
       doc.setFontSize(11);
       let y = 28;
-      const sortTypeLabel =
-        rangeMode === "month" ? "Month" : rangeMode === "year" ? "Year" : "Custom Date";
       const metaLines = [
-        `Range: ${summary.reportPeriodLabel}`,
-        `Sort Type: ${sortTypeLabel}`,
+        `Reporting Period: ${summary.reportScopeLabel} (${summary.reportScopeValue})`,
+        `Sorted By: ${summary.sortTypeLabel}`,
         selectedHouseName?.trim() ? `House Name: ${selectedHouseName.trim()}` : "",
       ].filter(Boolean);
       if (metaLines.length > 0) {
@@ -2097,7 +2118,11 @@ export default function ReportsPage() {
       if (reportType === "inactiveArrears") {
         doc.setFontSize(10);
         doc.setFont("helvetica", "bold");
-        doc.text(`Range: ${summary.reportPeriodLabel}`, left, y);
+        doc.text(
+          `Reporting Period: ${summary.reportScopeLabel} (${summary.reportScopeValue})`,
+          left,
+          y
+        );
         y += 6;
         doc.text(
           `Inactive tenant arrears total: ${ush(summary.inactiveArrearsTotal)} (${summary.inactiveArrearsRows.length} tenant(s))`,
@@ -2123,7 +2148,11 @@ export default function ReportsPage() {
       if (reportType === "depositDeductions") {
         doc.setFontSize(10);
         doc.setFont("helvetica", "bold");
-        doc.text(`Range: ${summary.reportPeriodLabel}`, left, y);
+        doc.text(
+          `Reporting Period: ${summary.reportScopeLabel} (${summary.reportScopeValue})`,
+          left,
+          y
+        );
         y += 6;
         doc.text(`Date: ${summary.currentDateKey}`, left, y);
         y += 6;
@@ -2612,7 +2641,9 @@ export default function ReportsPage() {
             >
               <div className="absolute inset-0 p-4 text-[11px] text-slate-500">
                 <div className="font-semibold text-slate-700">TENANCY SUMMARY REPORT</div>
-                <div className="mt-1">Range: {summary.reportPeriodLabel}</div>
+                <div className="mt-1">
+                  Reporting Period: {summary.reportScopeLabel} ({summary.reportScopeValue})
+                </div>
                 <div className="mt-1">Date: {summary.currentDateKey}</div>
               </div>
               {logoPreviewUrl && watermarkEnabled ? (
@@ -2684,11 +2715,15 @@ export default function ReportsPage() {
             style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
           >
             <div className="text-center text-sm font-semibold uppercase tracking-[0.15em] text-slate-200">
-              {summary.isMonthRange
-                ? `Monthly Tenancy Report For ${summary.reportMonthLabel}`
-                : `Tenancy Summary Report (${summary.reportPeriodLabel})`}
+              {summary.isMonthRange ? "Monthly Tenancy Report" : "Tenancy Summary Report"}
             </div>
             <div className="mt-2 text-center text-xs text-slate-500">
+              Reporting Period: {summary.reportScopeLabel} ({summary.reportScopeValue})
+            </div>
+            <div className="mt-1 text-center text-xs text-slate-500">
+              Sorted By: {summary.sortTypeLabel}
+            </div>
+            <div className="mt-1 text-center text-xs text-slate-500">
               Date: {summary.currentDateKey}
             </div>
             <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-800">
@@ -2747,7 +2782,7 @@ export default function ReportsPage() {
                         className="px-4 py-4 text-slate-500"
                         colSpan={summary.hasMoveOutInSelectedRange ? 9 : 8}
                       >
-                        No tenants found for {summary.reportMonthLabel}.
+                        No tenants found for {summary.reportScopeValue}.
                       </td>
                     </tr>
                   )}
@@ -2852,7 +2887,7 @@ export default function ReportsPage() {
               Inactive Tenant Arrears Report
             </div>
             <div className="mt-2 text-center text-xs text-slate-500">
-              Range: {summary.reportPeriodLabel}
+              Reporting Period: {summary.reportScopeLabel} ({summary.reportScopeValue})
             </div>
             <div className="mt-4 grid gap-4 md:grid-cols-2">
               <div className="rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3">
@@ -2926,7 +2961,7 @@ export default function ReportsPage() {
               Security Deposit Deductions Report
             </div>
             <div className="mt-2 text-center text-xs text-slate-500">
-              Range: {summary.reportPeriodLabel}
+              Reporting Period: {summary.reportScopeLabel} ({summary.reportScopeValue})
             </div>
             <div className="mt-4 grid gap-4 md:grid-cols-3">
               <div className="rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3">
