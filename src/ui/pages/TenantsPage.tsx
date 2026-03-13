@@ -523,6 +523,9 @@ export default function TenantsPage() {
             securityDepositPaid: nextDepositPaid,
             securityDepositBalance: nextDepositBalance,
             rentHistoryJson: nextRentHistoryJson ?? undefined,
+            phone: normalized.phone ?? undefined,
+            rentOverride: normalized.rentOverride ?? undefined,
+            notes: normalized.notes ?? undefined,
           };
           const assessment = assessSecurityDepositRefund({
             tenant: tenantForAssessment,
