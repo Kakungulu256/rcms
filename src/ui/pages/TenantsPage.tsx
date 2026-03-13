@@ -522,7 +522,7 @@ export default function TenantsPage() {
             securityDepositAmount: nextDepositAmount,
             securityDepositPaid: nextDepositPaid,
             securityDepositBalance: nextDepositBalance,
-            rentHistoryJson: nextRentHistoryJson,
+            rentHistoryJson: nextRentHistoryJson ?? undefined,
           };
           const assessment = assessSecurityDepositRefund({
             tenant: tenantForAssessment,
