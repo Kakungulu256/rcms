@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { Query } from "appwrite";
 import TypeaheadSearch from "../TypeaheadSearch";
-import { listAllDocuments, rcmsDatabaseId } from "../../lib/appwrite";
+import { listAllDocuments, rcmsDatabaseId, updateScopedDocument } from "../../lib/appwrite";
 import { COLLECTIONS } from "../../lib/schema";
-import type { House, SecurityDepositDeduction, Tenant } from "../../lib/schema";
+import type { House, Payment, SecurityDepositDeduction, Tenant } from "../../lib/schema";
 import { formatDisplayDate } from "../../lib/dateDisplay";
 import { formatAmount } from "../../lib/numberFormat";
+import { useToast } from "../ToastContext";
+import { assessSecurityDepositRefund } from "../../lib/securityDeposit";
+import { sortHousesNatural } from "../../lib/houseSort";
 
 type RefundFilter = "all" | "refunded" | "not_refunded";
 type BalanceFilter = "all" | "pending" | "cleared";
@@ -23,6 +26,9 @@ type DepositRow = {
   relatedDeductions: number;
   relatedDeductionCount: number;
   relatedDeductionItems: string[];
+  arrearsTotal: number;
+  refundableAmount: number;
+  canRefund: boolean;
 };
 
 function resolveTenantHouseId(tenant: Tenant) {
@@ -31,20 +37,23 @@ function resolveTenantHouseId(tenant: Tenant) {
 }
 
 export default function SecurityDepositsPage() {
+  const toast = useToast();
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [houses, setHouses] = useState<House[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
   const [deductions, setDeductions] = useState<SecurityDepositDeduction[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [refundFilter, setRefundFilter] = useState<RefundFilter>("all");
   const [balanceFilter, setBalanceFilter] = useState<BalanceFilter>("all");
+  const [refundingTenantId, setRefundingTenantId] = useState<string | null>(null);
 
   const loadData = async () => {
     setLoading(true);
     setError(null);
     try {
-      const [tenantResult, houseResult] = await Promise.all([
+      const [tenantResult, houseResult, paymentResult] = await Promise.all([
         listAllDocuments<Tenant>({
           databaseId: rcmsDatabaseId,
           collectionId: COLLECTIONS.tenants,
@@ -54,6 +63,11 @@ export default function SecurityDepositsPage() {
           databaseId: rcmsDatabaseId,
           collectionId: COLLECTIONS.houses,
           queries: [Query.orderAsc("code")],
+        }),
+        listAllDocuments<Payment>({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.payments,
+          queries: [Query.orderDesc("paymentDate")],
         }),
       ]);
       let deductionResult: SecurityDepositDeduction[] = [];
@@ -69,7 +83,8 @@ export default function SecurityDepositsPage() {
         );
       }
       setTenants(tenantResult);
-      setHouses(houseResult);
+      setHouses(sortHousesNatural(houseResult));
+      setPayments(paymentResult);
       setDeductions(deductionResult);
     } catch {
       setError("Failed to load security deposit data.");
@@ -120,6 +135,20 @@ export default function SecurityDepositsPage() {
         (sum, deduction) => sum + (Number(deduction.amount) || 0),
         0
       );
+      const tenantPayments = payments.filter((payment) => {
+        const paymentTenantId =
+          typeof payment.tenant === "string" ? payment.tenant : payment.tenant?.$id;
+        return paymentTenantId === tenant.$id;
+      });
+      const assessment = assessSecurityDepositRefund({
+        tenant,
+        house,
+        payments: tenantPayments,
+        deductions: tenantDeductions,
+        asOfDate: tenant.moveOutDate ?? null,
+      });
+      const canRefund =
+        Boolean(tenant.moveOutDate) && !refunded && assessment.canRefund;
 
       rows.push({
         tenantId: tenant.$id,
@@ -138,10 +167,13 @@ export default function SecurityDepositsPage() {
           const base = `${formatDisplayDate(deduction.deductionDate)} - ${deduction.itemFixed}`;
           return note ? `${base} (${note})` : base;
         }),
+        arrearsTotal: assessment.arrearsTotal,
+        refundableAmount: assessment.refundableAmount,
+        canRefund,
       });
     });
     return rows.sort((a, b) => a.tenantName.localeCompare(b.tenantName));
-  }, [deductionsByTenant, houseLookup, tenants]);
+  }, [deductionsByTenant, houseLookup, payments, tenants]);
 
   const searchSuggestions = useMemo(() => {
     const values = new Set<string>();
@@ -178,10 +210,48 @@ export default function SecurityDepositsPage() {
     });
   }, [balanceFilter, depositRows, query, refundFilter]);
 
+  const handleRefund = async (row: DepositRow) => {
+    if (row.refunded) {
+      toast.push("warning", "This deposit has already been refunded.");
+      return;
+    }
+    if (!row.moveOutDate) {
+      toast.push("warning", "Set a move-out date before refunding the deposit.");
+      return;
+    }
+    if (!row.canRefund) {
+      toast.push(
+        "warning",
+        "Refund not allowed. Deposit does not cover arrears and related deductions."
+      );
+      return;
+    }
+    setRefundingTenantId(row.tenantId);
+    try {
+      const updated = await updateScopedDocument<{ securityDepositRefunded: boolean }, Tenant>({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.tenants,
+        documentId: row.tenantId,
+        data: { securityDepositRefunded: true },
+      });
+      const updatedTenant = updated as unknown as Tenant;
+      setTenants((prev) =>
+        prev.map((tenant) =>
+          tenant.$id === row.tenantId ? updatedTenant : tenant
+        )
+      );
+      toast.push("success", "Security deposit marked as refunded.");
+    } catch {
+      toast.push("error", "Failed to refund security deposit.");
+    } finally {
+      setRefundingTenantId(null);
+    }
+  };
+
   const totals = useMemo(() => {
     return filteredRows.reduce(
       (acc, row) => {
-        const refundable = row.refunded ? 0 : Math.max(row.paid - row.relatedDeductions, 0);
+        const refundable = row.refunded ? 0 : row.refundableAmount;
         const held = row.refunded ? 0 : refundable;
         acc.required += row.required;
         acc.paid += row.paid;
@@ -284,9 +354,10 @@ export default function SecurityDepositsPage() {
               <th className="px-4 py-3">Move-out</th>
               <th className="px-4 py-3">Required</th>
               <th className="px-4 py-3">Paid</th>
-              <th className="px-4 py-3">Balance</th>
+              <th className="px-4 py-3">Balance / Refunded</th>
               <th className="px-4 py-3">Related Deductions</th>
               <th className="px-4 py-3">Refund Status</th>
+              <th className="px-4 py-3">Action</th>
             </tr>
           </thead>
           <tbody>
@@ -298,7 +369,14 @@ export default function SecurityDepositsPage() {
                 <td className="px-4 py-3 text-slate-300">{formatDisplayDate(row.moveOutDate)}</td>
                 <td className="amount px-4 py-3 text-slate-200">{formatAmount(row.required)}</td>
                 <td className="amount px-4 py-3 text-slate-200">{formatAmount(row.paid)}</td>
-                <td className="amount px-4 py-3 text-slate-200">{formatAmount(row.balance)}</td>
+                <td className="px-4 py-3 text-slate-300">
+                  <div className="amount font-medium text-slate-200">
+                    {formatAmount(row.refunded ? row.refundableAmount : row.balance)}
+                  </div>
+                  <div className="mt-1 text-xs text-slate-500">
+                    {row.refunded ? "Refunded" : "Deposit Balance"}
+                  </div>
+                </td>
                 <td className="px-4 py-3 text-slate-300">
                   <div className="amount font-medium text-slate-200">{formatAmount(row.relatedDeductions)}</div>
                   <div className="mt-1 text-xs text-slate-500">
@@ -329,18 +407,36 @@ export default function SecurityDepositsPage() {
                     {row.refunded ? "Refunded" : "Not Refunded"}
                   </span>
                 </td>
+                <td className="px-4 py-3">
+                  {row.refunded ? (
+                    <span className="text-xs text-slate-500">--</span>
+                  ) : (
+                    <button
+                      onClick={() => handleRefund(row)}
+                      disabled={!row.canRefund || refundingTenantId === row.tenantId}
+                      className="btn-secondary text-xs disabled:opacity-60"
+                      title={
+                        row.canRefund
+                          ? "Refund security deposit"
+                          : "Refund not allowed (arrears or deductions exceed deposit)"
+                      }
+                    >
+                      {refundingTenantId === row.tenantId ? "Refunding..." : "Refund"}
+                    </button>
+                  )}
+                </td>
               </tr>
             ))}
             {!loading && filteredRows.length === 0 && (
               <tr>
-                <td colSpan={9} className="px-4 py-8 text-center text-sm text-slate-500">
+                <td colSpan={10} className="px-4 py-8 text-center text-sm text-slate-500">
                   No security deposit records found for the current filters.
                 </td>
               </tr>
             )}
             {loading && (
               <tr>
-                <td colSpan={9} className="px-4 py-8 text-center text-sm text-slate-500">
+                <td colSpan={10} className="px-4 py-8 text-center text-sm text-slate-500">
                   Loading deposit records...
                 </td>
               </tr>

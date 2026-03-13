@@ -1,4 +1,4 @@
-import { addMonths, format, parseISO, startOfMonth } from "date-fns";
+import { addMonths, format, isValid, parseISO, startOfMonth } from "date-fns";
 import { decodeJson } from "../../lib/schema";
 import type { Payment, PaymentAllocation } from "../../lib/schema";
 
@@ -95,6 +95,25 @@ export function buildPaymentSummaryByMonth(
     entries.sort((a, b) => a.paymentDate.localeCompare(b.paymentDate));
   });
   return summary;
+}
+
+export function getLatestPaidMonth(payments: Payment[]): string | null {
+  const months = new Set<string>();
+  payments.forEach((payment) => {
+    getPaymentMonthAmounts(payment).forEach(({ month, amount }) => {
+      if (amount !== 0 && month) {
+        months.add(month);
+      }
+    });
+  });
+  if (months.size === 0) return null;
+  return Array.from(months).sort((a, b) => a.localeCompare(b)).at(-1) ?? null;
+}
+
+export function resolveMonthKeyToDate(monthKey: string | null | undefined): Date | null {
+  if (!monthKey) return null;
+  const parsed = parseISO(`${monthKey}-01`);
+  return isValid(parsed) ? parsed : null;
 }
 
 export function buildMonthSeries(

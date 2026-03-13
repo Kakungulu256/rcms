@@ -37,6 +37,7 @@ import { formatDisplayDate, formatShortMonth } from "../../lib/dateDisplay";
 import { getTenantEffectiveEndDate } from "../../lib/tenancyDates";
 import { formatAmount } from "../../lib/numberFormat";
 import { getRequiredActiveWorkspaceId } from "../../lib/workspace";
+import { sortHousesNatural } from "../../lib/houseSort";
 
 type PreviewState = {
   form: PaymentFormValues;
@@ -180,7 +181,7 @@ export default function PaymentsPage() {
         }),
       ]);
       setTenants(tenantResult);
-      setHouses(houseResult);
+      setHouses(sortHousesNatural(houseResult));
       setPayments(paymentResult);
     } catch (err) {
       setError("Failed to load payments.");

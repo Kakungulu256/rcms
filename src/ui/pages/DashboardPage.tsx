@@ -21,6 +21,7 @@ import type {
 } from "../../lib/schema";
 import { useAuth } from "../../auth/AuthContext";
 import { formatLimitValue, getLimitStatus } from "../../lib/planLimits";
+import { sortHousesNatural } from "../../lib/houseSort";
 
 type SummaryCard = {
   label: string;
@@ -162,7 +163,7 @@ export default function DashboardPage() {
             ],
           }),
         ]);
-      setHouses(houseResult);
+      setHouses(sortHousesNatural(houseResult));
       setTenants(tenantResult);
       setPayments(paymentResult);
       setExpenses(expenseResult);

@@ -1,3 +1,5 @@
+import { addDays, format, isValid, parseISO } from "date-fns";
+
 export type RentHistoryEntry = {
   effectiveDate: string;
   amount: number;
@@ -197,4 +199,66 @@ export function appendRentHistory(
   filtered.push(entry);
   filtered.sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
   return JSON.stringify(filtered);
+}
+
+export function appendRentHistoryWithBaseline(params: {
+  existing?: string | null;
+  newEntry: RentHistoryEntry;
+  previousAmount?: number | null;
+  baselineDate?: string | null;
+}): string {
+  const { existing, newEntry, previousAmount, baselineDate } = params;
+  const history = parseRentHistory(existing);
+  const sortedHistory = history
+    .slice()
+    .sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
+  const earliestEntry = sortedHistory[0] ?? null;
+  const hasPriorEntry = history.some(
+    (item) => item.effectiveDate < newEntry.effectiveDate
+  );
+  const previousRate =
+    typeof previousAmount === "number" && Number.isFinite(previousAmount)
+      ? previousAmount
+      : null;
+  let nextHistory = history;
+
+  if (!hasPriorEntry) {
+    const baselineCandidate = String(baselineDate ?? "").slice(0, 10);
+    let baselineEffective = baselineCandidate;
+    if (!baselineEffective || baselineEffective >= newEntry.effectiveDate) {
+      const parsed = parseISO(`${newEntry.effectiveDate}T00:00:00.000Z`);
+      if (isValid(parsed)) {
+        baselineEffective = format(addDays(parsed, -1), "yyyy-MM-dd");
+      } else {
+        baselineEffective = "";
+      }
+    }
+
+    if (baselineEffective && baselineEffective < newEntry.effectiveDate) {
+      if (earliestEntry && earliestEntry.effectiveDate > newEntry.effectiveDate) {
+        nextHistory = history.filter(
+          (item) => item.effectiveDate !== baselineEffective
+        );
+        nextHistory = nextHistory.map((item) =>
+          item.effectiveDate === earliestEntry.effectiveDate
+            ? {
+                ...item,
+                effectiveDate: baselineEffective,
+                source: item.source ?? newEntry.source,
+              }
+            : item
+        );
+      } else if (!earliestEntry && previousRate != null) {
+        nextHistory = parseRentHistory(
+          appendRentHistory(existing ?? null, {
+            effectiveDate: baselineEffective,
+            amount: previousRate,
+            source: newEntry.source,
+          })
+        );
+      }
+    }
+  }
+
+  return appendRentHistory(JSON.stringify(nextHistory), newEntry);
 }

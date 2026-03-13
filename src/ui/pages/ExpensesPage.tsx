@@ -25,6 +25,7 @@ import { logAudit } from "../../lib/audit";
 import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../ToastContext";
 import { getTenantEffectiveEndDate } from "../../lib/tenancyDates";
+import { sortHousesNatural } from "../../lib/houseSort";
 
 type UploadedReceipt = {
   fileId: string;
@@ -129,7 +130,7 @@ export default function ExpensesPage() {
         }),
       ]);
       setExpenses(expenseResult);
-      setHouses(houseResult);
+      setHouses(sortHousesNatural(houseResult));
       setTenants(tenantResult);
     } catch (err) {
       setError("Failed to load expenses.");

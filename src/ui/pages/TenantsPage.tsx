@@ -18,6 +18,7 @@ import { COLLECTIONS } from "../../lib/schema";
 import type {
   House,
   Payment,
+  SecurityDepositDeduction,
   Tenant,
   TenantForm as TenantFormValues,
 } from "../../lib/schema";
@@ -26,7 +27,9 @@ import { logAudit } from "../../lib/audit";
 import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../ToastContext";
 import { appendRentHistory, buildRentByMonth } from "../../lib/rentHistory";
+import { assessSecurityDepositRefund } from "../../lib/securityDeposit";
 import { formatLimitValue, getLimitStatus } from "../../lib/planLimits";
+import { sortHousesNatural } from "../../lib/houseSort";
 
 type PanelMode = "list" | "create" | "edit";
 
@@ -183,7 +186,7 @@ export default function TenantsPage() {
         }),
       ]);
       setTenants(tenantResult);
-      setHouses(houseResult);
+      setHouses(sortHousesNatural(houseResult));
       setPayments(paymentResult);
     } catch (err) {
       setError("Failed to load tenants.");
@@ -474,6 +477,65 @@ export default function TenantsPage() {
         setLoading(false);
         return;
       }
+      const nextRentHistoryJson = rentChanged
+        ? normalized.rentOverride != null
+          ? appendRentHistory(selected.rentHistoryJson ?? null, {
+              effectiveDate,
+              amount: newRent,
+              source: "override",
+            })
+          : selected.rentHistoryJson ?? null
+        : selected.rentHistoryJson ?? null;
+      let nextSecurityDepositRefunded =
+        tenantType === "new" ? Boolean(selected.securityDepositRefunded) : false;
+      const moveOutJustSet = Boolean(normalized.moveOutDate) && !selected.moveOutDate;
+
+      if (moveOutJustSet && tenantType === "new" && !nextSecurityDepositRefunded) {
+        const tenantPayments = payments.filter((payment) => {
+          const paymentTenantId =
+            typeof payment.tenant === "string" ? payment.tenant : payment.tenant?.$id;
+          return paymentTenantId === selected.$id;
+        });
+        let deductionRows: SecurityDepositDeduction[] | null = null;
+        try {
+          deductionRows = await listAllDocuments<SecurityDepositDeduction>({
+            databaseId: rcmsDatabaseId,
+            collectionId: COLLECTIONS.securityDepositDeductions,
+            queries: [Query.equal("tenantId", [selected.$id])],
+          });
+        } catch {
+          deductionRows = null;
+        }
+
+        if (!deductionRows) {
+          toast.push(
+            "warning",
+            "Auto refund skipped: unable to load deposit deductions."
+          );
+        } else {
+          const tenantForAssessment: Tenant = {
+            ...selected,
+            ...normalized,
+            tenantType,
+            securityDepositRequired: tenantType === "new",
+            securityDepositAmount: nextDepositAmount,
+            securityDepositPaid: nextDepositPaid,
+            securityDepositBalance: nextDepositBalance,
+            rentHistoryJson: nextRentHistoryJson,
+          };
+          const assessment = assessSecurityDepositRefund({
+            tenant: tenantForAssessment,
+            house,
+            payments: tenantPayments,
+            deductions: deductionRows,
+            asOfDate: normalized.moveOutDate ?? null,
+          });
+          if (assessment.canRefund) {
+            nextSecurityDepositRefunded = true;
+          }
+        }
+      }
+
       const payload = {
         ...normalized,
         tenantType,
@@ -481,17 +543,8 @@ export default function TenantsPage() {
         securityDepositAmount: nextDepositAmount,
         securityDepositPaid: nextDepositPaid,
         securityDepositBalance: nextDepositBalance,
-        securityDepositRefunded:
-          tenantType === "new" ? Boolean(selected.securityDepositRefunded) : false,
-        rentHistoryJson: rentChanged
-          ? normalized.rentOverride != null
-            ? appendRentHistory(selected.rentHistoryJson ?? null, {
-                effectiveDate,
-                amount: newRent,
-                source: "override",
-              })
-            : selected.rentHistoryJson ?? null
-          : selected.rentHistoryJson ?? null,
+        securityDepositRefunded: nextSecurityDepositRefunded,
+        rentHistoryJson: nextRentHistoryJson,
       };
       const updated = await updateScopedDocument<typeof payload, Tenant>({
         databaseId: rcmsDatabaseId,

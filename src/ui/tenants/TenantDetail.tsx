@@ -4,6 +4,8 @@ import {
   buildMonthSeries,
   buildPaidByMonth,
   buildPaymentSummaryByMonth,
+  getLatestPaidMonth,
+  resolveMonthKeyToDate,
 } from "../payments/allocation";
 import {
   listAllDocuments,
@@ -47,8 +49,6 @@ export default function TenantDetail({
   onCloseStatus,
 }: Props) {
   const moveInDate = tenant?.moveInDate ?? null;
-  const endDate = tenant ? getTenantEffectiveEndDate(tenant, new Date()) : new Date();
-  const months = moveInDate ? buildMonthSeries(moveInDate, endDate) : [];
   const [yearFilter, setYearFilter] = useState(() => new Date().getFullYear());
   const [deductions, setDeductions] = useState<SecurityDepositDeduction[]>([]);
   const [deductionsLoading, setDeductionsLoading] = useState(false);
@@ -65,6 +65,15 @@ export default function TenantDetail({
         return paymentTenantId === tenant.$id;
       })
     : [];
+  const baseEndDate = tenant ? getTenantEffectiveEndDate(tenant, new Date()) : new Date();
+  const latestPaidMonth = getLatestPaidMonth(tenantPayments);
+  const latestPaidDate = resolveMonthKeyToDate(latestPaidMonth);
+  const allowFutureMonths = Boolean(tenant && tenant.status === "active" && !tenant.moveOutDate);
+  const endDate =
+    allowFutureMonths && latestPaidDate && latestPaidDate > baseEndDate
+      ? latestPaidDate
+      : baseEndDate;
+  const months = moveInDate ? buildMonthSeries(moveInDate, endDate) : [];
   const paidByMonth = buildPaidByMonth(tenantPayments);
   const paymentSummaryByMonth = buildPaymentSummaryByMonth(tenantPayments);
   const rentByMonth = buildRentByMonth({

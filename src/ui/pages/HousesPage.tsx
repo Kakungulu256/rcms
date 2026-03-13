@@ -18,8 +18,9 @@ import type { House, HouseForm as HouseFormValues, Tenant } from "../../lib/sche
 import { logAudit } from "../../lib/audit";
 import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../ToastContext";
-import { appendRentHistory } from "../../lib/rentHistory";
+import { appendRentHistory, appendRentHistoryWithBaseline } from "../../lib/rentHistory";
 import { formatLimitValue, getLimitStatus } from "../../lib/planLimits";
+import { sortHousesNatural } from "../../lib/houseSort";
 
 type PanelMode = "list" | "create" | "edit";
 type HouseStatusFilter = "all" | "occupied" | "vacant" | "inactive";
@@ -43,10 +44,7 @@ export default function HousesPage() {
   const [housePage, setHousePage] = useState(1);
   const [housePageSize, setHousePageSize] = useState(20);
 
-  const sortedHouses = useMemo(
-    () => [...houses].sort((a, b) => a.code.localeCompare(b.code)),
-    [houses]
-  );
+  const sortedHouses = useMemo(() => sortHousesNatural(houses), [houses]);
   const houseSearchSuggestions = useMemo(() => {
     const values = new Set<string>();
     sortedHouses.forEach((house) => {
@@ -112,7 +110,7 @@ export default function HousesPage() {
         collectionId: COLLECTIONS.houses,
         queries: [Query.orderAsc("code")],
       });
-      setHouses(result);
+      setHouses(sortHousesNatural(result));
     } catch (err) {
       setError("Failed to load houses.");
     } finally {
@@ -174,7 +172,7 @@ export default function HousesPage() {
           }),
         },
       });
-      setHouses((prev) => [...prev, created as unknown as House]);
+      setHouses((prev) => sortHousesNatural([...prev, created as unknown as House]));
       setSelected(created as unknown as House);
       setMode("list");
       setModalOpen(false);
@@ -232,15 +230,30 @@ export default function HousesPage() {
         setLoading(false);
         return;
       }
+      const baselineDateCandidates = tenantsForHouse
+        .map((tenant) => tenant.moveInDate?.slice(0, 10))
+        .filter(Boolean) as string[];
+      const createdAt = (selected as House & { $createdAt?: string }).$createdAt;
+      if (createdAt) baselineDateCandidates.push(createdAt.slice(0, 10));
+      const baselineDate =
+        baselineDateCandidates.length > 0
+          ? baselineDateCandidates.sort()[0]
+          : effectiveDate;
+
       const updatedPayload = {
         ...rest,
         status: normalizedStatus,
         currentTenantId: occupant?.$id ?? null,
         rentHistoryJson: rentChanged
-          ? appendRentHistory(selected.rentHistoryJson ?? null, {
-              effectiveDate,
-              amount: rest.monthlyRent,
-              source: "house",
+          ? appendRentHistoryWithBaseline({
+              existing: selected.rentHistoryJson ?? null,
+              newEntry: {
+                effectiveDate,
+                amount: rest.monthlyRent,
+                source: "house",
+              },
+              previousAmount: selected.monthlyRent,
+              baselineDate,
             })
           : selected.rentHistoryJson ?? null,
       };
@@ -251,8 +264,10 @@ export default function HousesPage() {
         data: updatedPayload,
       });
       setHouses((prev) =>
-        prev.map((house) =>
-          house.$id === selected.$id ? (updated as unknown as House) : house
+        sortHousesNatural(
+          prev.map((house) =>
+            house.$id === selected.$id ? (updated as unknown as House) : house
+          )
         )
       );
       setSelected(updated as unknown as House);
