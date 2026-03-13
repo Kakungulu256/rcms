@@ -516,6 +516,7 @@ export default function TenantsPage() {
           const tenantForAssessment: Tenant = {
             ...selected,
             ...normalized,
+            moveOutDate: normalized.moveOutDate ?? undefined,
             tenantType,
             securityDepositRequired: tenantType === "new",
             securityDepositAmount: nextDepositAmount,
