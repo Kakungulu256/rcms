@@ -3,7 +3,6 @@ import AppShell from "./ui/AppShell";
 import AppIndexPage from "./ui/pages/AppIndexPage";
 import ExpensesPage from "./ui/pages/ExpensesPage";
 import HousesPage from "./ui/pages/HousesPage";
-import LandingPage from "./ui/pages/LandingPage";
 import AcceptInvitePage from "./ui/pages/AcceptInvitePage";
 import LoginPage from "./ui/pages/LoginPage";
 import MigrationPage from "./ui/pages/MigrationPage";
