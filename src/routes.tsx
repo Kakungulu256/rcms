@@ -25,7 +25,7 @@ import BillingLockedPage from "./ui/pages/BillingLockedPage";
 import PlatformOwnerPage from "./ui/pages/PlatformOwnerPage";
 
 export const router = createBrowserRouter([
-  { path: "/", element: <LandingPage /> },
+  { path: "/", element: <Navigate to="/login" replace /> },
   { path: "/accept-invite", element: <AcceptInvitePage /> },
   { path: "/login", element: <LoginPage /> },
   { path: "/signup", element: <SignupPage /> },
