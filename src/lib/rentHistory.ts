@@ -1,4 +1,4 @@
-import { addDays, format, isValid, parseISO } from "date-fns";
+import { isValid, parseISO } from "date-fns";
 
 export type RentHistoryEntry = {
   effectiveDate: string;
@@ -30,6 +30,38 @@ export function normalizeProrationMode(value?: string | null): ProrationMode {
 
 export function setDefaultProrationMode(value?: string | null) {
   defaultProrationMode = normalizeProrationMode(value);
+}
+
+function isValidMonth(value: string) {
+  if (!/^\d{4}-\d{2}$/.test(value)) return false;
+  const month = Number(value.slice(5, 7));
+  return month >= 1 && month <= 12;
+}
+
+export function formatEffectiveMonth(value?: string | null) {
+  if (!value) return "";
+  return String(value).slice(0, 7);
+}
+
+export function normalizeEffectiveMonth(value?: string | null) {
+  if (!value) return null;
+  const monthValue = String(value).slice(0, 7);
+  if (!isValidMonth(monthValue)) return null;
+  return `${monthValue}-01`;
+}
+
+function formatDateUtc(date: Date) {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function previousMonthStart(value: string) {
+  const parsed = parseISO(`${value}T00:00:00.000Z`);
+  if (!isValid(parsed)) return "";
+  const prev = new Date(Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth() - 1, 1));
+  return formatDateUtc(prev);
 }
 
 function parseDateOnlyUtc(value?: string | null) {
@@ -206,12 +238,15 @@ export function appendRentHistoryWithBaseline(params: {
 }): string {
   const { existing, newEntry, previousAmount, baselineDate } = params;
   const history = parseRentHistory(existing);
+  const normalizedEffectiveDate =
+    normalizeEffectiveMonth(newEntry.effectiveDate) ?? newEntry.effectiveDate;
+  const normalizedEntry = { ...newEntry, effectiveDate: normalizedEffectiveDate };
   const sortedHistory = history
     .slice()
     .sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
   const earliestEntry = sortedHistory[0] ?? null;
   const hasPriorEntry = history.some(
-    (item) => item.effectiveDate < newEntry.effectiveDate
+    (item) => item.effectiveDate < normalizedEntry.effectiveDate
   );
   const previousRate =
     typeof previousAmount === "number" && Number.isFinite(previousAmount)
@@ -220,19 +255,14 @@ export function appendRentHistoryWithBaseline(params: {
   let nextHistory = history;
 
   if (!hasPriorEntry) {
-    const baselineCandidate = String(baselineDate ?? "").slice(0, 10);
+    const baselineCandidate = normalizeEffectiveMonth(baselineDate) ?? "";
     let baselineEffective = baselineCandidate;
-    if (!baselineEffective || baselineEffective >= newEntry.effectiveDate) {
-      const parsed = parseISO(`${newEntry.effectiveDate}T00:00:00.000Z`);
-      if (isValid(parsed)) {
-        baselineEffective = format(addDays(parsed, -1), "yyyy-MM-dd");
-      } else {
-        baselineEffective = "";
-      }
+    if (!baselineEffective || baselineEffective >= normalizedEntry.effectiveDate) {
+      baselineEffective = previousMonthStart(normalizedEntry.effectiveDate);
     }
 
-    if (baselineEffective && baselineEffective < newEntry.effectiveDate) {
-      if (earliestEntry && earliestEntry.effectiveDate > newEntry.effectiveDate) {
+    if (baselineEffective && baselineEffective < normalizedEntry.effectiveDate) {
+      if (earliestEntry && earliestEntry.effectiveDate > normalizedEntry.effectiveDate) {
         nextHistory = history.filter(
           (item) => item.effectiveDate !== baselineEffective
         );
@@ -241,7 +271,7 @@ export function appendRentHistoryWithBaseline(params: {
             ? {
                 ...item,
                 effectiveDate: baselineEffective,
-                source: item.source ?? newEntry.source,
+                source: item.source ?? normalizedEntry.source,
               }
             : item
         );
@@ -250,12 +280,22 @@ export function appendRentHistoryWithBaseline(params: {
           appendRentHistory(existing ?? null, {
             effectiveDate: baselineEffective,
             amount: previousRate,
-            source: newEntry.source,
+            source: normalizedEntry.source,
           })
         );
       }
     }
   }
 
-  return appendRentHistory(JSON.stringify(nextHistory), newEntry);
+  return appendRentHistory(JSON.stringify(nextHistory), normalizedEntry);
+}
+
+export function removeRentHistoryEntry(
+  existing: string | null | undefined,
+  effectiveDate: string
+): string {
+  const history = parseRentHistory(existing);
+  const filtered = history.filter((item) => item.effectiveDate !== effectiveDate);
+  filtered.sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
+  return JSON.stringify(filtered);
 }

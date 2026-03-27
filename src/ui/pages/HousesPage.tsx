@@ -28,7 +28,10 @@ import {
   appendRentHistory,
   appendRentHistoryWithBaseline,
   buildRentByMonth,
+  formatEffectiveMonth,
+  normalizeEffectiveMonth,
   parseRentHistory,
+  removeRentHistoryEntry,
   upsertRentHistoryEntry,
   type RentHistoryEntry,
 } from "../../lib/rentHistory";
@@ -215,7 +218,12 @@ export default function HousesPage() {
   const [error, setError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [historyEditOpen, setHistoryEditOpen] = useState(false);
+  const [historyEditMode, setHistoryEditMode] = useState<"add" | "edit">("add");
   const [historyEditEntry, setHistoryEditEntry] = useState<RentHistoryEntry | null>(null);
+  const [historyEditMonth, setHistoryEditMonth] = useState("");
+  const [historyEditOriginalDate, setHistoryEditOriginalDate] = useState<string | null>(
+    null
+  );
   const [historyEditAmount, setHistoryEditAmount] = useState(0);
   const [historyEditSaving, setHistoryEditSaving] = useState(false);
   const [houseSearchQuery, setHouseSearchQuery] = useState("");
@@ -318,8 +326,21 @@ export default function HousesPage() {
   };
 
   const openHistoryEditor = (entry: RentHistoryEntry) => {
+    setHistoryEditMode("edit");
     setHistoryEditEntry(entry);
     setHistoryEditAmount(Number(entry.amount) || 0);
+    setHistoryEditMonth(formatEffectiveMonth(entry.effectiveDate));
+    setHistoryEditOriginalDate(entry.effectiveDate);
+    setHistoryEditOpen(true);
+  };
+
+  const openHistoryAdder = () => {
+    if (!selected) return;
+    setHistoryEditMode("add");
+    setHistoryEditEntry(null);
+    setHistoryEditAmount(Number(selected.monthlyRent) || 0);
+    setHistoryEditMonth(new Date().toISOString().slice(0, 7));
+    setHistoryEditOriginalDate(null);
     setHistoryEditOpen(true);
   };
 
@@ -383,8 +404,9 @@ export default function HousesPage() {
     setError(null);
     try {
       const { rentEffectiveDate, ...rest } = values;
+      const effectiveMonth = rentEffectiveDate ?? new Date().toISOString().slice(0, 7);
       const effectiveDate =
-        rentEffectiveDate ?? new Date().toISOString().slice(0, 10);
+        normalizeEffectiveMonth(effectiveMonth) ?? new Date().toISOString().slice(0, 10);
       const manualStatus = rest.status === "inactive" ? "inactive" : "vacant";
       const created = await createWorkspaceDocument({
         databaseId: rcmsDatabaseId,
@@ -451,11 +473,20 @@ export default function HousesPage() {
         toast.push("warning", "House has an active tenant. Status kept as occupied.");
       }
       const rentChanged = rest.monthlyRent !== selected.monthlyRent;
+      const normalizedEffectiveDate = rentEffectiveDate
+        ? normalizeEffectiveMonth(rentEffectiveDate)
+        : null;
       const effectiveDate =
-        rentEffectiveDate ?? new Date().toISOString().slice(0, 10);
+        normalizedEffectiveDate ?? new Date().toISOString().slice(0, 10);
       if (rentChanged && !rentEffectiveDate) {
-        setError("Provide a rent effective date for the new rate.");
-        toast.push("warning", "Provide a rent effective date for the new rate.");
+        setError("Provide a rent effective month for the new rate.");
+        toast.push("warning", "Provide a rent effective month for the new rate.");
+        setLoading(false);
+        return;
+      }
+      if (rentChanged && rentEffectiveDate && !normalizedEffectiveDate) {
+        setError("Provide a valid rent effective month for the new rate.");
+        toast.push("warning", "Provide a valid rent effective month for the new rate.");
         setLoading(false);
         return;
       }
@@ -542,27 +573,47 @@ export default function HousesPage() {
   };
 
   const handleSaveHistoryEdit = async () => {
-    if (!selected || !historyEditEntry) return;
+    if (!selected) return;
     const amount = Number(historyEditAmount);
     if (!Number.isFinite(amount) || amount <= 0) {
       toast.push("warning", "Enter a valid rent amount.");
       return;
     }
-    if (amount === historyEditEntry.amount) {
+    const normalizedMonth = normalizeEffectiveMonth(historyEditMonth);
+    if (!normalizedMonth) {
+      toast.push("warning", "Select a valid rent effective month.");
+      return;
+    }
+
+    const originalDate = historyEditOriginalDate;
+    const originalMonth = formatEffectiveMonth(originalDate ?? "");
+    const effectiveDate =
+      historyEditMode === "edit" && originalDate && originalMonth === historyEditMonth
+        ? originalDate
+        : normalizedMonth;
+    const replacingDate = historyEditMode === "edit" ? originalDate : null;
+
+    if (
+      historyEditMode === "edit" &&
+      historyEditEntry &&
+      amount === historyEditEntry.amount &&
+      effectiveDate === historyEditEntry.effectiveDate
+    ) {
       setHistoryEditOpen(false);
       setHistoryEditEntry(null);
       return;
     }
+
     setHistoryEditSaving(true);
     try {
       const nextRentHistoryJson = upsertRentHistoryEntry({
         existing: selected.rentHistoryJson ?? null,
         entry: {
-          effectiveDate: historyEditEntry.effectiveDate,
+          effectiveDate,
           amount,
           source: "house",
         },
-        replaceDate: historyEditEntry.effectiveDate,
+        replaceDate: replacingDate ?? undefined,
       });
       const latestRent =
         parseRentHistory(nextRentHistoryJson).at(-1)?.amount ?? selected.monthlyRent;
@@ -588,6 +639,8 @@ export default function HousesPage() {
       setSelected(updated as unknown as House);
       setHistoryEditOpen(false);
       setHistoryEditEntry(null);
+      setHistoryEditOriginalDate(null);
+      setHistoryEditMonth("");
       toast.push("success", "Rent history updated. Recalculating payments...");
       try {
         const updatedCount = await recalcHouseAllocations(updated as unknown as House);
@@ -605,6 +658,62 @@ export default function HousesPage() {
       }
     } catch (err) {
       toast.push("error", "Failed to update rent history.");
+    } finally {
+      setHistoryEditSaving(false);
+    }
+  };
+
+  const handleDeleteHistoryEntry = async (entry: RentHistoryEntry) => {
+    if (!selected) return;
+    const confirmed = window.confirm(
+      `Remove rent rate for ${formatEffectiveMonth(entry.effectiveDate)}?`
+    );
+    if (!confirmed) return;
+    setHistoryEditSaving(true);
+    try {
+      const nextRentHistoryJson = removeRentHistoryEntry(
+        selected.rentHistoryJson ?? null,
+        entry.effectiveDate
+      );
+      const latestRent =
+        parseRentHistory(nextRentHistoryJson).at(-1)?.amount ?? selected.monthlyRent;
+      const updated = await updateScopedDocument<
+        { rentHistoryJson: string | null; monthlyRent: number },
+        House
+      >({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.houses,
+        documentId: selected.$id,
+        data: {
+          rentHistoryJson: nextRentHistoryJson,
+          monthlyRent: latestRent,
+        },
+      });
+      setHouses((prev) =>
+        sortHousesNatural(
+          prev.map((house) =>
+            house.$id === selected.$id ? (updated as unknown as House) : house
+          )
+        )
+      );
+      setSelected(updated as unknown as House);
+      toast.push("success", "Rent history removed. Recalculating payments...");
+      try {
+        const updatedCount = await recalcHouseAllocations(updated as unknown as House);
+        toast.push(
+          "success",
+          updatedCount > 0
+            ? `Recalculated ${updatedCount} payment allocation(s).`
+            : "No payments needed recalculation."
+        );
+      } catch (err) {
+        toast.push(
+          "error",
+          "Rent history removed, but payment recalculation failed. Refresh and try again."
+        );
+      }
+    } catch (err) {
+      toast.push("error", "Failed to remove rent history.");
     } finally {
       setHistoryEditSaving(false);
     }
@@ -742,6 +851,8 @@ export default function HousesPage() {
               house={selected}
               canManage={canManageHouses}
               onEditHistory={openHistoryEditor}
+              onAddHistory={openHistoryAdder}
+              onDeleteHistory={handleDeleteHistoryEntry}
             />
           )}
         </div>
@@ -773,52 +884,64 @@ export default function HousesPage() {
       </Modal>
 
       <Modal
-        open={canManageHouses && historyEditOpen && !!historyEditEntry}
-        title="Edit Rent History"
-        description="Update the rent amount for this effective date."
+        open={canManageHouses && historyEditOpen}
+        title={historyEditMode === "edit" ? "Edit Rent History" : "Add Rent Rate"}
+        description={
+          historyEditMode === "edit"
+            ? "Update the rent amount or effective month."
+            : "Add a new rent rate for a specific month."
+        }
         onClose={() => {
           setHistoryEditOpen(false);
           setHistoryEditEntry(null);
+          setHistoryEditOriginalDate(null);
+          setHistoryEditMonth("");
         }}
       >
-        {historyEditEntry && (
-          <form
-            className="space-y-4"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void handleSaveHistoryEdit();
-            }}
+        <form
+          className="space-y-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void handleSaveHistoryEdit();
+          }}
+        >
+          <label className="block text-sm text-slate-300">
+            Effective Month
+            <input
+              type="month"
+              className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+              value={historyEditMonth}
+              onChange={(event) => setHistoryEditMonth(event.target.value)}
+              required
+            />
+          </label>
+          <label className="block text-sm text-slate-300">
+            Rent Amount
+            <input
+              type="number"
+              step="0.01"
+              min="0.01"
+              className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+              value={historyEditAmount}
+              onChange={(event) => setHistoryEditAmount(Number(event.target.value) || 0)}
+              required
+            />
+          </label>
+          <p className="text-xs text-slate-500">
+            If an entry already exists for this month, it will be replaced.
+          </p>
+          <button
+            type="submit"
+            disabled={historyEditSaving}
+            className="btn-primary w-full text-sm disabled:opacity-60"
           >
-            <label className="block text-sm text-slate-300">
-              Effective Date
-              <input
-                type="date"
-                className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
-                value={historyEditEntry.effectiveDate}
-                readOnly
-              />
-            </label>
-            <label className="block text-sm text-slate-300">
-              Rent Amount
-              <input
-                type="number"
-                step="0.01"
-                min="0.01"
-                className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
-                value={historyEditAmount}
-                onChange={(event) => setHistoryEditAmount(Number(event.target.value) || 0)}
-                required
-              />
-            </label>
-            <button
-              type="submit"
-              disabled={historyEditSaving}
-              className="btn-primary w-full text-sm disabled:opacity-60"
-            >
-              {historyEditSaving ? "Saving..." : "Save Rent Change"}
-            </button>
-          </form>
-        )}
+            {historyEditSaving
+              ? "Saving..."
+              : historyEditMode === "edit"
+                ? "Save Rent Change"
+                : "Add Rent Rate"}
+          </button>
+        </form>
       </Modal>
     </section>
   );

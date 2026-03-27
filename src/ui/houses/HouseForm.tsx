@@ -29,7 +29,7 @@ export default function HouseForm({
       monthlyRent: initial?.monthlyRent ?? 0,
       status: initial?.status === "inactive" ? "inactive" : "vacant",
       notes: initial?.notes ?? "",
-      rentEffectiveDate: new Date().toISOString().slice(0, 10),
+      rentEffectiveDate: new Date().toISOString().slice(0, 7),
     },
   });
 
@@ -70,9 +70,9 @@ export default function HouseForm({
           />
         </label>
         <label className="block text-sm text-slate-300">
-          Rent Effective Date
+          Rent Effective Month
           <input
-            type="date"
+            type="month"
             className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
             {...register("rentEffectiveDate")}
           />

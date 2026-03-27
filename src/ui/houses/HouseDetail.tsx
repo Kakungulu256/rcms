@@ -1,15 +1,23 @@
 import type { House } from "../../lib/schema";
 import type { RentHistoryEntry } from "../../lib/rentHistory";
-import { parseRentHistory } from "../../lib/rentHistory";
+import { formatEffectiveMonth, parseRentHistory } from "../../lib/rentHistory";
 import { formatAmount } from "../../lib/numberFormat";
 
 type Props = {
   house?: House | null;
   canManage?: boolean;
   onEditHistory?: (entry: RentHistoryEntry) => void;
+  onAddHistory?: () => void;
+  onDeleteHistory?: (entry: RentHistoryEntry) => void;
 };
 
-export default function HouseDetail({ house, canManage, onEditHistory }: Props) {
+export default function HouseDetail({
+  house,
+  canManage,
+  onEditHistory,
+  onAddHistory,
+  onDeleteHistory,
+}: Props) {
   if (!house) {
     return (
       <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6 text-sm text-slate-500">
@@ -51,11 +59,22 @@ export default function HouseDetail({ house, canManage, onEditHistory }: Props) 
             {house.notes || "No notes yet."}
           </div>
         </div>
-        <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
-          <div className="text-xs uppercase tracking-[0.2em] text-slate-500">
-            Rent History
+        <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4 md:col-span-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-xs uppercase tracking-[0.2em] text-slate-500">
+              Rent History
+            </div>
+            {canManage && onAddHistory ? (
+              <button
+                type="button"
+                onClick={onAddHistory}
+                className="shrink-0 whitespace-nowrap rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-100 transition hover:bg-slate-800/60"
+              >
+                Add Rate
+              </button>
+            ) : null}
           </div>
-          <div className="mt-2 space-y-2 text-sm text-slate-300">
+          <div className="mt-3 space-y-2 text-sm text-slate-300">
             {history.length > 0 ? (
               history
                 .slice()
@@ -63,19 +82,38 @@ export default function HouseDetail({ house, canManage, onEditHistory }: Props) 
                 .map((entry, index) => (
                   <div
                     key={`${entry.effectiveDate}-${entry.amount}-${index}`}
-                    className="flex items-center justify-between gap-2"
+                    className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2"
                   >
-                    <div>
-                      {entry.effectiveDate}: {formatAmount(entry.amount)}
+                    <div className="min-w-0">
+                      <div className="text-xs uppercase tracking-[0.2em] text-slate-500">
+                        {formatEffectiveMonth(entry.effectiveDate) ||
+                          entry.effectiveDate}
+                      </div>
+                      <div className="mt-1 truncate text-sm font-semibold text-slate-100">
+                        {formatAmount(entry.amount)}
+                      </div>
                     </div>
-                    {canManage && onEditHistory ? (
-                      <button
-                        type="button"
-                        className="text-xs text-slate-200 underline"
-                        onClick={() => onEditHistory(entry)}
-                      >
-                        Edit
-                      </button>
+                    {canManage && (onEditHistory || onDeleteHistory) ? (
+                      <div className="flex shrink-0 items-center gap-2 text-xs">
+                        {onEditHistory ? (
+                          <button
+                            type="button"
+                            className="rounded-full border border-slate-700 px-3 py-1 text-slate-100 transition hover:bg-slate-800/60"
+                            onClick={() => onEditHistory(entry)}
+                          >
+                            Edit
+                          </button>
+                        ) : null}
+                        {onDeleteHistory ? (
+                          <button
+                            type="button"
+                            className="rounded-full border border-rose-500/40 px-3 py-1 text-rose-200 transition hover:bg-rose-500/10"
+                            onClick={() => onDeleteHistory(entry)}
+                          >
+                            Remove
+                          </button>
+                        ) : null}
+                      </div>
                     ) : null}
                   </div>
                 ))
