@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ID, Query } from "appwrite";
+import { startOfMonth } from "date-fns";
 import { Link } from "react-router-dom";
 import HouseDetail from "../houses/HouseDetail";
 import HouseForm from "../houses/HouseForm";
@@ -14,19 +15,27 @@ import {
   updateScopedDocument,
 } from "../../lib/appwrite";
 import { COLLECTIONS } from "../../lib/schema";
-import type { House, HouseForm as HouseFormValues, Tenant } from "../../lib/schema";
+import type {
+  House,
+  HouseForm as HouseFormValues,
+  Payment,
+  Tenant,
+} from "../../lib/schema";
 import { logAudit } from "../../lib/audit";
 import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../ToastContext";
 import {
   appendRentHistory,
   appendRentHistoryWithBaseline,
+  buildRentByMonth,
   parseRentHistory,
   upsertRentHistoryEntry,
   type RentHistoryEntry,
 } from "../../lib/rentHistory";
 import { formatLimitValue, getLimitStatus } from "../../lib/planLimits";
 import { sortHousesNatural } from "../../lib/houseSort";
+import { buildMonthSeries, previewAllocation } from "../payments/allocation";
+import { getTenantEffectiveEndDate } from "../../lib/tenancyDates";
 
 type PanelMode = "list" | "create" | "edit";
 type HouseStatusFilter = "all" | "occupied" | "vacant" | "inactive";
@@ -34,6 +43,166 @@ type HouseStatusFilter = "all" | "occupied" | "vacant" | "inactive";
 type HouseFormWithEffectiveDate = HouseFormValues & {
   rentEffectiveDate?: string;
 };
+
+function roundMoney(value: number) {
+  return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+}
+
+function parseDateInput(value?: string | null) {
+  const parsed = value ? new Date(`${value.slice(0, 10)}T00:00:00`) : new Date();
+  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+}
+
+function parseOptionalDate(value?: string | null) {
+  if (!value) return null;
+  const parsed = new Date(`${value.slice(0, 10)}T00:00:00`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function buildAllocationMonths(params: {
+  tenant: Tenant;
+  paymentDate: string;
+  allocatableAmount: number;
+  rent: number;
+}) {
+  const { tenant, paymentDate, allocatableAmount, rent } = params;
+  const paymentDateValue = parseDateInput(paymentDate);
+  const effectiveEndDate = getTenantEffectiveEndDate(tenant, paymentDateValue);
+  const moveOutDate = parseOptionalDate(tenant.moveOutDate);
+  const movedOutBeforePaymentMonth =
+    moveOutDate != null
+      ? startOfMonth(moveOutDate).getTime() <
+        startOfMonth(paymentDateValue).getTime()
+      : false;
+  const canCarryForward = tenant.status === "active" && !movedOutBeforePaymentMonth;
+  const extraMonths =
+    canCarryForward && rent > 0 && allocatableAmount > 0
+      ? Math.max(24, Math.ceil(allocatableAmount / rent) + 12)
+      : 0;
+  return buildMonthSeries(tenant.moveInDate, effectiveEndDate, extraMonths);
+}
+
+function applyAllocation(
+  paidByMonth: Record<string, number>,
+  allocation: Record<string, number>,
+  multiplier = 1
+) {
+  Object.entries(allocation).forEach(([month, amount]) => {
+    const value = roundMoney(Number(amount) * multiplier);
+    if (!Number.isFinite(value) || value === 0) return;
+    paidByMonth[month] = roundMoney((paidByMonth[month] ?? 0) + value);
+  });
+}
+
+function allocateReversal(params: {
+  amount: number;
+  paidByMonth: Record<string, number>;
+}) {
+  let remaining = roundMoney(Math.max(Number(params.amount) || 0, 0));
+  const allocation: Record<string, number> = {};
+  const months = Object.entries(params.paidByMonth)
+    .filter(([, paid]) => Number(paid) > 0)
+    .map(([month]) => month)
+    .sort((a, b) => b.localeCompare(a));
+
+  months.forEach((month) => {
+    if (remaining <= 0) return;
+    const paid = roundMoney(Math.max(Number(params.paidByMonth[month] ?? 0), 0));
+    if (paid <= 0) return;
+    const applied = roundMoney(Math.min(paid, remaining));
+    if (applied <= 0) return;
+    allocation[month] = applied;
+    remaining = roundMoney(remaining - applied);
+  });
+
+  return { allocation, remaining };
+}
+
+function recalculateTenantAllocations(params: {
+  tenant: Tenant;
+  house: House;
+  payments: Payment[];
+}): Array<{ paymentId: string; allocationJson: string }> {
+  const { tenant, house, payments } = params;
+  const sortedPayments = payments
+    .slice()
+    .sort(
+      (a, b) =>
+        (a.paymentDate ?? "").localeCompare(b.paymentDate ?? "") ||
+        a.$id.localeCompare(b.$id)
+    );
+  const paidByMonth: Record<string, number> = {};
+  const updates: Array<{ paymentId: string; allocationJson: string }> = [];
+
+  sortedPayments.forEach((payment) => {
+    if (payment.isReversal) {
+      const reversalAmount = roundMoney(
+        Math.max(
+          Math.abs(Number(payment.amount) || 0) -
+            Math.abs(Number(payment.securityDepositApplied) || 0),
+          0
+        )
+      );
+      const { allocation } = allocateReversal({
+        amount: reversalAmount,
+        paidByMonth,
+      });
+      applyAllocation(paidByMonth, allocation, -1);
+      updates.push({
+        paymentId: payment.$id,
+        allocationJson: JSON.stringify(allocation),
+      });
+      return;
+    }
+
+    const securityDepositApplied = roundMoney(
+      Math.max(Number(payment.securityDepositApplied) || 0, 0)
+    );
+    const allocatableAmount = roundMoney(
+      Math.max(Number(payment.amount) || 0, 0) - securityDepositApplied
+    );
+    const months = buildAllocationMonths({
+      tenant,
+      paymentDate: payment.paymentDate,
+      allocatableAmount,
+      rent: house.monthlyRent ?? 0,
+    });
+    const effectiveEndDate = getTenantEffectiveEndDate(
+      tenant,
+      parseDateInput(payment.paymentDate)
+    );
+    const occupancyEndDate =
+      tenant.moveOutDate ??
+      (tenant.status === "inactive"
+        ? effectiveEndDate.toISOString().slice(0, 10)
+        : null);
+    const rentByMonth = buildRentByMonth({
+      months,
+      houseHistoryJson: house.rentHistoryJson ?? null,
+      fallbackRent: house.monthlyRent ?? 0,
+      occupancyStartDate: tenant.moveInDate,
+      occupancyEndDate,
+    });
+    const allocation = previewAllocation({
+      amount: allocatableAmount,
+      months,
+      paidByMonth,
+      rentByMonth,
+    });
+    const allocationMap = Object.fromEntries(
+      allocation.lines
+        .filter((line) => line.applied > 0)
+        .map((line) => [line.month, line.applied])
+    );
+    applyAllocation(paidByMonth, allocationMap, 1);
+    updates.push({
+      paymentId: payment.$id,
+      allocationJson: JSON.stringify(allocationMap),
+    });
+  });
+
+  return updates;
+}
 
 export default function HousesPage() {
   const { user, permissions, planLimits } = useAuth();
@@ -152,6 +321,50 @@ export default function HousesPage() {
     setHistoryEditEntry(entry);
     setHistoryEditAmount(Number(entry.amount) || 0);
     setHistoryEditOpen(true);
+  };
+
+  const recalcHouseAllocations = async (house: House) => {
+    const tenantsForHouse = await listAllDocuments<Tenant>({
+      databaseId: rcmsDatabaseId,
+      collectionId: COLLECTIONS.tenants,
+      queries: [Query.equal("house", [house.$id]), Query.orderAsc("fullName")],
+    });
+    let updatedCount = 0;
+
+    for (const tenant of tenantsForHouse) {
+      const tenantPayments = await listAllDocuments<Payment>({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.payments,
+        queries: [Query.equal("tenant", [tenant.$id]), Query.orderAsc("paymentDate")],
+      });
+      if (tenantPayments.length === 0) continue;
+
+      const allocationUpdates = recalculateTenantAllocations({
+        tenant,
+        house,
+        payments: tenantPayments,
+      });
+      const paymentLookup = new Map(tenantPayments.map((payment) => [payment.$id, payment]));
+
+      for (const update of allocationUpdates) {
+        const existing = paymentLookup.get(update.paymentId)?.allocationJson ?? "";
+        if (existing === update.allocationJson) {
+          continue;
+        }
+        await updateScopedDocument<
+          { allocationJson: string },
+          Payment
+        >({
+          databaseId: rcmsDatabaseId,
+          collectionId: COLLECTIONS.payments,
+          documentId: update.paymentId,
+          data: { allocationJson: update.allocationJson },
+        });
+        updatedCount += 1;
+      }
+    }
+
+    return updatedCount;
   };
 
   const handleCreate = async (values: HouseFormWithEffectiveDate) => {
@@ -294,6 +507,23 @@ export default function HousesPage() {
       setMode("list");
       setModalOpen(false);
       toast.push("success", "House updated.");
+      if (rentChanged) {
+        toast.push("success", "Recalculating payments for updated rent...");
+        try {
+          const updatedCount = await recalcHouseAllocations(updated as unknown as House);
+          toast.push(
+            "success",
+            updatedCount > 0
+              ? `Recalculated ${updatedCount} payment allocation(s).`
+              : "No payments needed recalculation."
+          );
+        } catch (err) {
+          toast.push(
+            "error",
+            "House updated, but payment recalculation failed. Refresh and try again."
+          );
+        }
+      }
       if (user) {
         void logAudit({
           entityType: "house",
@@ -358,7 +588,21 @@ export default function HousesPage() {
       setSelected(updated as unknown as House);
       setHistoryEditOpen(false);
       setHistoryEditEntry(null);
-      toast.push("success", "Rent history updated.");
+      toast.push("success", "Rent history updated. Recalculating payments...");
+      try {
+        const updatedCount = await recalcHouseAllocations(updated as unknown as House);
+        toast.push(
+          "success",
+          updatedCount > 0
+            ? `Recalculated ${updatedCount} payment allocation(s).`
+            : "No payments needed recalculation."
+        );
+      } catch (err) {
+        toast.push(
+          "error",
+          "Rent history updated, but payment recalculation failed. Refresh and try again."
+        );
+      }
     } catch (err) {
       toast.push("error", "Failed to update rent history.");
     } finally {
