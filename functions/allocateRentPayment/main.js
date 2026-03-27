@@ -471,24 +471,10 @@ function parseHistory(value) {
   }
 }
 
-function entryPriority(entry) {
-  return entry?.source === "house" ? 0 : 1;
-}
-
 function buildEffectiveHistory(tenantHistory, houseHistory) {
-  const tenantSpecificHistory = tenantHistory.filter((entry) => entry?.source !== "house");
-  const baseHistory =
-    tenantSpecificHistory.length > 0
-      ? [...houseHistory, ...tenantSpecificHistory]
-      : houseHistory.length > 0
-        ? houseHistory
-        : tenantHistory;
-
-  return baseHistory.sort((a, b) => {
-    const dateOrder = String(a.effectiveDate).localeCompare(String(b.effectiveDate));
-    if (dateOrder !== 0) return dateOrder;
-    return entryPriority(a) - entryPriority(b);
-  });
+  return houseHistory
+    .slice()
+    .sort((a, b) => String(a.effectiveDate).localeCompare(String(b.effectiveDate)));
 }
 
 function buildRentByMonth(
@@ -831,7 +817,7 @@ export default async (context) => {
     if (house) {
       assertWorkspaceAccess(house, workspaceId, "House");
     }
-    const rent = roundMoney(tenant.rentOverride ?? house?.monthlyRent ?? 0);
+    const rent = roundMoney(house?.monthlyRent ?? 0);
     const amountValue = roundMoney(Math.max(Number(amount) || 0, 0));
     if (amountValue <= 0) {
       return res.json({ ok: false, error: "Amount must be greater than zero." }, 400);
@@ -876,7 +862,7 @@ export default async (context) => {
         : null;
     const rentByMonth = buildRentByMonth(
       months,
-      tenant.rentHistoryJson ?? null,
+      null,
       house?.rentHistoryJson ?? null,
       rent,
       tenant.moveInDate,

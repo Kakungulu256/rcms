@@ -1,12 +1,15 @@
 import type { House } from "../../lib/schema";
+import type { RentHistoryEntry } from "../../lib/rentHistory";
 import { parseRentHistory } from "../../lib/rentHistory";
 import { formatAmount } from "../../lib/numberFormat";
 
 type Props = {
   house?: House | null;
+  canManage?: boolean;
+  onEditHistory?: (entry: RentHistoryEntry) => void;
 };
 
-export default function HouseDetail({ house }: Props) {
+export default function HouseDetail({ house, canManage, onEditHistory }: Props) {
   if (!house) {
     return (
       <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6 text-sm text-slate-500">
@@ -58,9 +61,22 @@ export default function HouseDetail({ house }: Props) {
                 .slice()
                 .reverse()
                 .map((entry, index) => (
-                  <div key={`${entry.effectiveDate}-${entry.amount}-${index}`}>
-                    {entry.effectiveDate}:{" "}
-                    {formatAmount(entry.amount)}
+                  <div
+                    key={`${entry.effectiveDate}-${entry.amount}-${index}`}
+                    className="flex items-center justify-between gap-2"
+                  >
+                    <div>
+                      {entry.effectiveDate}: {formatAmount(entry.amount)}
+                    </div>
+                    {canManage && onEditHistory ? (
+                      <button
+                        type="button"
+                        className="text-xs text-slate-200 underline"
+                        onClick={() => onEditHistory(entry)}
+                      >
+                        Edit
+                      </button>
+                    ) : null}
                   </div>
                 ))
             ) : (

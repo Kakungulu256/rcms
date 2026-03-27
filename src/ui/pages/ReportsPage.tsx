@@ -772,9 +772,9 @@ export default function ReportsPage() {
           );
           const rentByMonth = buildRentByMonth({
             months,
-            tenantHistoryJson: tenant.rentHistoryJson ?? null,
+            tenantHistoryJson: null,
             houseHistoryJson: house.rentHistoryJson ?? null,
-            fallbackRent: tenant.rentOverride ?? house.monthlyRent ?? 0,
+            fallbackRent: house.monthlyRent ?? 0,
             occupancyStartDate: tenant.moveInDate,
             occupancyEndDate: getOccupancyEndDateKey(tenant, range.end),
           });
@@ -814,9 +814,9 @@ export default function ReportsPage() {
         const monthsInRange = buildTenantMonthSeries(tenant, today);
         const rentByMonth = buildRentByMonth({
           months: monthsInRange,
-          tenantHistoryJson: tenant.rentHistoryJson ?? null,
+          tenantHistoryJson: null,
           houseHistoryJson: house?.rentHistoryJson ?? null,
-          fallbackRent: tenant.rentOverride ?? house?.monthlyRent ?? 0,
+          fallbackRent: house?.monthlyRent ?? 0,
           occupancyStartDate: tenant.moveInDate,
           occupancyEndDate: getOccupancyEndDateKey(tenant, today),
         });
@@ -877,9 +877,9 @@ export default function ReportsPage() {
         const paidByMonth = buildPaidByMonth(tenantPayments);
         const rentByMonth = buildRentByMonth({
           months: monthsAtExit,
-          tenantHistoryJson: tenant.rentHistoryJson ?? null,
+          tenantHistoryJson: null,
           houseHistoryJson: house?.rentHistoryJson ?? null,
-          fallbackRent: tenant.rentOverride ?? house?.monthlyRent ?? 0,
+          fallbackRent: house?.monthlyRent ?? 0,
           occupancyStartDate: tenant.moveInDate,
           occupancyEndDate: inactiveDate.toISOString().slice(0, 10),
         });
@@ -1069,9 +1069,9 @@ export default function ReportsPage() {
         );
         const rentByMonth = buildRentByMonth({
           months: monthsForRates,
-          tenantHistoryJson: tenant.rentHistoryJson ?? null,
+          tenantHistoryJson: null,
           houseHistoryJson: house?.rentHistoryJson ?? null,
-          fallbackRent: tenant.rentOverride ?? house?.monthlyRent ?? 0,
+          fallbackRent: house?.monthlyRent ?? 0,
           occupancyStartDate: tenant.moveInDate,
           occupancyEndDate: getOccupancyEndDateKey(tenant, reportMonthEnd),
         });
@@ -1169,9 +1169,9 @@ export default function ReportsPage() {
           if (months.length === 0) return sum;
           const rentByMonth = buildRentByMonth({
             months,
-            tenantHistoryJson: tenant.rentHistoryJson ?? null,
+            tenantHistoryJson: null,
             houseHistoryJson: house?.rentHistoryJson ?? null,
-            fallbackRent: tenant.rentOverride ?? house?.monthlyRent ?? 0,
+            fallbackRent: house?.monthlyRent ?? 0,
             occupancyStartDate: tenant.moveInDate,
             occupancyEndDate: getOccupancyEndDateKey(tenant, range.end),
           });
@@ -1189,9 +1189,9 @@ export default function ReportsPage() {
       const house = houseLookup.get(houseId);
       const rentByMonth = buildRentByMonth({
         months: [nextMonthKey],
-        tenantHistoryJson: tenant.rentHistoryJson ?? null,
+        tenantHistoryJson: null,
         houseHistoryJson: house?.rentHistoryJson ?? null,
-        fallbackRent: tenant.rentOverride ?? house?.monthlyRent ?? 0,
+        fallbackRent: house?.monthlyRent ?? 0,
         occupancyStartDate: tenant.moveInDate,
         occupancyEndDate: getOccupancyEndDateKey(tenant, nextMonthEnd),
       });
@@ -1280,10 +1280,9 @@ export default function ReportsPage() {
     const rentByMonth = selectedTenant
       ? buildRentByMonth({
           months: monthsInRange,
-          tenantHistoryJson: selectedTenant.rentHistoryJson ?? null,
+          tenantHistoryJson: null,
           houseHistoryJson: selectedHouse?.rentHistoryJson ?? null,
-          fallbackRent:
-            selectedTenant.rentOverride ?? selectedHouse?.monthlyRent ?? 0,
+          fallbackRent: selectedHouse?.monthlyRent ?? 0,
           occupancyStartDate: selectedTenant.moveInDate,
           occupancyEndDate: getOccupancyEndDateKey(selectedTenant, today),
         })

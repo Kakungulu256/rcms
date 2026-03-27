@@ -191,24 +191,10 @@ function parseHistory(value) {
   }
 }
 
-function entryPriority(entry) {
-  return entry?.source === "house" ? 0 : 1;
-}
-
 function buildEffectiveHistory(tenantHistory, houseHistory) {
-  const tenantSpecificHistory = tenantHistory.filter((entry) => entry?.source !== "house");
-  const baseHistory =
-    tenantSpecificHistory.length > 0
-      ? [...houseHistory, ...tenantSpecificHistory]
-      : houseHistory.length > 0
-        ? houseHistory
-        : tenantHistory;
-
-  return baseHistory.sort((a, b) => {
-    const dateOrder = String(a.effectiveDate).localeCompare(String(b.effectiveDate));
-    if (dateOrder !== 0) return dateOrder;
-    return entryPriority(a) - entryPriority(b);
-  });
+  return houseHistory
+    .slice()
+    .sort((a, b) => String(a.effectiveDate).localeCompare(String(b.effectiveDate)));
 }
 
 function resolveRentForMonth(
@@ -325,7 +311,7 @@ export default async (context) => {
     if (house) {
       assertWorkspaceAccess(house, workspaceId, "House");
     }
-    const rent = tenant.rentOverride ?? house?.monthlyRent ?? 0;
+    const rent = house?.monthlyRent ?? 0;
 
     const paymentList = await listAllTenantPayments(
       databases,
@@ -344,7 +330,7 @@ export default async (context) => {
         : null;
     const rentForMonth = resolveRentForMonth(
       currentMonth,
-      tenant.rentHistoryJson ?? null,
+      null,
       house?.rentHistoryJson ?? null,
       rent,
       tenant.moveInDate,

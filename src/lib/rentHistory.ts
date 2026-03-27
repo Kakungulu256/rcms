@@ -126,27 +126,13 @@ export function parseRentHistory(value?: string | null): RentHistoryEntry[] {
   }
 }
 
-function entryPriority(entry: RentHistoryEntry) {
-  return entry.source === "house" ? 0 : 1;
-}
-
 function buildEffectiveHistory(
-  tenantHistory: RentHistoryEntry[],
+  _tenantHistory: RentHistoryEntry[],
   houseHistory: RentHistoryEntry[]
 ) {
-  const tenantSpecificHistory = tenantHistory.filter((entry) => entry.source !== "house");
-  const baseHistory =
-    tenantSpecificHistory.length > 0
-      ? [...houseHistory, ...tenantSpecificHistory]
-      : houseHistory.length > 0
-        ? houseHistory
-        : tenantHistory;
-
-  return baseHistory.sort((a, b) => {
-    const dateOrder = a.effectiveDate.localeCompare(b.effectiveDate);
-    if (dateOrder !== 0) return dateOrder;
-    return entryPriority(a) - entryPriority(b);
-  });
+  return houseHistory
+    .slice()
+    .sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
 }
 
 export function buildRentByMonth(params: {
@@ -167,9 +153,8 @@ export function buildRentByMonth(params: {
     occupancyEndDate,
     prorationMode,
   } = params;
-  const tenantHistory = parseRentHistory(tenantHistoryJson);
   const houseHistory = parseRentHistory(houseHistoryJson);
-  const history = buildEffectiveHistory(tenantHistory, houseHistory);
+  const history = buildEffectiveHistory([], houseHistory);
   const rentByMonth: Record<string, number> = {};
   months.forEach((month) => {
     const monthStart = `${month}-01`;
@@ -196,6 +181,20 @@ export function appendRentHistory(
   const filtered = history.filter(
     (item) => item.effectiveDate !== entry.effectiveDate
   );
+  filtered.push(entry);
+  filtered.sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
+  return JSON.stringify(filtered);
+}
+
+export function upsertRentHistoryEntry(params: {
+  existing?: string | null;
+  entry: RentHistoryEntry;
+  replaceDate?: string | null;
+}): string {
+  const { existing, entry, replaceDate } = params;
+  const history = parseRentHistory(existing);
+  const targetDate = replaceDate ?? entry.effectiveDate;
+  const filtered = history.filter((item) => item.effectiveDate !== targetDate);
   filtered.push(entry);
   filtered.sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
   return JSON.stringify(filtered);

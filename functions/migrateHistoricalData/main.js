@@ -351,24 +351,10 @@ function parseHistory(value) {
   }
 }
 
-function entryPriority(entry) {
-  return entry?.source === "house" ? 0 : 1;
-}
-
 function buildEffectiveHistory(tenantHistory, houseHistory) {
-  const tenantSpecificHistory = tenantHistory.filter((entry) => entry?.source !== "house");
-  const baseHistory =
-    tenantSpecificHistory.length > 0
-      ? [...houseHistory, ...tenantSpecificHistory]
-      : houseHistory.length > 0
-        ? houseHistory
-        : tenantHistory;
-
-  return baseHistory.sort((a, b) => {
-    const dateOrder = String(a.effectiveDate).localeCompare(String(b.effectiveDate));
-    if (dateOrder !== 0) return dateOrder;
-    return entryPriority(a) - entryPriority(b);
-  });
+  return houseHistory
+    .slice()
+    .sort((a, b) => String(a.effectiveDate).localeCompare(String(b.effectiveDate)));
 }
 
 function buildRentByMonth({
@@ -805,7 +791,7 @@ export default async (context) => {
         typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
       const houseFromRow = houseByCode.get(normalize(row.HouseCode));
       const house = houseFromRow ?? houseById.get(houseId);
-      const rent = tenant.rentOverride ?? house?.monthlyRent ?? 0;
+      const rent = house?.monthlyRent ?? 0;
 
       const existingPayments = paymentsByTenant.get(tenant.$id) ?? [];
       const paidByMonth = buildPaidByMonth(existingPayments);
@@ -813,7 +799,7 @@ export default async (context) => {
       const months = buildMonthSeries(tenant.moveInDate, paymentDate, 24);
       const rentByMonth = buildRentByMonth({
         months,
-        tenantHistoryJson: tenant.rentHistoryJson ?? null,
+        tenantHistoryJson: null,
         houseHistoryJson: house?.rentHistoryJson ?? null,
         fallbackRent: rent,
         occupancyStartDate: tenant.moveInDate,

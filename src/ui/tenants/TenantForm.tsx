@@ -5,14 +5,10 @@ import TypeaheadField, { type TypeaheadOption } from "../TypeaheadField";
 import { useToast } from "../ToastContext";
 import type { House, Tenant, TenantForm as TenantFormValues } from "../../lib/schema";
 
-type TenantFormWithEffectiveDate = TenantFormValues & {
-  rentEffectiveDate?: string;
-};
-
 type Props = {
   houses: House[];
   initial?: Tenant | null;
-  onSubmit: (values: TenantFormWithEffectiveDate) => void;
+  onSubmit: (values: TenantFormValues) => void;
   onCancel: () => void;
   disabled?: boolean;
   loading?: boolean;
@@ -33,7 +29,7 @@ export default function TenantForm({
 }: Props) {
   const toast = useToast();
   const { register, handleSubmit, formState, setValue, watch } =
-    useForm<TenantFormWithEffectiveDate>({
+    useForm<TenantFormValues>({
     defaultValues: {
       fullName: initial?.fullName ?? "",
       phone: initial?.phone ?? "",
@@ -42,13 +38,10 @@ export default function TenantForm({
       moveOutDate: toDateInput(initial?.moveOutDate) ?? "",
       status: initial?.status ?? "active",
       tenantType: initial?.tenantType ?? (initial ? "old" : "new"),
-      rentOverride: initial?.rentOverride ?? undefined,
       notes: initial?.notes ?? "",
-      rentEffectiveDate: toDateInput(initial?.moveInDate) ?? new Date().toISOString().slice(0, 10),
     },
   });
 
-  const rentOverride = watch("rentOverride");
   const moveOutDate = watch("moveOutDate");
   const status = watch("status");
   const selectedHouseId = watch("house");
@@ -230,31 +223,6 @@ export default function TenantForm({
           </select>
         </label>
       </div>
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <label className="block text-sm text-slate-300">
-          Custom Rent (Optional)
-          <input
-            type="number"
-            step="0.01"
-            className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
-            {...register("rentOverride", { valueAsNumber: true })}
-          />
-          <p className="mt-2 text-xs text-slate-500">
-            Use this only if this tenant pays a different monthly rent than the house default.
-          </p>
-        </label>
-      </div>
-      {rentOverride ? (
-        <label className="block text-sm text-slate-300">
-          Custom Rent Start Date
-          <input
-            type="date"
-            className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
-            {...register("rentEffectiveDate")}
-          />
-        </label>
-      ) : null}
 
       <label className="block text-sm text-slate-300">
         Notes

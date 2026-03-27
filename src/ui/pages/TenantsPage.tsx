@@ -26,16 +26,12 @@ import { buildMonthSeries, buildPaidByMonth } from "../payments/allocation";
 import { logAudit } from "../../lib/audit";
 import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../ToastContext";
-import { appendRentHistory, buildRentByMonth } from "../../lib/rentHistory";
+import { buildRentByMonth } from "../../lib/rentHistory";
 import { assessSecurityDepositRefund } from "../../lib/securityDeposit";
 import { formatLimitValue, getLimitStatus } from "../../lib/planLimits";
 import { sortHousesNatural } from "../../lib/houseSort";
 
 type PanelMode = "list" | "create" | "edit";
-
-type TenantFormWithEffectiveDate = TenantFormValues & {
-  rentEffectiveDate?: string;
-};
 
 export default function TenantsPage() {
   const { user, permissions, planLimits } = useAuth();
@@ -83,9 +79,9 @@ export default function TenantsPage() {
           const paidByMonth = buildPaidByMonth(tenantPayments);
           const rentByMonth = buildRentByMonth({
             months,
-            tenantHistoryJson: tenant.rentHistoryJson ?? null,
+            tenantHistoryJson: null,
             houseHistoryJson: house?.rentHistoryJson ?? null,
-            fallbackRent: tenant.rentOverride ?? house?.monthlyRent ?? 0,
+            fallbackRent: house?.monthlyRent ?? 0,
             occupancyStartDate: tenant.moveInDate,
             occupancyEndDate: arrearsCutoffDate.toISOString().slice(0, 10),
           });
@@ -317,7 +313,7 @@ export default function TenantsPage() {
     setStatusOpen(true);
   };
 
-  const handleCreate = async (values: TenantFormWithEffectiveDate) => {
+  const handleCreate = async (values: TenantFormValues) => {
     if (!canManageTenants) {
       toast.push("warning", "You do not have permission to create tenants.");
       return;
@@ -325,8 +321,7 @@ export default function TenantsPage() {
     setLoading(true);
     setError(null);
     try {
-      const { rentEffectiveDate, ...rest } = values;
-      const normalized = normalizeTenantPayload(rest);
+      const normalized = normalizeTenantPayload(values);
       if (normalized.status === "active" && activeTenantLimitStatus.reached) {
         const message =
           "Active tenant limit reached on your current plan. Open Billing to add more active tenants.";
@@ -344,8 +339,7 @@ export default function TenantsPage() {
         return;
       }
       const house = assignable.house;
-      const rent = normalized.rentOverride ?? house?.monthlyRent ?? 0;
-      const effectiveDate = rentEffectiveDate?.trim() || normalized.moveInDate;
+      const rent = house?.monthlyRent ?? 0;
       const securityDepositAmount = normalized.tenantType === "new" ? rent : 0;
       const payload = {
         ...normalized,
@@ -354,14 +348,7 @@ export default function TenantsPage() {
         securityDepositPaid: 0,
         securityDepositBalance: securityDepositAmount,
         securityDepositRefunded: false,
-        rentHistoryJson:
-          normalized.rentOverride != null
-            ? appendRentHistory(null, {
-                effectiveDate,
-                amount: rent,
-                source: "override",
-              })
-            : null,
+        rentHistoryJson: null,
       };
       const created = await createWorkspaceDocument({
         databaseId: rcmsDatabaseId,
@@ -404,7 +391,7 @@ export default function TenantsPage() {
     }
   };
 
-  const handleUpdate = async (values: TenantFormWithEffectiveDate) => {
+  const handleUpdate = async (values: TenantFormValues) => {
     if (!selected) return;
     if (!canManageTenants) {
       toast.push("warning", "You do not have permission to edit tenants.");
@@ -413,8 +400,7 @@ export default function TenantsPage() {
     setLoading(true);
     setError(null);
     try {
-      const { rentEffectiveDate, ...rest } = values;
-      const normalized = normalizeTenantPayload(rest);
+      const normalized = normalizeTenantPayload(values);
       const selectedIsActive =
         selected.status === "active" && !selected.moveOutDate;
       const nextIsActive =
@@ -438,11 +424,13 @@ export default function TenantsPage() {
       const house = assignable.house;
       const selectedHouseId =
         typeof selected.house === "string" ? selected.house : selected.house?.$id ?? "";
-      const previousHouse = houses.find((item) => item.$id === selectedHouseId);
-      const newRent = normalized.rentOverride ?? house?.monthlyRent ?? 0;
-      const previousRent =
-        selected.rentOverride ?? previousHouse?.monthlyRent ?? 0;
+      const newRent = house?.monthlyRent ?? 0;
       const tenantType = normalized.tenantType ?? selected.tenantType ?? "old";
+      const preservedRentOverride =
+        typeof normalized.rentOverride === "number" &&
+        Number.isFinite(normalized.rentOverride)
+          ? normalized.rentOverride
+          : selected.rentOverride ?? null;
       const currentDepositAmount =
         typeof selected.securityDepositAmount === "number" &&
         Number.isFinite(selected.securityDepositAmount)
@@ -467,25 +455,7 @@ export default function TenantsPage() {
         tenantType === "new"
           ? Math.max(nextDepositAmount - nextDepositPaid, 0)
           : 0;
-      const rentChanged = newRent !== previousRent;
-      const hasRentEffectiveDate = Boolean(rentEffectiveDate?.trim());
-      const effectiveDate =
-        rentEffectiveDate?.trim() || new Date().toISOString().slice(0, 10);
-      if (rentChanged && !hasRentEffectiveDate) {
-        setError("Provide a rent effective date for the new rate.");
-        toast.push("warning", "Provide a rent effective date for the new rate.");
-        setLoading(false);
-        return;
-      }
-      const nextRentHistoryJson = rentChanged
-        ? normalized.rentOverride != null
-          ? appendRentHistory(selected.rentHistoryJson ?? null, {
-              effectiveDate,
-              amount: newRent,
-              source: "override",
-            })
-          : selected.rentHistoryJson ?? null
-        : selected.rentHistoryJson ?? null;
+      const nextRentHistoryJson = selected.rentHistoryJson ?? null;
       let nextSecurityDepositRefunded =
         tenantType === "new" ? Boolean(selected.securityDepositRefunded) : false;
       const moveOutJustSet = Boolean(normalized.moveOutDate) && !selected.moveOutDate;
@@ -524,7 +494,7 @@ export default function TenantsPage() {
             securityDepositBalance: nextDepositBalance,
             rentHistoryJson: nextRentHistoryJson ?? undefined,
             phone: normalized.phone ?? undefined,
-            rentOverride: normalized.rentOverride ?? undefined,
+            rentOverride: preservedRentOverride ?? undefined,
             notes: normalized.notes ?? undefined,
           };
           const assessment = assessSecurityDepositRefund({
@@ -542,6 +512,7 @@ export default function TenantsPage() {
 
       const payload = {
         ...normalized,
+        rentOverride: preservedRentOverride,
         tenantType,
         securityDepositRequired: tenantType === "new",
         securityDepositAmount: nextDepositAmount,

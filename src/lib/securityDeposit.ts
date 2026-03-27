@@ -44,9 +44,9 @@ export function calculateTenantArrears(params: {
   const paidByMonth = buildPaidByMonth(payments);
   const rentByMonth = buildRentByMonth({
     months,
-    tenantHistoryJson: tenant.rentHistoryJson ?? null,
+    tenantHistoryJson: null,
     houseHistoryJson: house?.rentHistoryJson ?? null,
-    fallbackRent: tenant.rentOverride ?? house?.monthlyRent ?? 0,
+    fallbackRent: house?.monthlyRent ?? 0,
     occupancyStartDate: tenant.moveInDate,
     occupancyEndDate: tenant.moveOutDate ?? endDate.toISOString().slice(0, 10),
   });

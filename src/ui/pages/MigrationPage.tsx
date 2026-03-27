@@ -587,7 +587,7 @@ export default function MigrationPage() {
           typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
         const houseFromRow = houseByCode.get(normalize(row.HouseCode));
         const house = houseFromRow ?? houseById.get(houseId);
-        const rent = tenant.rentOverride ?? house?.monthlyRent ?? 0;
+        const rent = house?.monthlyRent ?? 0;
 
         const existingPayments = paymentsByTenant.get(tenant.$id) ?? [];
         const paidByMonth = buildPaidByMonth(existingPayments);
@@ -598,7 +598,7 @@ export default function MigrationPage() {
         );
         const rentByMonth = buildRentByMonth({
           months,
-          tenantHistoryJson: tenant.rentHistoryJson ?? null,
+          tenantHistoryJson: null,
           houseHistoryJson: house?.rentHistoryJson ?? null,
           fallbackRent: rent,
           occupancyStartDate: tenant.moveInDate,

@@ -371,7 +371,7 @@ export default function PaymentsPage() {
     const houseId =
       typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
     const house = houseLookup.get(houseId);
-    const rent = tenant.rentOverride ?? house?.monthlyRent ?? 0;
+    const rent = house?.monthlyRent ?? 0;
     const previewDate = parseDateInput(normalizedValues.paymentDate);
     const effectiveOccupancyEndDate = getTenantEffectiveEndDate(tenant, previewDate);
     const occupancyEndDate =
@@ -394,7 +394,7 @@ export default function PaymentsPage() {
     });
     const rentByMonth = buildRentByMonth({
       months,
-      tenantHistoryJson: tenant.rentHistoryJson ?? null,
+      tenantHistoryJson: null,
       houseHistoryJson: house?.rentHistoryJson ?? null,
       fallbackRent: rent,
       occupancyStartDate: tenant.moveInDate,
@@ -690,7 +690,7 @@ export default function PaymentsPage() {
       const houseId =
         typeof tenant.house === "string" ? tenant.house : tenant.house?.$id ?? "";
       const house = houseLookup.get(houseId);
-      const rent = tenant.rentOverride ?? house?.monthlyRent ?? 0;
+      const rent = house?.monthlyRent ?? 0;
       const editPaymentDate = parseDateInput(editValues.paymentDate);
       const effectiveOccupancyEndDate = getTenantEffectiveEndDate(
         tenant,
@@ -714,7 +714,7 @@ export default function PaymentsPage() {
       });
       const rentByMonth = buildRentByMonth({
         months,
-        tenantHistoryJson: tenant.rentHistoryJson ?? null,
+        tenantHistoryJson: null,
         houseHistoryJson: house?.rentHistoryJson ?? null,
         fallbackRent: rent,
         occupancyStartDate: tenant.moveInDate,

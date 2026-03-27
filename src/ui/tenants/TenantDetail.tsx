@@ -57,7 +57,7 @@ export default function TenantDetail({
   const houseId =
     typeof tenant?.house === "string" ? tenant.house : tenant?.house?.$id ?? "";
   const house = houses.find((item) => item.$id === houseId);
-  const rent = tenant?.rentOverride ?? house?.monthlyRent ?? 0;
+  const baseRent = house?.monthlyRent ?? 0;
   const tenantPayments = tenant
     ? payments.filter((payment) => {
         const paymentTenantId =
@@ -78,12 +78,16 @@ export default function TenantDetail({
   const paymentSummaryByMonth = buildPaymentSummaryByMonth(tenantPayments);
   const rentByMonth = buildRentByMonth({
     months,
-    tenantHistoryJson: tenant?.rentHistoryJson ?? null,
+    tenantHistoryJson: null,
     houseHistoryJson: house?.rentHistoryJson ?? null,
-    fallbackRent: rent,
+    fallbackRent: baseRent,
     occupancyStartDate: tenant?.moveInDate,
     occupancyEndDate: tenant?.moveOutDate ?? endDate.toISOString().slice(0, 10),
   });
+  const rentDisplay =
+    months.length > 0
+      ? rentByMonth[months[months.length - 1]] ?? baseRent
+      : baseRent;
 
   const years = useMemo(() => {
     const set = new Set(months.map((month) => Number(month.slice(0, 4))));
@@ -204,7 +208,7 @@ export default function TenantDetail({
             Rent Rate
           </div>
           <div className="amount mt-2 text-lg font-semibold text-slate-100">
-            {formatAmount(rent)}
+            {formatAmount(rentDisplay)}
           </div>
         </div>
         <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
@@ -368,7 +372,7 @@ export default function TenantDetail({
                   <tbody>
                     {filteredMonths.map((month) => {
                       const paid = paidByMonth[month] ?? 0;
-                      const expected = rentByMonth[month] ?? rent;
+                      const expected = rentByMonth[month] ?? baseRent;
                       const remaining = Math.max(expected - paid, 0);
                       const status =
                         paid >= expected && expected > 0

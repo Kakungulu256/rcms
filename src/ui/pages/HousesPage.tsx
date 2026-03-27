@@ -18,7 +18,13 @@ import type { House, HouseForm as HouseFormValues, Tenant } from "../../lib/sche
 import { logAudit } from "../../lib/audit";
 import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../ToastContext";
-import { appendRentHistory, appendRentHistoryWithBaseline } from "../../lib/rentHistory";
+import {
+  appendRentHistory,
+  appendRentHistoryWithBaseline,
+  parseRentHistory,
+  upsertRentHistoryEntry,
+  type RentHistoryEntry,
+} from "../../lib/rentHistory";
 import { formatLimitValue, getLimitStatus } from "../../lib/planLimits";
 import { sortHousesNatural } from "../../lib/houseSort";
 
@@ -39,6 +45,10 @@ export default function HousesPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [historyEditOpen, setHistoryEditOpen] = useState(false);
+  const [historyEditEntry, setHistoryEditEntry] = useState<RentHistoryEntry | null>(null);
+  const [historyEditAmount, setHistoryEditAmount] = useState(0);
+  const [historyEditSaving, setHistoryEditSaving] = useState(false);
   const [houseSearchQuery, setHouseSearchQuery] = useState("");
   const [houseStatusFilter, setHouseStatusFilter] = useState<HouseStatusFilter>("all");
   const [housePage, setHousePage] = useState(1);
@@ -136,6 +146,12 @@ export default function HousesPage() {
   const handleSelect = (house: House) => {
     setSelected(house);
     setMode("list");
+  };
+
+  const openHistoryEditor = (entry: RentHistoryEntry) => {
+    setHistoryEditEntry(entry);
+    setHistoryEditAmount(Number(entry.amount) || 0);
+    setHistoryEditOpen(true);
   };
 
   const handleCreate = async (values: HouseFormWithEffectiveDate) => {
@@ -240,22 +256,26 @@ export default function HousesPage() {
           ? baselineDateCandidates.sort()[0]
           : effectiveDate;
 
+      const nextRentHistoryJson = rentChanged
+        ? appendRentHistoryWithBaseline({
+            existing: selected.rentHistoryJson ?? null,
+            newEntry: {
+              effectiveDate,
+              amount: rest.monthlyRent,
+              source: "house",
+            },
+            previousAmount: selected.monthlyRent,
+            baselineDate,
+          })
+        : selected.rentHistoryJson ?? null;
+      const latestRent =
+        parseRentHistory(nextRentHistoryJson).at(-1)?.amount ?? rest.monthlyRent;
       const updatedPayload = {
         ...rest,
+        monthlyRent: latestRent,
         status: normalizedStatus,
         currentTenantId: occupant?.$id ?? null,
-        rentHistoryJson: rentChanged
-          ? appendRentHistoryWithBaseline({
-              existing: selected.rentHistoryJson ?? null,
-              newEntry: {
-                effectiveDate,
-                amount: rest.monthlyRent,
-                source: "house",
-              },
-              previousAmount: selected.monthlyRent,
-              baselineDate,
-            })
-          : selected.rentHistoryJson ?? null,
+        rentHistoryJson: nextRentHistoryJson,
       };
       const updated = await updateScopedDocument<typeof updatedPayload, House>({
         databaseId: rcmsDatabaseId,
@@ -288,6 +308,61 @@ export default function HousesPage() {
       toast.push("error", "Failed to update house.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSaveHistoryEdit = async () => {
+    if (!selected || !historyEditEntry) return;
+    const amount = Number(historyEditAmount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      toast.push("warning", "Enter a valid rent amount.");
+      return;
+    }
+    if (amount === historyEditEntry.amount) {
+      setHistoryEditOpen(false);
+      setHistoryEditEntry(null);
+      return;
+    }
+    setHistoryEditSaving(true);
+    try {
+      const nextRentHistoryJson = upsertRentHistoryEntry({
+        existing: selected.rentHistoryJson ?? null,
+        entry: {
+          effectiveDate: historyEditEntry.effectiveDate,
+          amount,
+          source: "house",
+        },
+        replaceDate: historyEditEntry.effectiveDate,
+      });
+      const latestRent =
+        parseRentHistory(nextRentHistoryJson).at(-1)?.amount ?? selected.monthlyRent;
+      const updated = await updateScopedDocument<
+        { rentHistoryJson: string | null; monthlyRent: number },
+        House
+      >({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.houses,
+        documentId: selected.$id,
+        data: {
+          rentHistoryJson: nextRentHistoryJson,
+          monthlyRent: latestRent,
+        },
+      });
+      setHouses((prev) =>
+        sortHousesNatural(
+          prev.map((house) =>
+            house.$id === selected.$id ? (updated as unknown as House) : house
+          )
+        )
+      );
+      setSelected(updated as unknown as House);
+      setHistoryEditOpen(false);
+      setHistoryEditEntry(null);
+      toast.push("success", "Rent history updated.");
+    } catch (err) {
+      toast.push("error", "Failed to update rent history.");
+    } finally {
+      setHistoryEditSaving(false);
     }
   };
 
@@ -417,7 +492,15 @@ export default function HousesPage() {
           />
         </div>
 
-        <div className="space-y-6">{mode === "list" && <HouseDetail house={selected} />}</div>
+        <div className="space-y-6">
+          {mode === "list" && (
+            <HouseDetail
+              house={selected}
+              canManage={canManageHouses}
+              onEditHistory={openHistoryEditor}
+            />
+          )}
+        </div>
       </div>
 
       <Modal
@@ -443,6 +526,55 @@ export default function HousesPage() {
           disabled={loading}
           loading={loading}
         />
+      </Modal>
+
+      <Modal
+        open={canManageHouses && historyEditOpen && !!historyEditEntry}
+        title="Edit Rent History"
+        description="Update the rent amount for this effective date."
+        onClose={() => {
+          setHistoryEditOpen(false);
+          setHistoryEditEntry(null);
+        }}
+      >
+        {historyEditEntry && (
+          <form
+            className="space-y-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void handleSaveHistoryEdit();
+            }}
+          >
+            <label className="block text-sm text-slate-300">
+              Effective Date
+              <input
+                type="date"
+                className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                value={historyEditEntry.effectiveDate}
+                readOnly
+              />
+            </label>
+            <label className="block text-sm text-slate-300">
+              Rent Amount
+              <input
+                type="number"
+                step="0.01"
+                min="0.01"
+                className="input-base mt-2 w-full rounded-md px-3 py-2 text-sm"
+                value={historyEditAmount}
+                onChange={(event) => setHistoryEditAmount(Number(event.target.value) || 0)}
+                required
+              />
+            </label>
+            <button
+              type="submit"
+              disabled={historyEditSaving}
+              className="btn-primary w-full text-sm disabled:opacity-60"
+            >
+              {historyEditSaving ? "Saving..." : "Save Rent Change"}
+            </button>
+          </form>
+        )}
       </Modal>
     </section>
   );

@@ -269,9 +269,9 @@ export default function DashboardPage() {
       }
       const rentByMonth = buildRentByMonth({
         months,
-        tenantHistoryJson: tenant.rentHistoryJson ?? null,
+        tenantHistoryJson: null,
         houseHistoryJson: house?.rentHistoryJson ?? null,
-        fallbackRent: tenant.rentOverride ?? house?.monthlyRent ?? 0,
+        fallbackRent: house?.monthlyRent ?? 0,
         occupancyStartDate: tenant.moveInDate,
         occupancyEndDate: getTenantEffectiveEndDate(tenant, effectiveEnd)
           .toISOString()
@@ -312,9 +312,9 @@ export default function DashboardPage() {
       const paidByMonth = buildPaidByMonth(tenantPayments);
       const rentByMonth = buildRentByMonth({
         months,
-        tenantHistoryJson: tenant.rentHistoryJson ?? null,
+        tenantHistoryJson: null,
         houseHistoryJson: house?.rentHistoryJson ?? null,
-        fallbackRent: tenant.rentOverride ?? house?.monthlyRent ?? 0,
+        fallbackRent: house?.monthlyRent ?? 0,
         occupancyStartDate: tenant.moveInDate,
         occupancyEndDate: getTenantEffectiveEndDate(tenant, effectiveEnd)
           .toISOString()
