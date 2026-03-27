@@ -7,8 +7,13 @@ export default function RequireAuth({ children }: { children: React.ReactNode })
 
   if (loading) {
     return (
-      <div className="flex min-h-[60vh] items-center justify-center text-sm text-slate-400">
-        Checking session...
+      <div className="flex min-h-[60vh] items-center justify-center text-slate-400">
+        <div
+          className="h-10 w-10 animate-spin rounded-full border-2 border-slate-600 border-t-transparent"
+          role="status"
+          aria-live="polite"
+          aria-label="Checking session"
+        />
       </div>
     );
   }
