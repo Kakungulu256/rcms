@@ -137,7 +137,6 @@ function buildEffectiveHistory(
 
 export function buildRentByMonth(params: {
   months: string[];
-  tenantHistoryJson?: string | null;
   houseHistoryJson?: string | null;
   fallbackRent: number;
   occupancyStartDate?: string | null;
@@ -146,7 +145,6 @@ export function buildRentByMonth(params: {
 }) {
   const {
     months,
-    tenantHistoryJson,
     houseHistoryJson,
     fallbackRent,
     occupancyStartDate,

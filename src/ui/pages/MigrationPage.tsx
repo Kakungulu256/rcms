@@ -598,7 +598,6 @@ export default function MigrationPage() {
         );
         const rentByMonth = buildRentByMonth({
           months,
-          tenantHistoryJson: null,
           houseHistoryJson: house?.rentHistoryJson ?? null,
           fallbackRent: rent,
           occupancyStartDate: tenant.moveInDate,

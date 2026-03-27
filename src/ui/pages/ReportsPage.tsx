@@ -772,7 +772,6 @@ export default function ReportsPage() {
           );
           const rentByMonth = buildRentByMonth({
             months,
-            tenantHistoryJson: null,
             houseHistoryJson: house.rentHistoryJson ?? null,
             fallbackRent: house.monthlyRent ?? 0,
             occupancyStartDate: tenant.moveInDate,
@@ -814,7 +813,6 @@ export default function ReportsPage() {
         const monthsInRange = buildTenantMonthSeries(tenant, today);
         const rentByMonth = buildRentByMonth({
           months: monthsInRange,
-          tenantHistoryJson: null,
           houseHistoryJson: house?.rentHistoryJson ?? null,
           fallbackRent: house?.monthlyRent ?? 0,
           occupancyStartDate: tenant.moveInDate,
@@ -877,7 +875,6 @@ export default function ReportsPage() {
         const paidByMonth = buildPaidByMonth(tenantPayments);
         const rentByMonth = buildRentByMonth({
           months: monthsAtExit,
-          tenantHistoryJson: null,
           houseHistoryJson: house?.rentHistoryJson ?? null,
           fallbackRent: house?.monthlyRent ?? 0,
           occupancyStartDate: tenant.moveInDate,
@@ -1069,7 +1066,6 @@ export default function ReportsPage() {
         );
         const rentByMonth = buildRentByMonth({
           months: monthsForRates,
-          tenantHistoryJson: null,
           houseHistoryJson: house?.rentHistoryJson ?? null,
           fallbackRent: house?.monthlyRent ?? 0,
           occupancyStartDate: tenant.moveInDate,
@@ -1169,7 +1165,6 @@ export default function ReportsPage() {
           if (months.length === 0) return sum;
           const rentByMonth = buildRentByMonth({
             months,
-            tenantHistoryJson: null,
             houseHistoryJson: house?.rentHistoryJson ?? null,
             fallbackRent: house?.monthlyRent ?? 0,
             occupancyStartDate: tenant.moveInDate,
@@ -1189,7 +1184,6 @@ export default function ReportsPage() {
       const house = houseLookup.get(houseId);
       const rentByMonth = buildRentByMonth({
         months: [nextMonthKey],
-        tenantHistoryJson: null,
         houseHistoryJson: house?.rentHistoryJson ?? null,
         fallbackRent: house?.monthlyRent ?? 0,
         occupancyStartDate: tenant.moveInDate,
@@ -1280,7 +1274,6 @@ export default function ReportsPage() {
     const rentByMonth = selectedTenant
       ? buildRentByMonth({
           months: monthsInRange,
-          tenantHistoryJson: null,
           houseHistoryJson: selectedHouse?.rentHistoryJson ?? null,
           fallbackRent: selectedHouse?.monthlyRent ?? 0,
           occupancyStartDate: selectedTenant.moveInDate,

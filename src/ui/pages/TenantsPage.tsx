@@ -79,7 +79,6 @@ export default function TenantsPage() {
           const paidByMonth = buildPaidByMonth(tenantPayments);
           const rentByMonth = buildRentByMonth({
             months,
-            tenantHistoryJson: null,
             houseHistoryJson: house?.rentHistoryJson ?? null,
             fallbackRent: house?.monthlyRent ?? 0,
             occupancyStartDate: tenant.moveInDate,

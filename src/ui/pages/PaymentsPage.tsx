@@ -394,7 +394,6 @@ export default function PaymentsPage() {
     });
     const rentByMonth = buildRentByMonth({
       months,
-      tenantHistoryJson: null,
       houseHistoryJson: house?.rentHistoryJson ?? null,
       fallbackRent: rent,
       occupancyStartDate: tenant.moveInDate,
@@ -714,7 +713,6 @@ export default function PaymentsPage() {
       });
       const rentByMonth = buildRentByMonth({
         months,
-        tenantHistoryJson: null,
         houseHistoryJson: house?.rentHistoryJson ?? null,
         fallbackRent: rent,
         occupancyStartDate: tenant.moveInDate,
