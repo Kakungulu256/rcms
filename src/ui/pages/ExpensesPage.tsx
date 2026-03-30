@@ -40,6 +40,20 @@ function resolveExpenseHouseId(expense: Expense) {
   return expense.house?.$id ?? "";
 }
 
+function resolveExpenseHouseLabel(expense: Expense, houseLookup: Map<string, House>) {
+  if (!expense.house) return "";
+  const houseValue =
+    typeof expense.house === "string" ? expense.house : expense.house?.$id ?? "";
+  if (!houseValue) return "";
+  const match = houseLookup.get(houseValue);
+  if (match) {
+    const code = match.code?.trim() ?? "";
+    const name = match.name?.trim() ?? "";
+    return code && name ? `${code} - ${name}` : code || name || "";
+  }
+  return houseValue;
+}
+
 function resolveTenantHouseId(tenant: Tenant) {
   if (typeof tenant.house === "string") return tenant.house;
   return tenant.house?.$id ?? "";
@@ -77,8 +91,7 @@ export default function ExpensesPage() {
     const query = expenseSearchQuery.trim().toLowerCase();
     if (!query) return sortedExpenses;
     return sortedExpenses.filter((expense) => {
-      const houseId = resolveExpenseHouseId(expense);
-      const houseCode = houseLookup.get(houseId)?.code?.toLowerCase() ?? "";
+      const houseLabel = resolveExpenseHouseLabel(expense, houseLookup).toLowerCase();
       const category = expense.category?.toLowerCase() ?? "";
       const description = expense.description?.toLowerCase() ?? "";
       const source = expense.source?.toLowerCase() ?? "";
@@ -88,7 +101,7 @@ export default function ExpensesPage() {
         category.includes(query) ||
         description.includes(query) ||
         source.includes(query) ||
-        houseCode.includes(query) ||
+        houseLabel.includes(query) ||
         date.includes(query) ||
         amount.includes(query)
       );
@@ -101,9 +114,8 @@ export default function ExpensesPage() {
       values.add(expense.category);
       values.add(expense.source === "rent_cash" ? "rent cash" : "external");
       if (expense.expenseDate) values.add(expense.expenseDate.slice(0, 10));
-      const houseId = resolveExpenseHouseId(expense);
-      const houseCode = houseLookup.get(houseId)?.code;
-      if (houseCode?.trim()) values.add(houseCode.trim());
+      const houseLabel = resolveExpenseHouseLabel(expense, houseLookup);
+      if (houseLabel?.trim()) values.add(houseLabel.trim());
     });
     return Array.from(values);
   }, [houseLookup, sortedExpenses]);
@@ -151,7 +163,7 @@ export default function ExpensesPage() {
     } = values;
     return {
       ...baseValues,
-      house: values.category === "maintenance" ? values.house || null : null,
+      house: values.house || null,
       maintenanceType:
         values.category === "maintenance" ? values.maintenanceType || null : null,
       affectsSecurityDeposit:
@@ -428,6 +440,71 @@ export default function ExpensesPage() {
     setModalOpen(true);
   };
 
+  const handleDeleteExpense = async (expense: Expense) => {
+    if (!canRecordExpenses) {
+      toast.push("warning", "You do not have permission to delete expenses.");
+      return;
+    }
+    const confirmed = window.confirm("Delete this expense? This cannot be undone.");
+    if (!confirmed) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const relatedDeductions = await listAllDocuments<SecurityDepositDeduction>({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.securityDepositDeductions,
+        queries: [Query.equal("expenseId", [expense.$id])],
+      });
+      await Promise.all(
+        relatedDeductions.map((record) =>
+          deleteScopedDocument({
+            databaseId: rcmsDatabaseId,
+            collectionId: COLLECTIONS.securityDepositDeductions,
+            documentId: record.$id,
+          })
+        )
+      );
+
+      if (expense.receiptFileId) {
+        try {
+          await storage.deleteFile(
+            expense.receiptBucketId?.trim() || rcmsReceiptsBucketId,
+            expense.receiptFileId
+          );
+        } catch (receiptError) {
+          console.error("Failed to delete expense receipt:", receiptError);
+        }
+      }
+
+      await deleteScopedDocument({
+        databaseId: rcmsDatabaseId,
+        collectionId: COLLECTIONS.expenses,
+        documentId: expense.$id,
+      });
+      setExpenses((prev) => prev.filter((item) => item.$id !== expense.$id));
+      toast.push("success", "Expense deleted.");
+      if (user) {
+        void logAudit({
+          entityType: "expense",
+          entityId: expense.$id,
+          action: "delete",
+          actorId: user.id,
+          details: {
+            description: expense.description,
+            amount: expense.amount,
+            expenseDate: expense.expenseDate,
+            category: expense.category,
+          },
+        });
+      }
+    } catch (err) {
+      toast.push("error", "Failed to delete expense.");
+      setError("Failed to delete expense.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <section className="space-y-6">
       <header className="flex flex-wrap items-center justify-between gap-3">
@@ -488,7 +565,9 @@ export default function ExpensesPage() {
             expenses={filteredExpenses}
             houses={houses}
             canEdit={canRecordExpenses}
+            canDelete={canRecordExpenses}
             onEdit={openEditModal}
+            onDelete={handleDeleteExpense}
           />
         </div>
       </div>

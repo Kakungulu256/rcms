@@ -593,10 +593,11 @@ export default function ReportsPage() {
       : payments;
     const expensesForReport = shouldFilterByHouseName
       ? expenses.filter((expense) => {
-          if (expense.category !== "maintenance") return false;
-          const houseId =
+          const houseValue =
             typeof expense.house === "string" ? expense.house : expense.house?.$id ?? "";
-          return houseIdsForReport.has(houseId);
+          if (!houseValue) return false;
+          if (houseIdsForReport.has(houseValue)) return true;
+          return normalizeHouseName(houseValue) === normalizedHouseNameFilter;
         })
       : expenses;
     const getOccupancyEndDateKey = (tenant: Tenant, referenceDate: Date) => {
@@ -2216,7 +2217,15 @@ export default function ReportsPage() {
 
         drawTable(summaryTableHeaders, summaryTableRows, {
           columnWidths: summaryColumnWidths,
-          wrapColumnIndexes: [0, 1, 2, summaryTableHeaders.length - 1],
+          wrapColumnIndexes: [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            summaryTableHeaders.length - 1,
+          ],
         });
 
         drawTable(
@@ -2274,10 +2283,24 @@ export default function ReportsPage() {
           y
         );
         y += 5;
+        const unpaidInSelectedPeriod = Math.max(summary.unpaidRentThisMonth, 0);
+        const previousArrears = Math.max(
+          summary.totalTenantBalance - unpaidInSelectedPeriod,
+          0
+        );
+        const outstandingNote = `e) Outstanding total balance: ${ush(
+          summary.totalTenantBalance
+        )} (${ush(unpaidInSelectedPeriod)} unpaid rent ${summary.reportPeriodLabel} and ${ush(
+          previousArrears
+        )} from previous months)`;
+        const outstandingLines = doc.splitTextToSize(
+          outstandingNote,
+          right - left - 12
+        ) as string[];
         doc.setFont("helvetica", "bold");
-        doc.text(`e) Outstanding total balance: ${ush(summary.totalTenantBalance)}`, left + 8, y);
+        doc.text(outstandingLines, left + 8, y);
         doc.setFont("helvetica", "normal");
-        y += 5;
+        y += outstandingLines.length * 5;
         doc.text(
           `3. ${summary.tenantsWithArrearsCount} tenant(s) remained with arrears to be collected in the next month.`,
           left + 4,

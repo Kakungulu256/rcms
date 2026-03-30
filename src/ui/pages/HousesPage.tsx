@@ -29,6 +29,7 @@ import {
   appendRentHistoryWithBaseline,
   buildRentByMonth,
   formatEffectiveMonth,
+  getBaseRentForMonth,
   normalizeEffectiveMonth,
   parseRentHistory,
   removeRentHistoryEntry,
@@ -121,11 +122,51 @@ function allocateReversal(params: {
   return { allocation, remaining };
 }
 
+function getReversedOriginalIds(payments: Payment[]) {
+  const reversed = new Set<string>();
+  payments.forEach((payment) => {
+    if (payment.isReversal && payment.reversedPaymentId) {
+      reversed.add(payment.reversedPaymentId);
+    }
+  });
+  return reversed;
+}
+
+function getFirstActivePayment(sortedPayments: Payment[], reversedOriginalIds: Set<string>) {
+  return (
+    sortedPayments.find(
+      (payment) => !payment.isReversal && !reversedOriginalIds.has(payment.$id)
+    ) ?? null
+  );
+}
+
+function resolveDepositRequirement(tenant: Tenant, house: House) {
+  const isNewTenant = tenant.tenantType === "new";
+  const depositRequired = isNewTenant && (tenant.securityDepositRequired ?? true);
+  if (!depositRequired) {
+    return { eligible: false, amount: 0 };
+  }
+  const moveInMonthKey = tenant.moveInDate?.slice(0, 7) ?? "";
+  const baseRent = getBaseRentForMonth({
+    monthKey: moveInMonthKey,
+    houseHistoryJson: house.rentHistoryJson ?? null,
+    fallbackRent: house.monthlyRent ?? 0,
+  });
+  return { eligible: true, amount: roundMoney(Math.max(baseRent, 0)) };
+}
+
 function recalculateTenantAllocations(params: {
   tenant: Tenant;
   house: House;
   payments: Payment[];
-}): Array<{ paymentId: string; allocationJson: string }> {
+}): {
+  paymentUpdates: Array<{
+    paymentId: string;
+    allocationJson: string;
+    securityDepositApplied?: number;
+  }>;
+  depositUpdate?: { amount: number; paid: number; balance: number };
+} {
   const { tenant, house, payments } = params;
   const sortedPayments = payments
     .slice()
@@ -135,14 +176,48 @@ function recalculateTenantAllocations(params: {
         a.$id.localeCompare(b.$id)
     );
   const paidByMonth: Record<string, number> = {};
-  const updates: Array<{ paymentId: string; allocationJson: string }> = [];
+  const updates: Array<{
+    paymentId: string;
+    allocationJson: string;
+    securityDepositApplied?: number;
+  }> = [];
+  const reversedOriginalIds = getReversedOriginalIds(sortedPayments);
+  const firstActivePayment = getFirstActivePayment(sortedPayments, reversedOriginalIds);
+  const depositRequirement = resolveDepositRequirement(tenant, house);
+  const nextDepositByPaymentId = new Map<string, number>();
+
+  if (depositRequirement.eligible && firstActivePayment) {
+    const paymentAmount = Math.max(Number(firstActivePayment.amount) || 0, 0);
+    const nextDepositApplied = roundMoney(
+      Math.min(paymentAmount, depositRequirement.amount)
+    );
+    sortedPayments.forEach((payment) => {
+      if (payment.isReversal && payment.reversedPaymentId === firstActivePayment.$id) {
+        nextDepositByPaymentId.set(payment.$id, roundMoney(-nextDepositApplied));
+        return;
+      }
+      if (!payment.isReversal && !reversedOriginalIds.has(payment.$id)) {
+        nextDepositByPaymentId.set(
+          payment.$id,
+          payment.$id === firstActivePayment.$id ? nextDepositApplied : 0
+        );
+      }
+    });
+  }
 
   sortedPayments.forEach((payment) => {
+    const existingDepositApplied = roundMoney(
+      Number(payment.securityDepositApplied) || 0
+    );
+    const computedDepositApplied = nextDepositByPaymentId.has(payment.$id)
+      ? roundMoney(Number(nextDepositByPaymentId.get(payment.$id) || 0))
+      : existingDepositApplied;
+
     if (payment.isReversal) {
       const reversalAmount = roundMoney(
         Math.max(
           Math.abs(Number(payment.amount) || 0) -
-            Math.abs(Number(payment.securityDepositApplied) || 0),
+            Math.abs(computedDepositApplied),
           0
         )
       );
@@ -154,13 +229,14 @@ function recalculateTenantAllocations(params: {
       updates.push({
         paymentId: payment.$id,
         allocationJson: JSON.stringify(allocation),
+        ...(computedDepositApplied !== existingDepositApplied
+          ? { securityDepositApplied: computedDepositApplied }
+          : {}),
       });
       return;
     }
 
-    const securityDepositApplied = roundMoney(
-      Math.max(Number(payment.securityDepositApplied) || 0, 0)
-    );
+    const securityDepositApplied = roundMoney(Math.max(computedDepositApplied, 0));
     const allocatableAmount = roundMoney(
       Math.max(Number(payment.amount) || 0, 0) - securityDepositApplied
     );
@@ -201,10 +277,36 @@ function recalculateTenantAllocations(params: {
     updates.push({
       paymentId: payment.$id,
       allocationJson: JSON.stringify(allocationMap),
+      ...(computedDepositApplied !== existingDepositApplied
+        ? { securityDepositApplied: computedDepositApplied }
+        : {}),
     });
   });
 
-  return updates;
+  let depositUpdate: { amount: number; paid: number; balance: number } | undefined;
+  if (depositRequirement.eligible) {
+    const depositPaid = roundMoney(
+      Math.max(
+        sortedPayments.reduce((sum, payment) => {
+          const value = nextDepositByPaymentId.has(payment.$id)
+            ? Number(nextDepositByPaymentId.get(payment.$id) || 0)
+            : Number(payment.securityDepositApplied) || 0;
+          return sum + value;
+        }, 0),
+        0
+      )
+    );
+    const depositBalance = roundMoney(
+      Math.max(depositRequirement.amount - depositPaid, 0)
+    );
+    depositUpdate = {
+      amount: depositRequirement.amount,
+      paid: depositPaid,
+      balance: depositBalance,
+    };
+  }
+
+  return { paymentUpdates: updates, depositUpdate };
 }
 
 export default function HousesPage() {
@@ -230,6 +332,7 @@ export default function HousesPage() {
   const [houseStatusFilter, setHouseStatusFilter] = useState<HouseStatusFilter>("all");
   const [housePage, setHousePage] = useState(1);
   const [housePageSize, setHousePageSize] = useState(20);
+  const currentMonthKey = useMemo(() => new Date().toISOString().slice(0, 7), []);
 
   const sortedHouses = useMemo(() => sortHousesNatural(houses), [houses]);
   const houseSearchSuggestions = useMemo(() => {
@@ -248,7 +351,13 @@ export default function HousesPage() {
       const code = house.code?.toLowerCase() ?? "";
       const name = house.name?.toLowerCase() ?? "";
       const status = house.status?.toLowerCase() ?? "";
-      const rent = String(house.monthlyRent ?? "");
+      const rent = String(
+        getBaseRentForMonth({
+          monthKey: currentMonthKey,
+          houseHistoryJson: house.rentHistoryJson ?? null,
+          fallbackRent: house.monthlyRent ?? 0,
+        })
+      );
       return (
         code.includes(query) ||
         name.includes(query) ||
@@ -256,7 +365,7 @@ export default function HousesPage() {
         rent.includes(query)
       );
     });
-  }, [houseSearchQuery, sortedHouses]);
+  }, [currentMonthKey, houseSearchQuery, sortedHouses]);
   const statusCounts = useMemo(() => {
     return housesMatchingSearch.reduce(
       (counts, house) => {
@@ -351,6 +460,7 @@ export default function HousesPage() {
       queries: [Query.equal("house", [house.$id]), Query.orderAsc("fullName")],
     });
     let updatedCount = 0;
+    let depositUpdatedCount = 0;
 
     for (const tenant of tenantsForHouse) {
       const tenantPayments = await listAllDocuments<Payment>({
@@ -358,34 +468,84 @@ export default function HousesPage() {
         collectionId: COLLECTIONS.payments,
         queries: [Query.equal("tenant", [tenant.$id]), Query.orderAsc("paymentDate")],
       });
-      if (tenantPayments.length === 0) continue;
 
-      const allocationUpdates = recalculateTenantAllocations({
+      const { paymentUpdates, depositUpdate } = recalculateTenantAllocations({
         tenant,
         house,
         payments: tenantPayments,
       });
       const paymentLookup = new Map(tenantPayments.map((payment) => [payment.$id, payment]));
 
-      for (const update of allocationUpdates) {
-        const existing = paymentLookup.get(update.paymentId)?.allocationJson ?? "";
-        if (existing === update.allocationJson) {
+      for (const update of paymentUpdates) {
+        const existing = paymentLookup.get(update.paymentId);
+        const existingAllocation = existing?.allocationJson ?? "";
+        const existingDepositApplied =
+          typeof existing?.securityDepositApplied === "number"
+            ? existing.securityDepositApplied
+            : 0;
+        const nextDepositApplied =
+          typeof update.securityDepositApplied === "number"
+            ? update.securityDepositApplied
+            : existingDepositApplied;
+        if (
+          existingAllocation === update.allocationJson &&
+          nextDepositApplied === existingDepositApplied
+        ) {
           continue;
         }
         await updateScopedDocument<
-          { allocationJson: string },
+          { allocationJson: string; securityDepositApplied?: number },
           Payment
         >({
           databaseId: rcmsDatabaseId,
           collectionId: COLLECTIONS.payments,
           documentId: update.paymentId,
-          data: { allocationJson: update.allocationJson },
+          data: {
+            allocationJson: update.allocationJson,
+            ...(update.securityDepositApplied !== undefined
+              ? { securityDepositApplied: update.securityDepositApplied }
+              : {}),
+          },
         });
         updatedCount += 1;
       }
+
+      if (depositUpdate) {
+        const existingAmount = Math.max(Number(tenant.securityDepositAmount) || 0, 0);
+        const existingPaid = Math.max(Number(tenant.securityDepositPaid) || 0, 0);
+        const existingBalance = Math.max(Number(tenant.securityDepositBalance) || 0, 0);
+        if (
+          existingAmount !== depositUpdate.amount ||
+          existingPaid !== depositUpdate.paid ||
+          existingBalance !== depositUpdate.balance
+        ) {
+          await updateScopedDocument<
+            {
+              securityDepositRequired: boolean;
+              securityDepositAmount: number;
+              securityDepositPaid: number;
+              securityDepositBalance: number;
+              securityDepositRefunded: boolean;
+            },
+            Tenant
+          >({
+            databaseId: rcmsDatabaseId,
+            collectionId: COLLECTIONS.tenants,
+            documentId: tenant.$id,
+            data: {
+              securityDepositRequired: true,
+              securityDepositAmount: depositUpdate.amount,
+              securityDepositPaid: depositUpdate.paid,
+              securityDepositBalance: depositUpdate.balance,
+              securityDepositRefunded: false,
+            },
+          });
+          depositUpdatedCount += 1;
+        }
+      }
     }
 
-    return updatedCount;
+    return updatedCount + depositUpdatedCount;
   };
 
   const handleCreate = async (values: HouseFormWithEffectiveDate) => {

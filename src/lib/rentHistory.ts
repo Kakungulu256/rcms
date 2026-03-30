@@ -203,6 +203,22 @@ export function buildRentByMonth(params: {
   return rentByMonth;
 }
 
+export function getBaseRentForMonth(params: {
+  monthKey: string;
+  houseHistoryJson?: string | null;
+  fallbackRent: number;
+}) {
+  const { monthKey, houseHistoryJson, fallbackRent } = params;
+  const houseHistory = parseRentHistory(houseHistoryJson);
+  const monthStart = `${monthKey}-01`;
+  const entry = houseHistory
+    .slice()
+    .sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate))
+    .filter((item) => item.effectiveDate <= monthStart)
+    .at(-1);
+  return entry?.amount ?? fallbackRent;
+}
+
 export function appendRentHistory(
   existing: string | null | undefined,
   entry: RentHistoryEntry

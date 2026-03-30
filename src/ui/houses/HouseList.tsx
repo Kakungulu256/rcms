@@ -1,4 +1,5 @@
 import type { House } from "../../lib/schema";
+import { getBaseRentForMonth } from "../../lib/rentHistory";
 import { formatAmount } from "../../lib/numberFormat";
 
 type Props = {
@@ -16,6 +17,7 @@ export default function HouseList({
   onEdit,
   canManage,
 }: Props) {
+  const currentMonthKey = new Date().toISOString().slice(0, 7);
   return (
     <div
       className="overflow-x-auto rounded-2xl border"
@@ -44,7 +46,13 @@ export default function HouseList({
                   <div className="text-xs text-slate-500">{house.name || "-"}</div>
                 </td>
                 <td className="amount px-3 py-3 text-slate-200 sm:px-5 sm:py-4">
-                  {formatAmount(house.monthlyRent)}
+                  {formatAmount(
+                    getBaseRentForMonth({
+                      monthKey: currentMonthKey,
+                      houseHistoryJson: house.rentHistoryJson ?? null,
+                      fallbackRent: house.monthlyRent ?? 0,
+                    })
+                  )}
                 </td>
                 <td className="px-3 py-3 sm:px-5 sm:py-4">
                   <span className="rounded-full border px-3 py-1 text-xs text-slate-300" style={{ borderColor: "var(--border)" }}>

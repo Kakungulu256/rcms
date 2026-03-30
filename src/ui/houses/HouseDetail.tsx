@@ -1,6 +1,10 @@
 import type { House } from "../../lib/schema";
 import type { RentHistoryEntry } from "../../lib/rentHistory";
-import { formatEffectiveMonth, parseRentHistory } from "../../lib/rentHistory";
+import {
+  formatEffectiveMonth,
+  getBaseRentForMonth,
+  parseRentHistory,
+} from "../../lib/rentHistory";
 import { formatAmount } from "../../lib/numberFormat";
 
 type Props = {
@@ -27,6 +31,12 @@ export default function HouseDetail({
   }
 
   const history = parseRentHistory(house.rentHistoryJson ?? null);
+  const currentMonthKey = new Date().toISOString().slice(0, 7);
+  const currentRent = getBaseRentForMonth({
+    monthKey: currentMonthKey,
+    houseHistoryJson: house.rentHistoryJson ?? null,
+    fallbackRent: house.monthlyRent ?? 0,
+  });
 
   return (
     <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6">
@@ -48,7 +58,7 @@ export default function HouseDetail({
             Monthly Rent
           </div>
           <div className="amount mt-2 text-lg font-semibold text-slate-100">
-            {formatAmount(house.monthlyRent)}
+            {formatAmount(currentRent)}
           </div>
         </div>
         <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">

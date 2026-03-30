@@ -35,7 +35,7 @@ export default function ConfirmModal({
             className="btn-primary text-sm"
             disabled={confirmLoading}
           >
-            {confirmLoading ? "Working..." : "Confirm"}
+            {confirmLoading ? "Processing..." : "Confirm"}
           </button>
         </div>
       </div>

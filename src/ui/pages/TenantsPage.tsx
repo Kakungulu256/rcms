@@ -26,7 +26,7 @@ import { buildMonthSeries, buildPaidByMonth } from "../payments/allocation";
 import { logAudit } from "../../lib/audit";
 import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../ToastContext";
-import { buildRentByMonth } from "../../lib/rentHistory";
+import { buildRentByMonth, getBaseRentForMonth } from "../../lib/rentHistory";
 import { assessSecurityDepositRefund } from "../../lib/securityDeposit";
 import { formatLimitValue, getLimitStatus } from "../../lib/planLimits";
 import { sortHousesNatural } from "../../lib/houseSort";
@@ -338,8 +338,17 @@ export default function TenantsPage() {
         return;
       }
       const house = assignable.house;
-      const rent = house?.monthlyRent ?? 0;
-      const securityDepositAmount = normalized.tenantType === "new" ? rent : 0;
+      const moveInMonthKey = normalized.moveInDate?.slice(0, 7) ?? "";
+      const baseRentAtMoveIn =
+        normalized.tenantType === "new"
+          ? getBaseRentForMonth({
+              monthKey: moveInMonthKey,
+              houseHistoryJson: house?.rentHistoryJson ?? null,
+              fallbackRent: house?.monthlyRent ?? 0,
+            })
+          : 0;
+      const securityDepositAmount =
+        normalized.tenantType === "new" ? baseRentAtMoveIn : 0;
       const payload = {
         ...normalized,
         securityDepositRequired: normalized.tenantType === "new",
@@ -440,12 +449,24 @@ export default function TenantsPage() {
         Number.isFinite(selected.securityDepositPaid)
           ? selected.securityDepositPaid
           : 0;
-      const nextDepositAmount =
+      const moveInChanged =
+        Boolean(normalized.moveInDate) &&
+        normalized.moveInDate !== selected.moveInDate;
+      const houseChanged = normalized.house && normalized.house !== selectedHouseId;
+      const moveInMonthKey =
+        (normalized.moveInDate ?? selected.moveInDate ?? "").slice(0, 7);
+      const baseRentAtMoveIn =
         tenantType === "new"
-          ? currentDepositAmount > 0
-            ? currentDepositAmount
-            : newRent
+          ? getBaseRentForMonth({
+              monthKey: moveInMonthKey,
+              houseHistoryJson: house?.rentHistoryJson ?? null,
+              fallbackRent: newRent,
+            })
           : 0;
+      const shouldRecalcDeposit =
+        tenantType === "new" && (currentDepositAmount <= 0 || moveInChanged || houseChanged);
+      const nextDepositAmount =
+        tenantType === "new" ? (shouldRecalcDeposit ? baseRentAtMoveIn : currentDepositAmount) : 0;
       const nextDepositPaid =
         tenantType === "new"
           ? Math.min(Math.max(currentDepositPaid, 0), nextDepositAmount)

@@ -7,15 +7,23 @@ type Props = {
   expenses: Expense[];
   houses: House[];
   canEdit?: boolean;
+  canDelete?: boolean;
   onEdit?: (expense: Expense) => void;
+  onDelete?: (expense: Expense) => void;
 };
 
 function resolveHouseLabel(expense: Expense, houses: House[]) {
   if (!expense.house) return "--";
-  const houseId =
+  const houseValue =
     typeof expense.house === "string" ? expense.house : expense.house?.$id ?? "";
-  const match = houses.find((house) => house.$id === houseId);
-  return match ? match.code : "--";
+  if (!houseValue) return "--";
+  const match = houses.find((house) => house.$id === houseValue);
+  if (match) {
+    const code = match.code?.trim() ?? "";
+    const name = match.name?.trim() ?? "";
+    return code && name ? `${code} - ${name}` : code || name || "--";
+  }
+  return houseValue;
 }
 
 function formatFileSize(bytes?: number) {
@@ -26,8 +34,16 @@ function formatFileSize(bytes?: number) {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export default function ExpenseList({ expenses, houses, canEdit, onEdit }: Props) {
-  const columnCount = canEdit ? 6 : 5;
+export default function ExpenseList({
+  expenses,
+  houses,
+  canEdit,
+  canDelete,
+  onEdit,
+  onDelete,
+}: Props) {
+  const showActions = Boolean(canEdit || canDelete);
+  const columnCount = showActions ? 6 : 5;
 
   return (
     <div
@@ -42,7 +58,9 @@ export default function ExpenseList({ expenses, houses, canEdit, onEdit }: Props
             <th className="px-3 py-3 sm:px-5 sm:py-4">House</th>
             <th className="px-3 py-3 sm:px-5 sm:py-4">Amount</th>
             <th className="px-3 py-3 sm:px-5 sm:py-4">Date</th>
-            {canEdit && <th className="px-3 py-3 text-right sm:px-5 sm:py-4">Actions</th>}
+            {showActions && (
+              <th className="px-3 py-3 text-right sm:px-5 sm:py-4">Actions</th>
+            )}
           </tr>
         </thead>
         <tbody>
@@ -100,15 +118,28 @@ export default function ExpenseList({ expenses, houses, canEdit, onEdit }: Props
               <td className="px-3 py-3 text-slate-400 sm:px-5 sm:py-4">
                 {formatDisplayDate(expense.expenseDate)}
               </td>
-              {canEdit && (
+              {showActions && (
                 <td className="px-3 py-3 text-right sm:px-5 sm:py-4">
-                  <button
-                    type="button"
-                    onClick={() => onEdit?.(expense)}
-                    className="btn-secondary text-xs"
-                  >
-                    Edit
-                  </button>
+                  <div className="flex justify-end gap-2">
+                    {canEdit && (
+                      <button
+                        type="button"
+                        onClick={() => onEdit?.(expense)}
+                        className="btn-secondary text-xs"
+                      >
+                        Edit
+                      </button>
+                    )}
+                    {canDelete && (
+                      <button
+                        type="button"
+                        onClick={() => onDelete?.(expense)}
+                        className="btn-danger text-xs"
+                      >
+                        Delete
+                      </button>
+                    )}
+                  </div>
                 </td>
               )}
             </tr>

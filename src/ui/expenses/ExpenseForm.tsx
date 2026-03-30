@@ -21,6 +21,12 @@ type Props = {
   } | null;
 };
 
+type HouseOption = {
+  value: string;
+  label: string;
+  keywords: string;
+};
+
 function buildEmptyValues(): ExpenseFormValues {
   return {
     category: "general",
@@ -79,18 +85,35 @@ export default function ExpenseForm({
   useEffect(() => {
     const emptyValues = buildEmptyValues();
     if (initialValues) {
-      const initialHouseId = normalizeRelationValue(initialValues.house);
+      const initialCategory =
+        (initialValues.category ?? emptyValues.category) as ExpenseFormValues["category"];
+      const initialHouseValue = normalizeRelationValue(initialValues.house);
+      let normalizedHouseValue = initialHouseValue;
+      let initialHouseLabel = "";
+      if (initialCategory === "maintenance") {
+        const matchedHouse = houses.find((house) => house.$id === initialHouseValue);
+        initialHouseLabel = matchedHouse ? formatHouseLabel(matchedHouse) : "";
+      } else {
+        const matchedHouse = houses.find((house) => house.$id === initialHouseValue);
+        if (matchedHouse) {
+          const label = matchedHouse.name?.trim() || matchedHouse.code?.trim() || "";
+          normalizedHouseValue = label;
+          initialHouseLabel = label;
+        } else {
+          initialHouseLabel = initialHouseValue;
+        }
+      }
       reset({
         ...emptyValues,
         ...initialValues,
-        house: initialHouseId,
+        category: initialCategory,
+        house: normalizedHouseValue,
         maintenanceType: initialValues.maintenanceType ?? "",
         affectsSecurityDeposit: Boolean(initialValues.affectsSecurityDeposit),
         securityDepositDeductionNote: initialValues.securityDepositDeductionNote ?? "",
         notes: initialValues.notes ?? "",
       });
-      const matchedHouse = houses.find((house) => house.$id === initialHouseId);
-      setHouseQuery(matchedHouse ? formatHouseLabel(matchedHouse) : "");
+      setHouseQuery(initialHouseLabel);
       setHousePickerOpen(false);
       setHighlightedHouseIndex(-1);
       return;
@@ -102,47 +125,98 @@ export default function ExpenseForm({
   }, [houses, initialValues, reset]);
 
   const category = watch("category");
+  const isMaintenance = category === "maintenance";
   const affectsSecurityDeposit = watch("affectsSecurityDeposit");
   const selectedHouseId = watch("house");
   const selectedReceipt = watch("receiptFile");
   const hasSelectedReceipt = Boolean(selectedReceipt && selectedReceipt.length > 0);
+  const houseOptions = useMemo<HouseOption[]>(() => {
+    if (isMaintenance) {
+      return houses.map((house) => {
+        const label = formatHouseLabel(house);
+        const keywords = [house.code, house.name].filter(Boolean).join(" ").toLowerCase();
+        return { value: house.$id, label, keywords };
+      });
+    }
+    const grouped = new Map<string, HouseOption>();
+    houses.forEach((house) => {
+      const label = house.name?.trim() || house.code?.trim();
+      if (!label) return;
+      const key = label.toLowerCase();
+      if (grouped.has(key)) return;
+      const keywords = [house.name, house.code].filter(Boolean).join(" ").toLowerCase();
+      grouped.set(key, { value: label, label, keywords });
+    });
+    return Array.from(grouped.values()).sort((a, b) =>
+      a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: "base" })
+    );
+  }, [houses, isMaintenance]);
   const selectedHouseLabel = useMemo(() => {
-    const matchedHouse = houses.find((house) => house.$id === selectedHouseId);
-    return matchedHouse ? formatHouseLabel(matchedHouse) : "";
-  }, [houses, selectedHouseId]);
-  const filteredHouses = useMemo(() => {
+    if (!selectedHouseId) return "";
+    if (!isMaintenance) return selectedHouseId;
+    const matchedOption = houseOptions.find((option) => option.value === selectedHouseId);
+    return matchedOption?.label ?? "";
+  }, [houseOptions, isMaintenance, selectedHouseId]);
+  const filteredHouseOptions = useMemo(() => {
     const normalizedQuery = houseQuery.trim().toLowerCase();
     const source =
       normalizedQuery.length === 0
-        ? houses
-        : houses.filter((house) => {
-            const code = house.code?.toLowerCase() ?? "";
-            const name = house.name?.toLowerCase() ?? "";
-            return code.includes(normalizedQuery) || name.includes(normalizedQuery);
-          });
+        ? houseOptions
+        : houseOptions.filter(
+            (option) =>
+              option.label.toLowerCase().includes(normalizedQuery) ||
+              option.keywords.includes(normalizedQuery)
+          );
     return source.slice(0, 12);
-  }, [houseQuery, houses]);
+  }, [houseOptions, houseQuery]);
 
   useEffect(() => {
-    if (category === "maintenance") return;
-    setValue("affectsSecurityDeposit", false);
-    setValue("securityDepositDeductionNote", "");
+    if (!isMaintenance) {
+      setValue("affectsSecurityDeposit", false);
+      setValue("securityDepositDeductionNote", "");
+    }
+    if (isMaintenance) {
+      const matchedHouse = houses.find((house) => house.$id === selectedHouseId);
+      if (selectedHouseId && !matchedHouse) {
+        setValue("house", "", { shouldDirty: true, shouldValidate: true });
+        setHouseQuery("");
+      } else if (matchedHouse) {
+        setHouseQuery(formatHouseLabel(matchedHouse));
+      }
+    } else if (selectedHouseId) {
+      const matchedHouse = houses.find((house) => house.$id === selectedHouseId);
+      if (matchedHouse) {
+        const label = matchedHouse.name?.trim() || matchedHouse.code?.trim() || "";
+        if (label && label !== selectedHouseId) {
+          setValue("house", label, { shouldDirty: true, shouldValidate: true });
+        }
+        setHouseQuery(label);
+      } else {
+        setHouseQuery(selectedHouseId);
+      }
+    }
     setHousePickerOpen(false);
     setHighlightedHouseIndex(-1);
-  }, [category, setValue]);
+  }, [houses, isMaintenance, selectedHouseId, setValue]);
 
   useEffect(() => {
-    if (category !== "maintenance") return;
+    if (!isMaintenance) return;
     if (affectsSecurityDeposit) return;
     setValue("securityDepositDeductionNote", "");
-  }, [affectsSecurityDeposit, category, setValue]);
+  }, [affectsSecurityDeposit, isMaintenance, setValue]);
 
   useEffect(() => {
+    if (houseQuery.trim()) return;
+    if (!selectedHouseId) return;
+    if (!isMaintenance) {
+      setHouseQuery(selectedHouseId);
+      return;
+    }
     const selectedHouse = houses.find((house) => house.$id === selectedHouseId);
-    if (selectedHouse && !houseQuery.trim()) {
+    if (selectedHouse) {
       setHouseQuery(formatHouseLabel(selectedHouse));
     }
-  }, [houses, houseQuery, selectedHouseId]);
+  }, [houses, houseQuery, isMaintenance, selectedHouseId]);
 
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
@@ -185,121 +259,118 @@ export default function ExpenseForm({
         </select>
       </label>
 
-      {category === "maintenance" && (
-        <label className="block text-sm text-slate-300">
-          House
-          <div className="relative mt-2" ref={housePickerRef}>
-            <input
-              type="search"
-              className="input-base w-full rounded-md px-3 py-2 text-sm"
-              placeholder="Search house by code or name"
-              value={houseQuery}
-              onFocus={() => {
+      <label className="block text-sm text-slate-300">
+        {isMaintenance ? "House" : "House (Optional)"}
+        <div className="relative mt-2" ref={housePickerRef}>
+          <input
+            type="search"
+            className="input-base w-full rounded-md px-3 py-2 text-sm"
+            placeholder={isMaintenance ? "Search house by code or name" : "Search house name"}
+            value={houseQuery}
+            onFocus={() => {
+              setHousePickerOpen(true);
+              setHighlightedHouseIndex(-1);
+            }}
+            onChange={(event) => {
+              setHouseQuery(event.target.value);
+              setValue("house", "", { shouldDirty: true, shouldValidate: true });
+              setHousePickerOpen(true);
+              setHighlightedHouseIndex(-1);
+            }}
+            onKeyDown={(event) => {
+              if (!housePickerOpen && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
                 setHousePickerOpen(true);
+                return;
+              }
+              if (!housePickerOpen) return;
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setHighlightedHouseIndex((previous) => {
+                  if (filteredHouseOptions.length === 0) return -1;
+                  if (previous >= filteredHouseOptions.length - 1) return 0;
+                  return previous + 1;
+                });
+                return;
+              }
+              if (event.key === "ArrowUp") {
+                event.preventDefault();
+                setHighlightedHouseIndex((previous) => {
+                  if (filteredHouseOptions.length === 0) return -1;
+                  if (previous <= 0) return filteredHouseOptions.length - 1;
+                  return previous - 1;
+                });
+                return;
+              }
+              if (event.key === "Enter" && highlightedHouseIndex >= 0) {
+                event.preventDefault();
+                const selected = filteredHouseOptions[highlightedHouseIndex];
+                if (!selected) return;
+                setValue("house", selected.value, {
+                  shouldDirty: true,
+                  shouldValidate: true,
+                });
+                setHouseQuery(selected.label);
+                setHousePickerOpen(false);
                 setHighlightedHouseIndex(-1);
-              }}
-              onChange={(event) => {
-                setHouseQuery(event.target.value);
-                setValue("house", "", { shouldDirty: true, shouldValidate: true });
-                setHousePickerOpen(true);
+                return;
+              }
+              if (event.key === "Escape") {
+                setHousePickerOpen(false);
                 setHighlightedHouseIndex(-1);
-              }}
-              onKeyDown={(event) => {
-                if (!housePickerOpen && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
-                  setHousePickerOpen(true);
-                  return;
-                }
-                if (!housePickerOpen) return;
-                if (event.key === "ArrowDown") {
-                  event.preventDefault();
-                  setHighlightedHouseIndex((previous) => {
-                    if (filteredHouses.length === 0) return -1;
-                    if (previous >= filteredHouses.length - 1) return 0;
-                    return previous + 1;
-                  });
-                  return;
-                }
-                if (event.key === "ArrowUp") {
-                  event.preventDefault();
-                  setHighlightedHouseIndex((previous) => {
-                    if (filteredHouses.length === 0) return -1;
-                    if (previous <= 0) return filteredHouses.length - 1;
-                    return previous - 1;
-                  });
-                  return;
-                }
-                if (event.key === "Enter" && highlightedHouseIndex >= 0) {
-                  event.preventDefault();
-                  const selected = filteredHouses[highlightedHouseIndex];
-                  if (!selected) return;
-                  setValue("house", selected.$id, {
-                    shouldDirty: true,
-                    shouldValidate: true,
-                  });
-                  setHouseQuery(formatHouseLabel(selected));
-                  setHousePickerOpen(false);
-                  setHighlightedHouseIndex(-1);
-                  return;
-                }
-                if (event.key === "Escape") {
-                  setHousePickerOpen(false);
-                  setHighlightedHouseIndex(-1);
-                }
-              }}
-            />
-            <input
-              type="hidden"
-              {...register("house", { required: category === "maintenance" })}
-            />
-            {housePickerOpen && (
-              <div
-                className="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-md border bg-slate-900 shadow-xl"
-                style={{ borderColor: "var(--border)" }}
-              >
-                {filteredHouses.map((house, index) => {
-                  const label = formatHouseLabel(house);
-                  return (
-                    <button
-                      key={house.$id}
-                      type="button"
-                      className={[
-                        "block w-full px-3 py-2 text-left text-sm",
-                        highlightedHouseIndex === index
-                          ? "bg-slate-800 text-slate-100"
-                          : "text-slate-200 hover:bg-slate-800/70",
-                      ].join(" ")}
-                      onMouseDown={(event) => {
-                        event.preventDefault();
-                        setValue("house", house.$id, {
-                          shouldDirty: true,
-                          shouldValidate: true,
-                        });
-                        setHouseQuery(label);
-                        setHousePickerOpen(false);
-                        setHighlightedHouseIndex(-1);
-                      }}
-                    >
-                      {label}
-                    </button>
-                  );
-                })}
-                {filteredHouses.length === 0 && (
-                  <div className="px-3 py-2 text-sm text-slate-500">
-                    No houses match this search.
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-          <div className="mt-1 text-xs text-slate-500">
-            {selectedHouseLabel
-              ? `Selected: ${selectedHouseLabel}`
-              : "Pick a house from suggestions."}
-          </div>
-        </label>
-      )}
+              }
+            }}
+          />
+          <input type="hidden" {...register("house", { required: isMaintenance })} />
+          {housePickerOpen && (
+            <div
+              className="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-md border bg-slate-900 shadow-xl"
+              style={{ borderColor: "var(--border)" }}
+            >
+              {filteredHouseOptions.map((house, index) => {
+                const label = house.label;
+                return (
+                  <button
+                    key={`${house.value}-${label}`}
+                    type="button"
+                    className={[
+                      "block w-full px-3 py-2 text-left text-sm",
+                      highlightedHouseIndex === index
+                        ? "bg-slate-800 text-slate-100"
+                        : "text-slate-200 hover:bg-slate-800/70",
+                    ].join(" ")}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      setValue("house", house.value, {
+                        shouldDirty: true,
+                        shouldValidate: true,
+                      });
+                      setHouseQuery(label);
+                      setHousePickerOpen(false);
+                      setHighlightedHouseIndex(-1);
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+              {filteredHouseOptions.length === 0 && (
+                <div className="px-3 py-2 text-sm text-slate-500">
+                  No houses match this search.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="mt-1 text-xs text-slate-500">
+          {selectedHouseLabel
+            ? `Selected: ${selectedHouseLabel}`
+            : isMaintenance
+              ? "Pick a house from suggestions."
+              : "Assign a house name only if this general expense is split by block."}
+        </div>
+      </label>
 
-      {category === "maintenance" && (
+      {isMaintenance && (
         <label className="block text-sm text-slate-300">
           Maintenance Type
           <input
@@ -310,7 +381,7 @@ export default function ExpenseForm({
         </label>
       )}
 
-      {category === "maintenance" && (
+      {isMaintenance && (
         <div className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-3">
           <label className="flex items-center gap-2 text-sm text-slate-300">
             <input
@@ -451,7 +522,7 @@ export default function ExpenseForm({
       {formState.errors.amount && (
         <p className="text-sm text-rose-300">Amount is required.</p>
       )}
-      {formState.errors.house && category === "maintenance" && (
+      {formState.errors.house && isMaintenance && (
         <p className="text-sm text-rose-300">House is required for maintenance.</p>
       )}
     </form>
