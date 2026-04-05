@@ -36,7 +36,7 @@ export default function TenantList({
       className="overflow-x-auto rounded-2xl border"
       style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
     >
-      <table className="min-w-[680px] w-full text-left text-sm">
+      <table className="min-w-full w-full text-left text-sm md:min-w-[680px]">
         <thead className="text-xs text-slate-500" style={{ backgroundColor: "var(--surface-strong)" }}>
           <tr>
             <th className="px-3 py-3 sm:px-5 sm:py-4">Tenant</th>
@@ -76,7 +76,7 @@ export default function TenantList({
                   </span>
                 </td>
                 <td className="px-3 py-3 sm:px-5 sm:py-4">
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex flex-col gap-2 sm:flex-row">
                     <button
                       onClick={() => onView(tenant)}
                       className="btn-secondary text-xs"

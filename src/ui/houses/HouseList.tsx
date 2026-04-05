@@ -23,7 +23,7 @@ export default function HouseList({
       className="overflow-x-auto rounded-2xl border"
       style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
     >
-      <table className="min-w-[620px] w-full text-left text-sm">
+      <table className="min-w-full w-full text-left text-sm md:min-w-[620px]">
         <thead className="text-xs text-slate-500" style={{ backgroundColor: "var(--surface-strong)" }}>
           <tr>
             <th className="px-3 py-3 sm:px-5 sm:py-4">House</th>
@@ -60,7 +60,7 @@ export default function HouseList({
                   </span>
                 </td>
                 <td className="px-3 py-3 sm:px-5 sm:py-4">
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex flex-col gap-2 sm:flex-row">
                     <button
                       onClick={() => onSelect(house)}
                       className="btn-secondary text-xs"

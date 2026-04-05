@@ -854,7 +854,7 @@ export default function PaymentsPage() {
         </div>
       )}
 
-      <div className="grid gap-6 xl:grid-cols-[1.4fr_1fr]">
+      <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
         <div className="space-y-6">
           <div
             className="rounded-2xl border p-5"

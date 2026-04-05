@@ -605,7 +605,7 @@ export default function TenantsPage() {
         </p>
       </header>
 
-      <div className="grid gap-6 xl:grid-cols-[2.2fr_1fr]">
+      <div className="grid gap-6 lg:grid-cols-[2.2fr_1fr]">
         <div className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
